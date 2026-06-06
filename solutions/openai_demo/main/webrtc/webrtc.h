@@ -1,0 +1,87 @@
+#pragma once
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+#include "esp_webrtc.h" // Aquí se define esp_webrtc_handle_t
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <cJSON.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+    // Estructura de contexto para la tarea del asistente
+    typedef struct
+    {
+        const char *user;
+        const char *input;
+        char *call_id;
+        esp_webrtc_handle_t webrtc; // Handle general de WebRTC
+    } assistant_task_ctx_t;
+
+    // typedef struct
+    // {
+    //     const char *type;
+    //     const char *country;
+    //     const char *city;
+    //     const char *region;
+    // } user_location_t;
+
+    // Estructura de contexto para la tarea de búsqueda web
+    typedef struct
+    {
+        char *user;
+        char *query;
+        char *call_id;
+        // user_location_t *location;
+        esp_webrtc_handle_t webrtc;
+    } web_search_task_ctx_t;
+
+    // Definimos los tipos de acciones que nuestra nueva tarea puede hacer
+    typedef enum
+    {
+        WEBRTC_ACTION_SEND_IDLE_PROMPT, // Enviar el prompt de inactividad
+        WEBRTC_ACTION_PLAY_IDLE_ALERT,  // Reproducir alerta de inactividad
+        // ... (aquí podríamos añadir más acciones en el futuro)
+    } webrtc_action_t;
+
+    char *remove_source_annotation(const char *input);
+    char *getAssistantData(const char *userName, const char *task);
+    int sendEvent(const char *type, const char *text);
+    char *get_web_info(const char *request);
+
+    // void free_user_location(user_location_t *location);
+    // user_location_t *parse_user_location(const cJSON *user_location_item);
+
+#define ASSISTANT_TASK_STACK_SIZE (8 * 1024)
+#define ASSISTANT_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+
+    void start_assistant_task(const char *user, const char *input, const char *call_id, esp_webrtc_handle_t webrtc_handle);
+
+#define WEB_SEARCH_TASK_STACK_SIZE (8 * 1024)
+#define WEB_SEARCH_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+
+    void start_web_search_task(const char *user, const char *query, const char *call_id, esp_webrtc_handle_t webrtc_handle);
+
+    void webrtc_send_system_prompt(const char *text);
+    int webrtc_inject_arrival_context(void);
+    uint32_t webrtc_get_last_activity_ms(void);
+    bool webrtc_realtime_is_busy(void);
+
+    /**
+     * @brief Publica una acción en la cola de acciones de WebRTC.
+     */
+    void webrtc_init_action_queue(void); // <-- Prototipo para iniciar la tarea/cola
+
+    /**
+     * @brief Publica una acción en la cola de acciones de WebRTC.
+     *
+     * @param action La acción a publicar.
+     */
+    void webrtc_post_action(webrtc_action_t action);
+
+#ifdef __cplusplus
+}
+#endif
