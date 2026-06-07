@@ -1,10 +1,8 @@
 #include "csi_handler.h"
 #include "ei_inference.h"
 
-#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -17,16 +15,11 @@
 #include "freertos/task.h"
 
 #define CSI_RINGBUF_STORAGE_SIZE (4 * 1024)
-#define CSI_FEATURE_BYTES 64
+#define CSI_FEATURE_BYTES 128
 #define CSI_CAPTURE_SAMPLE_BYTES CSI_FEATURE_BYTES
 #define CSI_CONSUMER_STACK_SIZE 3072
 #define CSI_CONSUMER_PRIORITY (tskIDLE_PRIORITY + 7)
 #define CSI_CONSUMER_CORE_ID 1
-#define WINDOW_SIZE 20
-#define DEV_THRESHOLD 45
-#define PEAK_COUNT_TRIGGER 5
-#define TIME_WINDOW_FRAMES 50
-#define COOLDOWN_FRAMES 100
 
 #define CSI_MAC_FILTER_ENABLED 0
 #define CSI_ALLOWED_MAC_0 \
@@ -58,9 +51,6 @@ static RingbufHandle_t s_csi_ringbuf;
 static TaskHandle_t s_csi_consumer_task;
 static volatile uint32_t s_csi_dropped_frames;
 static volatile bool s_csi_enabled;
-static uint32_t moving_window[WINDOW_SIZE] = {0};
-static uint8_t window_index = 0;
-static uint32_t window_sum = 0;
 
 static bool csi_mac_allowed(const uint8_t mac[6])
 {
@@ -115,11 +105,6 @@ static void csi_consumer_task(void *param)
 {
     (void)param;
 
-    uint16_t frame_counter = 0;
-    uint8_t peak_counter = 0;
-    uint16_t cooldown_timer = 0;
-    uint32_t total_frames_processed = 0;
-
     while (1) {
         size_t item_size = 0;
         csi_frame_record_t *frame = (csi_frame_record_t *)xRingbufferReceive(
@@ -127,51 +112,9 @@ static void csi_consumer_task(void *param)
 
         if (frame != NULL) {
             if (item_size >= sizeof(csi_frame_record_t)) {
-                uint32_t current_frame_amplitude = 0;
-                uint16_t feature_bytes = frame->sample_len < CSI_FEATURE_BYTES
-                                             ? frame->sample_len
-                                             : CSI_FEATURE_BYTES;
-
-                feature_bytes &= (uint16_t)~1U;
-                for (uint16_t i = 0; i < feature_bytes; i += 2) {
-                    int imag = frame->csi_sample[i];
-                    int real = frame->csi_sample[i + 1];
-                    current_frame_amplitude += (uint32_t)(abs(imag) + abs(real));
-                }
-
-                window_sum -= moving_window[window_index];
-                window_sum += current_frame_amplitude;
-                moving_window[window_index] = current_frame_amplitude;
-                window_index = (uint8_t)((window_index + 1U) % WINDOW_SIZE);
-
-                uint32_t moving_average = window_sum / WINDOW_SIZE;
-                uint32_t deviation = current_frame_amplitude > moving_average
-                                         ? current_frame_amplitude - moving_average
-                                         : moving_average - current_frame_amplitude;
-
-                total_frames_processed++;
-                if (total_frames_processed > WINDOW_SIZE) {
-                    if (cooldown_timer > 0) {
-                        cooldown_timer--;
-                    } else {
-                        if (deviation > DEV_THRESHOLD) {
-                            peak_counter++;
-                        }
-
-                        frame_counter++;
-
-                        if (peak_counter >= PEAK_COUNT_TRIGGER) {
-                            peak_counter = 0;
-                            frame_counter = 0;
-                            cooldown_timer = COOLDOWN_FRAMES;
-                        } else if (frame_counter >= TIME_WINDOW_FRAMES) {
-                            peak_counter = 0;
-                            frame_counter = 0;
-                        }
-                    }
-                    
-                    ei_inference_add_frame((float)current_frame_amplitude, (float)moving_average, (float)deviation);
-                }
+                ei_inference_add_csi_frame(frame->csi_sample,
+                                           frame->sample_len,
+                                           frame->first_word_invalid);
             }
             vRingbufferReturnItem(s_csi_ringbuf, frame);
         }
@@ -180,8 +123,6 @@ static void csi_consumer_task(void *param)
 
 esp_err_t csi_handler_start(void)
 {
-    ei_inference_init();
-
     if (s_csi_ringbuf == NULL) {
         s_csi_ringbuf = xRingbufferCreateStatic(CSI_RINGBUF_STORAGE_SIZE,
                                                 RINGBUF_TYPE_NOSPLIT,
@@ -207,6 +148,8 @@ esp_err_t csi_handler_start(void)
     if (s_csi_enabled) {
         return ESP_OK;
     }
+
+    ei_inference_init();
 
     const wifi_csi_config_t csi_config = {
         .lltf_en = true,

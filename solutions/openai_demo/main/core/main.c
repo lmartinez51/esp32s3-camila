@@ -19,6 +19,7 @@
  */
 
 // Includes del sistema estándar
+#include <string.h>
 #include <nvs_flash.h>
 // Includes de ESP-IDF
 #include <esp_wifi.h>
@@ -98,15 +99,30 @@ static void orchestrator_log_heap_snapshot(const char *stage)
     const size_t psram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
     const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
-    ESP_LOGW(TAG,
-             "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
-             label,
-             internal_free,
-             internal_min,
-             internal_largest,
-             psram_free,
-             psram_min,
-             psram_largest);
+    if (strcmp(label, "telemetry:periodic") == 0)
+    {
+        ESP_LOGD(TAG,
+                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
+                 label,
+                 internal_free,
+                 internal_min,
+                 internal_largest,
+                 psram_free,
+                 psram_min,
+                 psram_largest);
+    }
+    else
+    {
+        ESP_LOGW(TAG,
+                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
+                 label,
+                 internal_free,
+                 internal_min,
+                 internal_largest,
+                 psram_free,
+                 psram_min,
+                 psram_largest);
+    }
 }
 
 static esp_err_t orchestrator_ensure_audio_runtime_ready(void)
@@ -809,6 +825,15 @@ void app_main(void)
 {
     // Configura el nivel de log para este módulo
     esp_log_level_set(TAG, ESP_LOG_INFO);
+    esp_log_level_set("CODEC_INIT", ESP_LOG_WARN);
+    esp_log_level_set("ES7210", ESP_LOG_WARN);
+    esp_log_level_set("ES8311", ESP_LOG_WARN);
+    esp_log_level_set("I2S_IF", ESP_LOG_WARN);
+    esp_log_level_set("AGENT", ESP_LOG_WARN);
+    esp_log_level_set("SCTP", ESP_LOG_WARN);
+    esp_log_level_set("PEER_DEF", ESP_LOG_WARN);
+    esp_log_level_set("webrtc", ESP_LOG_WARN);
+    esp_log_level_set("AV_RENDER", ESP_LOG_WARN);
 
     // 1) Inicializa la interfaz de usuario (pantalla LCD)
     esp_err_t err = ui_init();

@@ -16,7 +16,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 
 ## ⚙️ Key Features
 
-- 📡 **Two-Factor Presence Detection (CSI + BLE)** — utilizes Wi-Fi Channel State Information (CSI) for radar-like motion detection to sense physical presence, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
+- 📡 **Two-Factor Presence Detection (CSI + BLE)** — uses deterministic Wi-Fi CSI DSP for radar-like motion sensing, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
@@ -35,10 +35,10 @@ The chatbot has access to a robust set of background functions to control the de
 
 ### 🔐 Two-Factor Presence Detection (CSI + BLE)
 The system employs a highly customized, dual-layer authentication mechanism to detect presence and validate identity before waking up the assistant:
-- **Wi-Fi CSI (Motion)**: A secondary ESP32-S3 acts as a 'beacon', continuously gathering Channel State Information (CSI) data. This data is fed into a machine learning model trained via **Edge Impulse** (located in `components/edge_impulse`) to reliably detect human movement, acting as an invisible radar.
+- **Wi-Fi CSI DSP (Motion)**: A secondary ESP32-S3 acts as a radar beacon and captures full HT20 CSI LTF blocks (`128` bytes, `64` complex subcarriers). The firmware masks noisy edge and DC subcarriers, performs Phase Sanitization / Phase Cleaning by removing clock drift and CFO with a weighted least-squares linear phase fit, and triggers motion deterministically from normalized Correlation Drop and Phase Energy metrics.
 - **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When the primary ESP32 detects this specific UUID nearby, it confirms the owner's identity.
 
-*In short: The CSI model detects that **someone** is there, and the BLE Nexus beacon confirms that it is **you**.*
+*In short: the CSI DSP radar detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
 
 ---
 
@@ -182,7 +182,7 @@ idf.py -p <PORT> flash monitor
  ├── core/                 # Main app and high-level orchestration
  ├── hardware/             # Codec/I2C init, button, and board peripherals
  ├── openai/               # Assistant logic, Web Search, Realtime API signaling
- ├── sensing/              # Edge Impulse inference, CSI
+ ├── sensing/              # Pure DSP CSI motion detection
  ├── ui/                   # LCD rendering, charset mapping, and UI logic
  └── webrtc/               # WebRTC integration and event handling
 ```

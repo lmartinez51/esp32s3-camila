@@ -9,7 +9,15 @@ if("${IDF_TARGET}" STREQUAL "esp32p4")
     set(EXTRA_COMPONENT_DIRS "$ENV{IDF_PATH}/examples/ethernet/basic/components/ethernet_init")
 endif()
 
-list(APPEND EXTRA_COMPONENT_DIRS "../../components" "../../components/esp-bsp/bsp/esp-box-3")
+list(APPEND EXTRA_COMPONENT_DIRS
+    "../../components/av_render"
+    "../../components/codec_board"
+    "../../components/esp_capture"
+    "../../components/esp_webrtc"
+    "../../components/media_lib_sal"
+    "../../components/webrtc_utils"
+    "../../components/esp-bsp/bsp/esp-box-3"
+)
 
 list(APPEND EXTRA_COMPONENT_DIRS "../common")
 

@@ -188,6 +188,7 @@ typedef struct
     uint32_t timeout_ms;
     bool seen_uuid;
     bool present;
+    bool cancel_requested;
     int8_t best_rssi;
     int8_t last_rssi;
 } ble_identity_validation_state_t;
@@ -197,6 +198,7 @@ static ble_identity_validation_state_t identity_validation_state = {
     .timeout_ms = 0,
     .seen_uuid = false,
     .present = false,
+    .cancel_requested = false,
     .best_rssi = -127,
     .last_rssi = -127,
 };
@@ -295,7 +297,7 @@ static void ble_device_run_identity_validation(void);
 static esp_err_t ble_device_start_identity_scan(uint32_t timeout_ms);
 static bool ble_identity_adv_has_target_uuid(const struct ble_hs_adv_fields *fields);
 static void ble_identity_validation_reset(uint32_t timeout_ms);
-static void ble_identity_validation_record_match(int8_t rssi);
+static bool ble_identity_validation_record_match(int8_t rssi);
 static bool ble_identity_validation_is_present(int8_t *best_rssi, int8_t *last_rssi, bool *seen_uuid);
 static void cleanup_stale_connections(void);                                                                   // Nueva función para limpiar conexiones obsoletas
 static bool is_device_state_consistent(ble_device_info_t *device);                                             // Nueva función para verificar consistencia de estado
@@ -2640,15 +2642,17 @@ static void ble_identity_validation_reset(uint32_t timeout_ms)
         identity_validation_state.timeout_ms = timeout_ms;
         identity_validation_state.seen_uuid = false;
         identity_validation_state.present = false;
+        identity_validation_state.cancel_requested = false;
         identity_validation_state.best_rssi = -127;
         identity_validation_state.last_rssi = -127;
         xSemaphoreGive(identity_validation_mutex);
     }
 }
 
-static void ble_identity_validation_record_match(int8_t rssi)
+static bool ble_identity_validation_record_match(int8_t rssi)
 {
     bool mutex_taken = false;
+    bool request_cancel = false;
 
     if (identity_validation_mutex == NULL)
     {
@@ -2671,6 +2675,12 @@ static void ble_identity_validation_record_match(int8_t rssi)
     }
 
     identity_validation_state.present = true;
+    if (!identity_validation_state.cancel_requested)
+    {
+        identity_validation_state.cancel_requested = true;
+        request_cancel = true;
+    }
+
     ESP_LOGI(TAG, "Identity UUID observed without RSSI gate: rssi=%d best=%d present=%d",
              rssi,
              identity_validation_state.best_rssi,
@@ -2685,6 +2695,8 @@ static void ble_identity_validation_record_match(int8_t rssi)
     {
         ESP_LOGE(TAG, "Identity match recorded without mutex; validation state may be racy.");
     }
+
+    return request_cancel;
 }
 
 static bool ble_identity_validation_is_present(int8_t *best_rssi, int8_t *last_rssi, bool *seen_uuid)
@@ -2711,6 +2723,23 @@ static bool ble_identity_validation_is_present(int8_t *best_rssi, int8_t *last_r
     }
 
     return present;
+}
+
+static void ble_identity_validation_cancel_scan_early(void)
+{
+    int rc = ble_gap_disc_cancel();
+    if (rc == 0)
+    {
+        ESP_LOGI(TAG, "Identity match accepted; GAP discovery cancel requested for early validation exit");
+        return;
+    }
+
+    ESP_LOGW(TAG, "Identity early-exit cancel returned %d; forcing validation wakeup", rc);
+    scanning_active = false;
+    if (scan_complete_semaphore != NULL)
+    {
+        xSemaphoreGive(scan_complete_semaphore);
+    }
 }
 
 static int ble_gap_identity_validation_event_handler(struct ble_gap_event *event, void *arg)
@@ -2740,7 +2769,10 @@ static int ble_gap_identity_validation_event_handler(struct ble_gap_event *event
         ESP_LOGI(TAG, "Identity service UUID %s observed at RSSI=%d dBm",
                  BLE_IDENTITY_SERVICE_UUID_STR,
                  event->disc.rssi);
-        ble_identity_validation_record_match(event->disc.rssi);
+        if (ble_identity_validation_record_match(event->disc.rssi))
+        {
+            ble_identity_validation_cancel_scan_early();
+        }
         break;
     }
 
@@ -2783,6 +2815,8 @@ static esp_err_t ble_device_start_identity_scan(uint32_t timeout_ms)
         .filter_duplicates = 0,
     };
 
+    scanning_active = true;
+
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC,
                           timeout_ms == 0 ? BLE_HS_FOREVER : timeout_ms,
                           &disc_params,
@@ -2790,11 +2824,11 @@ static esp_err_t ble_device_start_identity_scan(uint32_t timeout_ms)
                           NULL);
     if (rc != 0)
     {
+        scanning_active = false;
         ESP_LOGE(TAG, "Error starting identity validation passive scan: %d", rc);
         return ESP_FAIL;
     }
 
-    scanning_active = true;
     ESP_LOGI(TAG, "Identity validation passive scan started for %lu ms; UUID=%s",
              timeout_ms,
              BLE_IDENTITY_SERVICE_UUID_STR);

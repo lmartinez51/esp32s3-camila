@@ -25,6 +25,7 @@ idf_component_register(
         "openai/web_search.c"
 
         "sensing/csi_handler.c"
+        "sensing/csi_dsp.c"
         "sensing/ei_inference.cpp"
 
     INCLUDE_DIRS

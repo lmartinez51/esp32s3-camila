@@ -12,7 +12,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 
 ## ⚙️ Características Principales
 
-- 📡 **Detección de Presencia de Doble Factor (CSI + BLE)** — utiliza la Información de Estado del Canal (CSI) de Wi-Fi para detectar movimiento físico (como un radar), combinada con la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar al asistente.
+- 📡 **Detección de Presencia de Doble Factor (CSI + BLE)** — utiliza DSP determinista sobre la Información de Estado del Canal (CSI) de Wi-Fi para detectar movimiento físico como radar, combinada con la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar al asistente.
 - 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2**).
 - 🎧 **Control dinámico de audio** — activa o desactiva el silencio con una estrategia robusta de reinicio de la tubería de audio.
 - 🤫 **Modo Silencio Inteligente** — cuando el usuario pide al asistente que guarde silencio, este silencia el micrófono pero mantiene activa la sesión, pudiendo enviar mensajes cortos de solo texto a la pantalla.
@@ -31,10 +31,10 @@ El asistente cuenta con un conjunto robusto de funciones en segundo plano para c
 
 ### 🔐 Detección de Presencia de Doble Factor (CSI + BLE)
 El sistema emplea un mecanismo de autenticación de doble capa altamente personalizado para detectar presencia y validar la identidad antes de despertar al asistente:
-- **Wi-Fi CSI (Movimiento)**: Un segundo ESP32-S3 actúa como 'beacon' (baliza), recopilando continuamente datos de Información de Estado del Canal (CSI). Estos datos alimentan un modelo de aprendizaje automático entrenado mediante **Edge Impulse** (ubicado en `components/edge_impulse`) para detectar de manera confiable el movimiento humano, funcionando como un radar invisible.
+- **Wi-Fi CSI DSP (Movimiento)**: Un segundo ESP32-S3 actúa como baliza de radar y captura bloques LTF HT20 completos (`128` bytes, `64` subportadoras complejas). El firmware enmascara subportadoras ruidosas de borde y DC, realiza saneamiento/limpieza de fase eliminando deriva de reloj y CFO mediante ajuste lineal de mínimos cuadrados ponderados, y dispara eventos de movimiento de forma determinista usando métricas normalizadas de Caída de Correlación y Energía de Fase.
 - **Proximidad BLE (Identidad)**: Una aplicación de smartphone personalizada llamada **"Nexus"** opera como un servicio en segundo plano ininterrumpible, convirtiendo el teléfono en una llave digital invisible. Transmite continuamente un UUID secreto a través de BLE, incluso cuando el teléfono está bloqueado o en reposo. Cuando el ESP32 principal detecta este UUID específico cerca, confirma la identidad del propietario.
 
-*En resumen: El modelo CSI detecta que **alguien** está allí, y la baliza BLE Nexus confirma que eres **tú**.*
+*En resumen: el radar CSI DSP detecta que **alguien se movió**, y la baliza BLE Nexus confirma que eres **tú**.*
 
 ---
 
@@ -172,15 +172,15 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_demo/main
- ├── webrtc.c              # Integración de WebRTC y manejo de eventos
- ├── assistants_manager.c  # Tareas pesadas JSON/HTTPS para el asistente
- ├── media_sys.c           # Captura/reproducción de audio y control de tuberías
- ├── ptt_handler.c         # Lógica de botón presionar para hablar / alternar
- ├── ui.c                  # Renderizado de LCD, mapeo de caracteres y sanitización
- ├── ble_client.c          # Lógica de central BLE para aprovisionamiento WiFi
- ├── openai_app.c          # Orquestación de alto nivel y conexión de tareas
- ├── codec_init.c          # Funciones auxiliares de inicialización I2C / Códec
- └── components/           # Componentes y librerías adicionales
+ ├── audio/                # Captura/reproducción de audio, tuberías y silencio
+ ├── ble/                  # Lógica BLE central y aprovisionamiento
+ ├── config/               # Gestor de ajustes y configuración NVS
+ ├── core/                 # Aplicación principal y orquestación de alto nivel
+ ├── hardware/             # Códec/I2C, botón y periféricos de placa
+ ├── openai/               # Asistentes, búsqueda web y señalización Realtime
+ ├── sensing/              # Detección de movimiento CSI con DSP puro
+ ├── ui/                   # Renderizado LCD, mapeo de caracteres y UI
+ └── webrtc/               # Integración WebRTC y manejo de eventos
 ```
 
 ---
