@@ -4,7 +4,7 @@
 
 Un framework WebRTC avanzado y rico en funciones para ESP32, optimizado específicamente para comunicación con IA en tiempo real. Este proyecto está construido sobre la base de [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) y la expande con muchas más funcionalidades, comportamientos proactivos e integraciones personalizadas.
 
-**Dr. SimiBot** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra captura y reproducción de audio de baja latencia, transmisión WebRTC, aprovisionamiento vía BLE, reconexión automática de WiFi y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
+**Dr. SimiBot** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra detección de presencia de doble factor (radar Wi-Fi CSI + BLE), captura y reproducción de audio de baja latencia, transmisión WebRTC, aprovisionamiento vía BLE, reconexión automática de WiFi y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
 
 Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascota mexicana *Doctor Simi*. El asistente está diseñado para ser amigable, conciso y divertido, y también para comportarse de manera sensata cuando se le pide que guarde silencio — manteniendo la sesión activa y comunicándose mediante texto en la pantalla cuando es necesario.
 
