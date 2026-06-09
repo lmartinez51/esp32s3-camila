@@ -36,6 +36,8 @@ El sistema emplea un mecanismo de autenticación de doble capa altamente persona
 
 *En resumen: el radar CSI DSP detecta que **alguien se movió**, y la baliza BLE Nexus confirma que eres **tú**.*
 
+- **🚨 Alerta de Intruso (Alert Dispatcher)**: Si el radar CSI DSP detecta movimiento físico pero la baliza BLE Nexus autorizada **NO** está presente para validar tu identidad, el sistema registra inmediatamente un intento de acceso no autorizado. El `alert_dispatcher` entonces dispara un evento de alerta, notificándote (o a la sesión WebRTC/OpenAI) que se detectó una presencia no reconocida.
+
 ---
 
 ## 🧬 Arquitectura del Sistema
@@ -172,6 +174,7 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_demo/main
+ ├── alert/                # Despachador de alertas de movimiento CSI
  ├── audio/                # Captura/reproducción de audio, tuberías y silencio
  ├── ble/                  # Lógica BLE central y aprovisionamiento
  ├── config/               # Gestor de ajustes y configuración NVS

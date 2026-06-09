@@ -40,6 +40,8 @@ The system employs a highly customized, dual-layer authentication mechanism to d
 
 *In short: the CSI DSP radar detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
 
+- **🚨 Intruder Alert (Alert Dispatcher)**: If the CSI DSP radar detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
+
 ---
 
 ## 🧬 System Architecture
