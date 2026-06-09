@@ -308,6 +308,9 @@ static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *er
 static bool is_service_in_known_profiles(const ble_uuid_t *uuid, int *out_profile_index);                      // Verifica si el servicio está en perfiles conocidos
 static bool is_characteristic_in_known_profiles(const ble_uuid_t *uuid, int profile_index);                    // Verifica si la característica está en perfiles conocidos
 static void mark_device_as_error_and_disconnect(ble_device_info_t *device);                                    // Marca dispositivo como error y desconecta
+static bool ble_device_gap_discovery_active(void);
+static void ble_device_drain_scan_complete_signal(void);
+static esp_err_t ble_device_cancel_scan_and_wait(uint32_t timeout_ms);
 static void schedule_stop_scan(void);                                                                          // Programa parada de escaneo desde la tarea worker
 static void ble_control_worker_task(void *p);                                                                  // Tarea worker para operaciones BLE
 static esp_err_t ble_control_worker_init(void);                                                                // Inicializa la tarea worker y su cola
@@ -530,6 +533,76 @@ static void ble_control_worker_deinit(void)
     }
 }
 
+static bool ble_device_gap_discovery_active(void)
+{
+    return ble_common_is_synced() && ble_gap_disc_active();
+}
+
+static void ble_device_drain_scan_complete_signal(void)
+{
+    if (scan_complete_semaphore == NULL)
+    {
+        return;
+    }
+
+    while (xSemaphoreTake(scan_complete_semaphore, 0) == pdTRUE)
+    {
+        /* Drain stale completion signals before starting or cancelling a scan. */
+    }
+}
+
+static esp_err_t ble_device_cancel_scan_and_wait(uint32_t timeout_ms)
+{
+    const uint32_t wait_ms = (timeout_ms == 0) ? 1000 : timeout_ms;
+
+    if (!scanning_active && !ble_device_gap_discovery_active())
+    {
+        return ESP_OK;
+    }
+
+    ble_device_drain_scan_complete_signal();
+
+    int rc = ble_gap_disc_cancel();
+    if (rc != 0)
+    {
+        if (!ble_device_gap_discovery_active())
+        {
+            scanning_active = false;
+            ESP_LOGI(TAG, "GAP discovery already idle during scan cancel (rc=%d)", rc);
+            if (scan_complete_semaphore != NULL)
+            {
+                xSemaphoreGive(scan_complete_semaphore);
+            }
+            return ESP_OK;
+        }
+
+        ESP_LOGE(TAG, "ble_gap_disc_cancel() failed while GAP is still active: %d", rc);
+        return ESP_FAIL;
+    }
+
+    if (scan_complete_semaphore != NULL &&
+        xSemaphoreTake(scan_complete_semaphore, pdMS_TO_TICKS(wait_ms)) == pdTRUE)
+    {
+        scanning_active = false;
+        ESP_LOGI(TAG, "GAP discovery cancel acknowledged by DISC_COMPLETE");
+        return ESP_OK;
+    }
+
+    if (!ble_device_gap_discovery_active())
+    {
+        scanning_active = false;
+        ESP_LOGI(TAG, "GAP discovery cancel completed; stack reports scanner idle");
+        if (scan_complete_semaphore != NULL)
+        {
+            xSemaphoreGive(scan_complete_semaphore);
+        }
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "Timed out waiting for GAP discovery cancellation acknowledgement");
+    return ESP_ERR_TIMEOUT;
+}
+
 static esp_err_t ble_device_stop_persistent_tasks(uint32_t timeout_ms)
 {
     esp_err_t result = ESP_OK;
@@ -540,12 +613,11 @@ static esp_err_t ble_device_stop_persistent_tasks(uint32_t timeout_ms)
 
     if (scanning_active)
     {
-        ble_device_stop_scan();
-    }
-
-    if (scan_complete_semaphore != NULL)
-    {
-        xSemaphoreGive(scan_complete_semaphore);
+        esp_err_t stop_err = ble_device_stop_scan();
+        if (stop_err != ESP_OK)
+        {
+            result = stop_err;
+        }
     }
 
     if (smart_ble_task_handle != NULL)
@@ -801,6 +873,36 @@ static void ble_device_control_reset_runtime_state(void)
     scanning_active = false;
     smart_discovery_enabled = false;
     smart_discovery_running = false;
+}
+
+static bool ble_device_full_release_already_off(void)
+{
+    const bool runtime_resources_released =
+        !ble_runtime_resources_ready &&
+        smart_ble_task_handle == NULL &&
+        smart_task_start_signal == NULL &&
+        smart_task_idle_signal == NULL &&
+        scan_complete_semaphore == NULL &&
+        identity_validation_mutex == NULL &&
+        devices_mutex == NULL &&
+        ble_control_queue == NULL &&
+        ble_control_worker_handle == NULL &&
+        ble_control_worker_stop_signal == NULL;
+
+    const bool device_runtime_idle =
+        !module_initialized &&
+        !smart_discovery_enabled &&
+        !smart_discovery_running &&
+        !scanning_active;
+
+    const bool common_released =
+        !ble_common_is_started() &&
+        ble_common_get_owner() == BLE_COMMON_ROLE_NONE &&
+        ble_common_get_state() == BLE_COMMON_STATE_UNINITIALIZED;
+
+    return runtime_resources_released &&
+           device_runtime_idle &&
+           common_released;
 }
 
 static void schedule_mark_error_and_disconnect(const uint8_t addr[6])
@@ -1212,11 +1314,11 @@ void ble_device_control_stop(void)
 
     if (scanning_active)
     {
-        ble_device_stop_scan();
-    }
-    if (scan_complete_semaphore != NULL)
-    {
-        xSemaphoreGive(scan_complete_semaphore);
+        esp_err_t stop_err = ble_device_stop_scan();
+        if (stop_err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Scan stop during control stop failed: %s", esp_err_to_name(stop_err));
+        }
     }
 
     ble_device_stop_smart_task();
@@ -1250,6 +1352,14 @@ void ble_device_control_stop(void)
 esp_err_t ble_device_full_release(uint32_t timeout_ms)
 {
     const uint32_t wait_ms = (timeout_ms == 0) ? 5000 : timeout_ms;
+
+    if (ble_device_full_release_already_off())
+    {
+        module_stopping = false;
+        smart_task_shutdown_requested = false;
+        ESP_LOGD(TAG, "BLE full release ignored; stack and runtime already stopped");
+        return ESP_OK;
+    }
 
     ESP_LOGI(TAG, "Iniciando liberacion completa de BLE para handover de audio (%lu ms)", wait_ms);
     ble_log_memory_snapshot("full_release:entry");
@@ -1350,37 +1460,20 @@ esp_err_t ble_device_start_scan(uint32_t timeout_ms)
 esp_err_t ble_device_stop_scan(void)
 {
     // Si no hay escaneo activo, devolvemos OK (idempotente)
-    if (!scanning_active)
+    if (!scanning_active && !ble_device_gap_discovery_active())
     {
         ESP_LOGD(TAG, "ble_device_stop_scan(): no había escaneo activo");
         return ESP_OK;
     }
 
-    // Intentamos cancelar al stack
-    int rc = ble_gap_disc_cancel();
-    if (rc != 0 && rc != BLE_HS_EALREADY)
+    esp_err_t err = ble_device_cancel_scan_and_wait(1000);
+    if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "ble_gap_disc_cancel() devolvió %d — forzando estado local", rc);
-        // No retornamos FAIL todavía; forzamos limpieza local para evitar lock
+        ESP_LOGE(TAG, "Escaneo no pudo detenerse limpiamente: %s", esp_err_to_name(err));
+        return err;
     }
 
-    // Forzamos la bandera a false aquí: aunque NimBLE pueda eventualmente enviar evento,
-    // nosotros liberamos la semántica de "no estamos escaneando" para la lógica de alto nivel.
-    scanning_active = false;
-
-    ESP_LOGI(TAG, "Escaneo detenido (requested cancel, rc=%d).", rc);
-
-    // Si alguien está esperando el semáforo de finalización, despéjalo para evitar bloqueos
-    if (scan_complete_semaphore != NULL)
-    {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        if (xSemaphoreGive(scan_complete_semaphore) == pdTRUE)
-        {
-            ESP_LOGD(TAG, "scan_complete_semaphore liberado para desbloquear esperas.");
-        }
-        (void)xHigherPriorityTaskWoken;
-    }
-
+    ESP_LOGI(TAG, "Escaneo detenido; GAP discovery idle.");
     return ESP_OK;
 }
 
@@ -2734,12 +2827,18 @@ static void ble_identity_validation_cancel_scan_early(void)
         return;
     }
 
-    ESP_LOGW(TAG, "Identity early-exit cancel returned %d; forcing validation wakeup", rc);
-    scanning_active = false;
-    if (scan_complete_semaphore != NULL)
+    if (!ble_device_gap_discovery_active())
     {
-        xSemaphoreGive(scan_complete_semaphore);
+        ESP_LOGI(TAG, "Identity early-exit cancel returned %d; GAP already idle", rc);
+        scanning_active = false;
+        if (scan_complete_semaphore != NULL)
+        {
+            xSemaphoreGive(scan_complete_semaphore);
+        }
+        return;
     }
+
+    ESP_LOGW(TAG, "Identity early-exit cancel returned %d while GAP remains active", rc);
 }
 
 static int ble_gap_identity_validation_event_handler(struct ble_gap_event *event, void *arg)
@@ -2844,19 +2943,13 @@ static void ble_device_run_identity_validation(void)
 
     ble_identity_validation_reset(timeout_ms);
 
-    if (scan_complete_semaphore != NULL)
-    {
-        while (xSemaphoreTake(scan_complete_semaphore, 0) == pdTRUE)
-        {
-            /* Drain stale completion signals. */
-        }
-    }
+    ble_device_drain_scan_complete_signal();
 
     esp_err_t err = ble_device_start_identity_scan(timeout_ms);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Identity validation scan failed to start: %s", esp_err_to_name(err));
-        orchestrator_post_event(ORCH_EVENT_IDENTITY_REJECTED);
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
         ble_common_release(BLE_COMMON_ROLE_CENTRAL_DIAGNOSTIC);
         return;
     }
@@ -2899,6 +2992,49 @@ static void ble_device_run_identity_validation(void)
     ble_common_release(BLE_COMMON_ROLE_CENTRAL_DIAGNOSTIC);
 }
 
+esp_err_t ble_device_prepare_for_identity_scan(uint32_t timeout_ms)
+{
+    if (!module_initialized || module_stopping)
+    {
+        ESP_LOGE(TAG, "Identity scan prepare rejected; BLE module is not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (ble_common_get_owner() != BLE_COMMON_ROLE_CENTRAL_DIAGNOSTIC)
+    {
+        ESP_LOGE(TAG, "Identity scan prepare rejected; central role is not owned");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (smart_ble_task_handle == NULL ||
+        smart_task_start_signal == NULL ||
+        smart_task_idle_signal == NULL)
+    {
+        ESP_LOGE(TAG, "Identity scan prepare rejected; smart BLE task resources are not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (smart_discovery_running || smart_discovery_enabled)
+    {
+        ESP_LOGE(TAG, "Identity scan prepare rejected; smart BLE task is active");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (scanning_active || ble_device_gap_discovery_active())
+    {
+        ESP_LOGW(TAG, "Identity scan prepare found active GAP discovery; cancelling before validation");
+        esp_err_t err = ble_device_cancel_scan_and_wait(timeout_ms);
+        if (err != ESP_OK)
+        {
+            return err;
+        }
+    }
+
+    ble_device_drain_scan_complete_signal();
+    ESP_LOGI(TAG, "Identity scan prepare complete; GAP discovery idle");
+    return ESP_OK;
+}
+
 esp_err_t ble_device_start_identity_validation(uint32_t timeout_ms)
 {
     if (timeout_ms == 0)
@@ -2930,6 +3066,14 @@ esp_err_t ble_device_start_identity_validation(uint32_t timeout_ms)
     {
         ESP_LOGW(TAG, "Identity validation rejected; smart BLE task is already active");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t prepare_err = ble_device_prepare_for_identity_scan(1000);
+    if (prepare_err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Identity validation rejected; BLE GAP not ready: %s",
+                 esp_err_to_name(prepare_err));
+        return prepare_err;
     }
 
     ble_identity_validation_reset(timeout_ms);
@@ -3610,12 +3754,11 @@ esp_err_t ble_device_stop_smart_task(void)
 
     if (scanning_active)
     {
-        ble_device_stop_scan();
-    }
-
-    if (scan_complete_semaphore != NULL)
-    {
-        xSemaphoreGive(scan_complete_semaphore);
+        esp_err_t stop_err = ble_device_stop_scan();
+        if (stop_err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Scan stop during smart task stop failed: %s", esp_err_to_name(stop_err));
+        }
     }
 
     if (smart_task_start_signal != NULL)

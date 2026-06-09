@@ -303,6 +303,8 @@ extern "C"
      */
     esp_err_t ble_device_start_identity_validation(uint32_t timeout_ms);
 
+    esp_err_t ble_device_prepare_for_identity_scan(uint32_t timeout_ms);
+
     esp_err_t ble_device_full_release(uint32_t timeout_ms);
 
     /**

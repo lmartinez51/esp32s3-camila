@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "https_client.h"
 #include "common.h"
 #include "esp_log.h"
@@ -34,6 +35,7 @@ typedef struct
     esp_peer_signaling_cfg_t cfg;
     uint8_t *remote_sdp;
     int remote_sdp_size;
+    bool stopping;
 } openai_signaling_t;
 
 static char *build_realtime_call_body(const char *sdp, size_t sdp_len)
@@ -89,6 +91,10 @@ static int openai_signaling_start(esp_peer_signaling_cfg_t *cfg, esp_peer_signal
 static void openai_sdp_answer(http_resp_t *resp, void *ctx)
 {
     openai_signaling_t *sig = (openai_signaling_t *)ctx;
+    if (sig == NULL || sig->stopping)
+    {
+        return;
+    }
     // ============================================================================
     // DETECCIÓN DE ERROR 401/403 - SOLUCIÓN DEFINITIVA
     // ============================================================================
@@ -155,6 +161,11 @@ static void openai_sdp_answer(http_resp_t *resp, void *ctx)
 static int openai_signaling_send_msg(esp_peer_signaling_handle_t h, esp_peer_signaling_msg_t *msg)
 {
     openai_signaling_t *sig = (openai_signaling_t *)h;
+    if (sig == NULL || msg == NULL || sig->stopping)
+    {
+        return 0;
+    }
+
     if (msg->type == ESP_PEER_SIGNALING_MSG_BYE)
     {
     }
@@ -180,6 +191,10 @@ static int openai_signaling_send_msg(esp_peer_signaling_handle_t h, esp_peer_sig
 
         int ret = https_post(OPENAI_REALTIME_URL, header, body, openai_sdp_answer, h);
         free(body);
+        if (sig->stopping)
+        {
+            return 0;
+        }
         if (ret != 0 || sig->remote_sdp == NULL)
         {
             ESP_LOGE(TAG, "Fail to post data to %s", OPENAI_REALTIME_URL);
@@ -206,7 +221,11 @@ static int openai_signaling_send_msg(esp_peer_signaling_handle_t h, esp_peer_sig
 static int openai_signaling_stop(esp_peer_signaling_handle_t h)
 {
     openai_signaling_t *sig = (openai_signaling_t *)h;
-    sig->cfg.on_close(sig->cfg.ctx);
+    if (sig == NULL)
+    {
+        return 0;
+    }
+    sig->stopping = true;
     SAFE_FREE(sig->remote_sdp);
     SAFE_FREE(sig);
     return 0;

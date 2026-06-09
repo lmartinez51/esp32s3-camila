@@ -268,6 +268,7 @@ extern "C"
         bool data_channel_stream_id_valid;
         uint16_t data_channel_stream_id;
         bool running;
+        bool closing;
         bool pause;
         media_lib_event_grp_handle_t wait_event;
         esp_webrtc_event_handler_t event_handler;

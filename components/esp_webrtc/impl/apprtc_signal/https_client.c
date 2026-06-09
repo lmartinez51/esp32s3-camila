@@ -31,6 +31,7 @@
 #include "esp_http_client.h"
 
 static const char *TAG = "HTTPS_CLIENT";
+#define HTTPS_CLIENT_TIMEOUT_MS 5000
 
 typedef struct {
     http_body_t body;
@@ -111,6 +112,7 @@ int https_send_request(const char *method, char **headers, const char *url, char
         .event_handler = _http_event_handler,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .user_data = &info,
+        .timeout_ms = HTTPS_CLIENT_TIMEOUT_MS,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {

@@ -176,6 +176,7 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_demo/main
+ ├── alert/                # CSI drop/motion alert dispatcher
  ├── audio/                # Audio capture/playback, pipeline control, and mute logic
  ├── ble/                  # BLE central logic and provisioning
  ├── config/               # Settings manager, NVS setup

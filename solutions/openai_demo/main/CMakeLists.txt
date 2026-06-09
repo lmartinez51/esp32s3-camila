@@ -10,6 +10,8 @@ idf_component_register(
         "audio/media_sys.c"
         "audio/mute_handler.c"
 
+        "alert/alert_dispatcher.c"
+
         "ble/ble_common.c"
         "ble/ble_config.c"
         "ble/ble_device_callbacks.c"
@@ -34,6 +36,7 @@ idf_component_register(
         "config"
         "hardware"
         "audio"
+        "alert"
         "ble"
         "ui"
         "webrtc"

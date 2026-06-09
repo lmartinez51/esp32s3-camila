@@ -270,6 +270,23 @@ static int pc_on_state(esp_peer_state_t state, void *ctx)
         rtc->peer_state = state;
     }
 
+    if (rtc->closing)
+    {
+        if (state == ESP_PEER_STATE_DISCONNECTED ||
+            state == ESP_PEER_STATE_DATA_CHANNEL_CLOSED ||
+            state == ESP_PEER_STATE_DATA_CHANNEL_DISCONNECTED)
+        {
+            pc_mark_data_channel_closed(rtc);
+        }
+        if (state == ESP_PEER_STATE_DISCONNECTED ||
+            state == ESP_PEER_STATE_CONNECT_FAILED)
+        {
+            stop_stream(rtc);
+        }
+        ESP_LOGD(TAG, "Suppressing peer state %d during local WebRTC close", state);
+        return 0;
+    }
+
     if (state == ESP_PEER_STATE_CONNECTED)
     {
         start_stream(rtc);
@@ -307,6 +324,11 @@ static int pc_on_state(esp_peer_state_t state, void *ctx)
 static int pc_on_msg(esp_peer_msg_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing || rtc->signaling == NULL)
+    {
+        ESP_LOGD(TAG, "Suppressing local SDP send during WebRTC close");
+        return ESP_PEER_ERR_NONE;
+    }
     ESP_LOGD(TAG, "Send client sdp: %s\n", info->data);
     return esp_peer_signaling_send_msg(rtc->signaling, (esp_peer_signaling_msg_t *)info);
 }
@@ -353,6 +375,10 @@ static void convert_dec_vid_info(esp_peer_video_stream_info_t *info, av_render_v
 static int pc_on_video_info(esp_peer_video_stream_info_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return 0;
+    }
     av_render_video_info_t video_info = {};
     convert_dec_vid_info(info, &video_info);
     av_render_add_video_stream(rtc->play_handle, &video_info);
@@ -393,6 +419,10 @@ static void convert_dec_aud_info(esp_peer_audio_stream_info_t *info, av_render_a
 static int pc_on_audio_info(esp_peer_audio_stream_info_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return 0;
+    }
     rtc->recv_aud_info = *info;
     av_render_audio_info_t audio_info = {};
     convert_dec_aud_info(info, &audio_info);
@@ -405,7 +435,7 @@ static int pc_on_audio_info(esp_peer_audio_stream_info_t *info, void *ctx)
 static int pc_on_audio_data(esp_peer_audio_frame_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
-    if (rtc->running == false || rtc->recv_aud_info.codec == ESP_PEER_AUDIO_CODEC_NONE)
+    if (rtc->closing || rtc->running == false || rtc->recv_aud_info.codec == ESP_PEER_AUDIO_CODEC_NONE)
     {
         return 0;
     }
@@ -429,7 +459,7 @@ static int pc_on_audio_data(esp_peer_audio_frame_t *info, void *ctx)
 static int pc_on_video_data(esp_peer_video_frame_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
-    if (rtc->running == false)
+    if (rtc->closing || rtc->running == false)
     {
         return 0;
     }
@@ -447,6 +477,10 @@ static int pc_on_video_data(esp_peer_video_frame_t *info, void *ctx)
 static int pc_on_data(esp_peer_data_frame_t *frame, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return 0;
+    }
     // Notify custom data over data channel
     if (rtc->rtc_cfg.peer_cfg.video_over_data_channel == false)
     {
@@ -478,6 +512,10 @@ static int pc_on_data(esp_peer_data_frame_t *frame, void *ctx)
 static int pc_on_channel_open(esp_peer_data_channel_info_t *ch, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return 0;
+    }
     ESP_LOGD(TAG, "Data channel callback open: label=%s stream_id=%u",
              ch && ch->label ? ch->label : "-", ch ? ch->stream_id : 0);
     pc_mark_data_channel_open(rtc, ch);
@@ -583,7 +621,7 @@ static int pc_close(webrtc_t *rtc)
 {
     if (rtc->pc)
     {
-        esp_peer_disconnect(rtc->pc);
+        rtc->closing = true;
         bool still_running = rtc->running;
         // Wait for PC task quit
         if (rtc->pause)
@@ -596,6 +634,7 @@ static int pc_close(webrtc_t *rtc)
         {
             WAIT_FOR_BITS(PC_EXIT_BIT);
         }
+        esp_peer_disconnect(rtc->pc);
         esp_peer_close(rtc->pc);
         rtc->pc = NULL;
     }
@@ -620,6 +659,7 @@ static int pc_start(webrtc_t *rtc, esp_peer_ice_server_cfg_t *server_info, int s
         .ice_trans_policy = rtc->rtc_cfg.peer_cfg.ice_trans_policy,
         .audio_dir = rtc->rtc_cfg.peer_cfg.audio_dir,
         .video_dir = rtc->rtc_cfg.peer_cfg.video_dir,
+        .no_auto_reconnect = rtc->rtc_cfg.peer_cfg.no_auto_reconnect,
         .enable_data_channel = rtc->rtc_cfg.peer_cfg.enable_data_channel,
         .manual_ch_create = rtc->rtc_cfg.peer_cfg.enable_data_channel,
         .extra_cfg = rtc->rtc_cfg.peer_cfg.extra_cfg,
@@ -690,6 +730,10 @@ static int pc_start(webrtc_t *rtc, esp_peer_ice_server_cfg_t *server_info, int s
 
 static int start_peer_connection(webrtc_t *rtc, esp_peer_signaling_ice_info_t *info)
 {
+    if (rtc->closing)
+    {
+        return ESP_PEER_ERR_NONE;
+    }
     rtc->ice_role = info->is_initiator ? ESP_PEER_ROLE_CONTROLLING : ESP_PEER_ROLE_CONTROLLED;
     int ret;
     if (info->server_info.stun_url)
@@ -706,6 +750,10 @@ static int start_peer_connection(webrtc_t *rtc, esp_peer_signaling_ice_info_t *i
 static int signal_ice_received(esp_peer_signaling_ice_info_t *info, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return ESP_PEER_ERR_NONE;
+    }
     rtc->ice_info_loaded = true;
     rtc->ice_info = *info;
     if (rtc->pending_connect)
@@ -720,6 +768,10 @@ static int signal_connected(void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
     rtc->signaling_connected = true;
+    if (rtc->closing)
+    {
+        return 0;
+    }
     if (rtc->rtc_cfg.peer_cfg.no_auto_reconnect && rtc->pending_connect)
     {
         printf("Signaling connected, pending for use not enable\n");
@@ -736,6 +788,10 @@ static int signal_connected(void *ctx)
 static int signal_new_msg(esp_peer_signaling_msg_t *msg, void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
+    if (rtc->closing)
+    {
+        return ESP_PEER_ERR_NONE;
+    }
     if (msg->type == ESP_PEER_SIGNALING_MSG_BYE)
     {
         ESP_LOGI(TAG, "Received BYE");
@@ -755,12 +811,12 @@ static int signal_new_msg(esp_peer_signaling_msg_t *msg, void *ctx)
             {
                 // Reconnect
                 ret = esp_peer_new_connection(rtc->pc);
-                if (rtc->pause)
-                {
-                    // resume main loop
-                    rtc->pause = false;
-                    SET_WAIT_BITS(PC_RESUME_BIT);
-                }
+            }
+            if (rtc->pause)
+            {
+                // resume main loop
+                rtc->pause = false;
+                SET_WAIT_BITS(PC_RESUME_BIT);
             }
         }
         return ret;
@@ -798,6 +854,10 @@ static int signal_closed(void *ctx)
 {
     webrtc_t *rtc = (webrtc_t *)ctx;
     rtc->signaling_connected = false;
+    if (rtc->closing || rtc->pc == NULL)
+    {
+        return 0;
+    }
     // TODO disconnect if peer closed
     esp_peer_disconnect(rtc->pc);
     return 0;
@@ -830,6 +890,10 @@ int esp_webrtc_enable_peer_connection(esp_webrtc_handle_t handle, bool enable)
         return ESP_PEER_ERR_INVALID_ARG;
     }
     webrtc_t *rtc = (webrtc_t *)handle;
+    if (rtc->closing && enable)
+    {
+        return ESP_PEER_ERR_WRONG_STATE;
+    }
     rtc->pending_connect = !enable;
     int ret = ESP_PEER_ERR_NONE;
     if (rtc->pending_connect == false)
@@ -866,6 +930,7 @@ int esp_webrtc_enable_peer_connection(esp_webrtc_handle_t handle, bool enable)
     }
     else
     {
+        rtc->closing = true;
         // Close connection better than reconnect?
         rtc->recv_vid_info.codec = ESP_PEER_VIDEO_CODEC_NONE;
         stop_stream(rtc);
@@ -913,6 +978,7 @@ int esp_webrtc_start(esp_webrtc_handle_t handle)
     }
 
     // Start signaling firstly
+    rtc->closing = false;
     esp_peer_signaling_cfg_t sig_cfg = {
         .signal_url = rtc->rtc_cfg.signaling_cfg.signal_url,
         .extra_cfg = rtc->rtc_cfg.signaling_cfg.extra_cfg,
@@ -938,6 +1004,10 @@ int esp_webrtc_send_custom_data(esp_webrtc_handle_t handle, esp_webrtc_custom_da
         return ESP_PEER_ERR_INVALID_ARG;
     }
     webrtc_t *rtc = (webrtc_t *)handle;
+    if (rtc->closing)
+    {
+        return ESP_PEER_ERR_WRONG_STATE;
+    }
     if (via == ESP_WEBRTC_CUSTOM_DATA_VIA_SIGNALING)
     {
         esp_peer_signaling_msg_t msg = {
@@ -1045,6 +1115,7 @@ int esp_webrtc_stop(esp_webrtc_handle_t handle)
     }
     webrtc_t *rtc = (webrtc_t *)handle;
     int ret = 0;
+    rtc->closing = true;
     stop_stream(rtc);
     // TODO stop agent
     pc_close(rtc);

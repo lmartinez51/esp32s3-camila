@@ -2,6 +2,7 @@
 
 #include "ble_config.h"
 #include "esp_log.h"
+#include "freertos/task.h"
 #include "host/ble_hs.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -14,17 +15,44 @@ static SemaphoreHandle_t sync_semaphore = NULL;
 static SemaphoreHandle_t host_stop_semaphore = NULL;
 
 static bool s_ble_common_configured = false;
+static bool s_ble_port_initialized = false;
+static bool s_ble_host_task_active = false;
 static bool s_ble_host_start_requested = false;
 static bool s_ble_host_started = false;
 static bool s_ble_provisioning_services_registered = false;
+static uint32_t s_ble_host_start_generation = 0;
+static uint32_t s_ble_host_sync_generation = 0;
 
 static ble_common_state_t s_ble_state = BLE_COMMON_STATE_UNINITIALIZED;
 static ble_common_role_t s_ble_owner = BLE_COMMON_ROLE_NONE;
+
+static bool ble_common_has_fresh_sync(void)
+{
+    return s_ble_host_task_active &&
+           s_ble_host_started &&
+           s_ble_host_start_generation != 0 &&
+           s_ble_host_sync_generation == s_ble_host_start_generation;
+}
+
+static void ble_common_mark_uninitialized(void)
+{
+    s_ble_host_started = false;
+    s_ble_host_start_requested = false;
+    s_ble_host_task_active = false;
+    s_ble_host_start_generation = 0;
+    s_ble_host_sync_generation = 0;
+    s_ble_common_configured = false;
+    s_ble_port_initialized = false;
+    s_ble_provisioning_services_registered = false;
+    s_ble_owner = BLE_COMMON_ROLE_NONE;
+    s_ble_state = BLE_COMMON_STATE_UNINITIALIZED;
+}
 
 static void ble_common_on_sync(void)
 {
     ESP_LOGI(TAG, "BLE host sincronizado");
     s_ble_host_started = true;
+    s_ble_host_sync_generation = s_ble_host_start_generation;
 
     if (s_ble_owner == BLE_COMMON_ROLE_NONE) {
         s_ble_state = BLE_COMMON_STATE_READY;
@@ -52,6 +80,7 @@ void nimble_host_task(void *param)
     ESP_LOGW(TAG, "NimBLE host task detenido");
     s_ble_host_started = false;
     s_ble_host_start_requested = false;
+    s_ble_host_sync_generation = 0;
     s_ble_common_configured = false;
     s_ble_provisioning_services_registered = false;
     s_ble_owner = BLE_COMMON_ROLE_NONE;
@@ -61,7 +90,9 @@ void nimble_host_task(void *param)
         xSemaphoreGive(host_stop_semaphore);
     }
 
-    nimble_port_freertos_deinit();
+    while (true) {
+        vTaskDelay(portMAX_DELAY);
+    }
 }
 
 esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
@@ -81,8 +112,13 @@ esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
         }
     }
 
-    if (s_ble_common_configured) {
+    if (s_ble_common_configured && s_ble_port_initialized) {
         return ESP_OK;
+    }
+
+    if (s_ble_common_configured && !s_ble_port_initialized) {
+        ESP_LOGW(TAG, "BLE common configured flag was stale; normalizing before init");
+        ble_common_mark_uninitialized();
     }
 
     s_ble_state = BLE_COMMON_STATE_INITIALIZING;
@@ -93,6 +129,7 @@ esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
         s_ble_state = BLE_COMMON_STATE_ERROR;
         return err;
     }
+    s_ble_port_initialized = true;
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
@@ -117,7 +154,7 @@ esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
 
     s_ble_common_configured = true;
-    s_ble_state = BLE_COMMON_STATE_READY;
+    s_ble_state = BLE_COMMON_STATE_INITIALIZING;
 
     ESP_LOGI(TAG, "BLE common configured; bonds preserved");
     return ESP_OK;
@@ -132,7 +169,7 @@ esp_err_t ble_common_ensure_ready(SemaphoreHandle_t ext_sync_semaphore,
     }
 
     if (register_provisioning_services && !s_ble_provisioning_services_registered) {
-        if (s_ble_host_start_requested || s_ble_host_started || ble_hs_synced()) {
+        if (s_ble_host_start_requested || s_ble_host_started || ble_common_has_fresh_sync()) {
             ESP_LOGE(TAG, "Cannot register provisioning services after NimBLE host start");
             return ESP_ERR_INVALID_STATE;
         }
@@ -148,15 +185,21 @@ esp_err_t ble_common_ensure_ready(SemaphoreHandle_t ext_sync_semaphore,
         ESP_LOGI(TAG, "Provisioning GATT services registered");
     }
 
-    if (ble_hs_synced()) {
-        s_ble_host_started = true;
+    if (ble_common_has_fresh_sync()) {
         return ESP_OK;
     }
 
     if (!s_ble_host_start_requested) {
         xSemaphoreTake(sync_semaphore, 0);
         xSemaphoreTake(host_stop_semaphore, 0);
+        s_ble_host_start_generation++;
+        if (s_ble_host_start_generation == 0) {
+            s_ble_host_start_generation = 1;
+        }
+        s_ble_host_sync_generation = 0;
+        s_ble_host_started = false;
         s_ble_host_start_requested = true;
+        s_ble_host_task_active = true;
         s_ble_state = BLE_COMMON_STATE_INITIALIZING;
         nimble_port_freertos_init(nimble_host_task);
     }
@@ -167,7 +210,12 @@ esp_err_t ble_common_ensure_ready(SemaphoreHandle_t ext_sync_semaphore,
         return ESP_ERR_TIMEOUT;
     }
 
-    s_ble_host_started = true;
+    if (!ble_common_has_fresh_sync()) {
+        ESP_LOGE(TAG, "BLE sync semaphore received without fresh host sync");
+        s_ble_state = BLE_COMMON_STATE_ERROR;
+        return ESP_ERR_INVALID_STATE;
+    }
+
     s_ble_state = BLE_COMMON_STATE_READY;
     return ESP_OK;
 }
@@ -175,13 +223,26 @@ esp_err_t ble_common_ensure_ready(SemaphoreHandle_t ext_sync_semaphore,
 esp_err_t ble_common_deinit(uint32_t timeout_ms)
 {
     esp_err_t deinit_err = ESP_OK;
-    bool wait_for_host_stop = false;
+    const uint32_t wait_ms = (timeout_ms == 0) ? BLE_COMMON_INIT_TIMEOUT_MS : timeout_ms;
 
-    if (!s_ble_common_configured &&
+    if (!s_ble_port_initialized &&
+        !s_ble_host_task_active &&
+        !s_ble_common_configured &&
         !s_ble_host_start_requested &&
-        !s_ble_host_started &&
-        !ble_hs_synced())
+        !s_ble_host_started)
     {
+        ble_common_mark_uninitialized();
+        ESP_LOGD(TAG, "BLE common deinit ignored; stack already uninitialized");
+        return ESP_OK;
+    }
+
+    if (!s_ble_port_initialized) {
+        ESP_LOGI(TAG, "BLE common deinit ignored; NimBLE port already deinitialized");
+        ble_common_mark_uninitialized();
+        if (host_stop_semaphore != NULL) {
+            vSemaphoreDelete(host_stop_semaphore);
+            host_stop_semaphore = NULL;
+        }
         return ESP_OK;
     }
 
@@ -189,25 +250,43 @@ esp_err_t ble_common_deinit(uint32_t timeout_ms)
     s_ble_state = BLE_COMMON_STATE_STOPPING;
     s_ble_owner = BLE_COMMON_ROLE_NONE;
 
-    if (host_stop_semaphore != NULL) {
-        xSemaphoreTake(host_stop_semaphore, 0);
-    }
+    if (s_ble_host_task_active || s_ble_host_start_requested) {
+        if (host_stop_semaphore != NULL) {
+            xSemaphoreTake(host_stop_semaphore, 0);
+        }
 
-    if (s_ble_host_start_requested || s_ble_host_started || ble_hs_synced()) {
         int stop_rc = nimble_port_stop();
         if (stop_rc != 0) {
-            ESP_LOGW(TAG, "nimble_port_stop returned %d", stop_rc);
-        } else {
-            wait_for_host_stop = true;
+            ESP_LOGE(TAG, "nimble_port_stop returned %d; refusing to deinit busy host", stop_rc);
+            s_ble_state = BLE_COMMON_STATE_ERROR;
+            return ESP_FAIL;
         }
+
+        if (host_stop_semaphore != NULL) {
+            if (xSemaphoreTake(host_stop_semaphore, pdMS_TO_TICKS(wait_ms)) != pdTRUE) {
+                ESP_LOGE(TAG, "Timeout waiting for NimBLE host task stop");
+                s_ble_state = BLE_COMMON_STATE_ERROR;
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+
+        nimble_port_freertos_deinit();
+        s_ble_host_task_active = false;
+        s_ble_host_start_requested = false;
+        s_ble_host_started = false;
+        s_ble_host_sync_generation = 0;
+    } else {
+        ESP_LOGD(TAG, "BLE host task is not active; skipping nimble_port_stop");
     }
 
-    if (wait_for_host_stop && host_stop_semaphore != NULL) {
-        if (xSemaphoreTake(host_stop_semaphore, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-            ESP_LOGE(TAG, "Timeout waiting for NimBLE host task stop");
-            s_ble_state = BLE_COMMON_STATE_ERROR;
-            return ESP_ERR_TIMEOUT;
+    if (!s_ble_port_initialized) {
+        ble_common_mark_uninitialized();
+        if (host_stop_semaphore != NULL) {
+            vSemaphoreDelete(host_stop_semaphore);
+            host_stop_semaphore = NULL;
         }
+        ESP_LOGI(TAG, "BLE common deinit complete; port was already down");
+        return ESP_OK;
     }
 
     deinit_err = nimble_port_deinit();
@@ -217,12 +296,7 @@ esp_err_t ble_common_deinit(uint32_t timeout_ms)
         return deinit_err;
     }
 
-    s_ble_host_started = false;
-    s_ble_host_start_requested = false;
-    s_ble_common_configured = false;
-    s_ble_provisioning_services_registered = false;
-    s_ble_owner = BLE_COMMON_ROLE_NONE;
-    s_ble_state = BLE_COMMON_STATE_UNINITIALIZED;
+    ble_common_mark_uninitialized();
 
     if (host_stop_semaphore != NULL) {
         vSemaphoreDelete(host_stop_semaphore);
@@ -289,12 +363,12 @@ void ble_common_release(ble_common_role_t role)
 
 bool ble_common_is_started(void)
 {
-    return s_ble_host_started || ble_hs_synced();
+    return s_ble_host_task_active || s_ble_host_start_requested || s_ble_host_started;
 }
 
 bool ble_common_is_synced(void)
 {
-    return ble_hs_synced();
+    return ble_common_has_fresh_sync();
 }
 
 bool ble_common_services_registered(void)

@@ -34,14 +34,22 @@ extern "C"
     */
    const esp_peer_signaling_impl_t *esp_signaling_get_openai_signaling(void);
 
+   typedef enum
+   {
+      WEBRTC_SESSION_MODE_FRIENDLY = 0,
+      WEBRTC_SESSION_MODE_VIGILANTE,
+   } webrtc_session_mode_t;
+
    /**
     * @brief  Start WebRTC
+    *
+    * @param[in]  mode  Session prompt/personality mode
     *
     * @return
     *      - 0       On success
     *      - Others  Fail to start
     */
-   int start_webrtc(void);
+   int start_webrtc(webrtc_session_mode_t mode);
 
    /**
     * @brief  Query WebRTC status

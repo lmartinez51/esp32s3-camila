@@ -14,6 +14,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "audio_render.h"
+#include <stdlib.h>
 
 #define RET_ON_NULL(ptr, v)                                        \
     do                                                             \
@@ -45,6 +47,75 @@ typedef struct
 
 static capture_system_t capture_sys;
 static player_system_t player_sys;
+
+void media_sys_teardown(void)
+{
+    if (capture_sys.capture_handle == NULL && player_sys.player == NULL &&
+        player_sys.audio_render == NULL && capture_sys.aud_enc == NULL &&
+        capture_sys.aud_src == NULL && capture_sys.path_if == NULL)
+    {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Tearing down media system");
+
+    if (capture_sys.capture_handle != NULL)
+    {
+        int ret = esp_capture_close(capture_sys.capture_handle);
+        if (ret != ESP_CAPTURE_ERR_OK)
+        {
+            ESP_LOGW(TAG, "esp_capture_close returned %d", ret);
+        }
+        capture_sys.capture_handle = NULL;
+        capture_sys.primary_path = NULL;
+    }
+    else
+    {
+        if (capture_sys.path_if != NULL && capture_sys.path_if->close != NULL)
+        {
+            capture_sys.path_if->close(capture_sys.path_if);
+        }
+        if (capture_sys.aud_src != NULL && capture_sys.aud_src->close != NULL)
+        {
+            capture_sys.aud_src->close(capture_sys.aud_src);
+        }
+    }
+
+    if (capture_sys.path_if != NULL)
+    {
+        free(capture_sys.path_if);
+        capture_sys.path_if = NULL;
+    }
+    if (capture_sys.aud_src != NULL)
+    {
+        free(capture_sys.aud_src);
+        capture_sys.aud_src = NULL;
+    }
+    if (capture_sys.aud_enc != NULL)
+    {
+        free(capture_sys.aud_enc);
+        capture_sys.aud_enc = NULL;
+    }
+    capture_sys.primary_path = NULL;
+    capture_sys.mic_muted = false;
+
+    if (player_sys.player != NULL)
+    {
+        int ret = av_render_close(player_sys.player);
+        if (ret != ESP_MEDIA_ERR_OK)
+        {
+            ESP_LOGW(TAG, "av_render_close returned %d", ret);
+        }
+        player_sys.player = NULL;
+    }
+    if (player_sys.audio_render != NULL)
+    {
+        audio_render_free_handle(player_sys.audio_render);
+        player_sys.audio_render = NULL;
+    }
+
+    ESP_LOGI(TAG, "Media system teardown complete");
+}
 
 static int build_capture_system(void)
 {
@@ -160,6 +231,7 @@ int media_sys_buildup(void)
     if (ret != 0)
     {
         ESP_LOGE(TAG, "Failed to build capture system: %d", ret);
+        media_sys_teardown();
         return ret;
     }
 
@@ -167,14 +239,7 @@ int media_sys_buildup(void)
     if (ret != 0)
     {
         ESP_LOGE(TAG, "Failed to build player system: %d", ret);
-
-        if (capture_sys.capture_handle != NULL)
-        {
-            esp_capture_close(capture_sys.capture_handle);
-            capture_sys.capture_handle = NULL;
-            capture_sys.primary_path = NULL;
-        }
-
+        media_sys_teardown();
         return ret;
     }
 
@@ -195,10 +260,10 @@ int media_sys_get_provider(esp_webrtc_media_provider_t *provide)
 }
 
 /**
- * @brief Activa o desactiva el micrófono (mute/unmute).
+ * @brief Turn on or off the microphone (mute/unmute).
  *
- * @param mute Si es `true`, silencia el micrófono. Si es `false`, lo reactiva.
- * @return int 0 si tiene éxito, -1 si hay error.
+ * @param mute If `true`, mutes the microphone. If `false`, unmutes it.
+ * @return int 0 if successful, -1 if there is an error.
  */
 bool media_sys_mic_mute(bool mute)
 {

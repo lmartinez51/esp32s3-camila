@@ -1,6 +1,8 @@
 #ifndef APP_EVENTS_H
 #define APP_EVENTS_H
 
+#include <stdint.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -27,6 +29,8 @@ typedef enum
     ORCH_EVENT_WIFI_CONNECTED = 0,
     ORCH_EVENT_WIFI_DISCONNECTED,
     ORCH_EVENT_MOTION_DETECTED,
+    ORCH_EVENT_BLE_READY,
+    ORCH_EVENT_BLE_BUSY,
     ORCH_EVENT_IDENTITY_PRESENT,
     ORCH_EVENT_IDENTITY_REJECTED,
     ORCH_EVENT_BLE_RELEASE_COMPLETE,
@@ -34,10 +38,23 @@ typedef enum
     ORCH_EVENT_WEBRTC_CONNECTED,
     ORCH_EVENT_WEBRTC_DISCONNECTED,
     ORCH_EVENT_WEBRTC_API_ERROR,
+    ORCH_EVENT_WEBRTC_STOPPED,
     ORCH_EVENT_AUTO_SLEEP_TIMEOUT,
+    ORCH_EVENT_ALERT_DISPATCH_COMPLETE,
+    ORCH_EVENT_ALERT_DISPATCH_FAILED,
+    ORCH_EVENT_VIGILANTE_ROOM_VACATED,
+    ORCH_EVENT_VIGILANTE_TIMEOUT,
 } orchestrator_event_t;
 
+typedef struct
+{
+    orchestrator_event_t type;
+    uint32_t timestamp_ms;
+    float corr_drop;
+} orchestrator_event_msg_t;
+
 void orchestrator_post_event(orchestrator_event_t event);
+void orchestrator_post_motion_detected(uint32_t timestamp_ms, float corr_drop);
 
 #ifdef __cplusplus
 }

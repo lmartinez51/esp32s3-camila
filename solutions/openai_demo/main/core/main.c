@@ -19,6 +19,8 @@
  */
 
 // Includes del sistema estándar
+#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <nvs_flash.h>
 // Includes de ESP-IDF
@@ -54,6 +56,8 @@
 #include "config_manager.h"
 #include "webrtc.h"
 #include "csi_handler.h"
+#include "ei_inference.h"
+#include "alert_dispatcher.h"
 
 EventGroupHandle_t app_startup_event_group;
 static const char *TAG = "MAIN";
@@ -65,20 +69,47 @@ static QueueHandle_t s_orchestrator_event_queue = NULL;
 #define BLE_RELEASE_TIMEOUT_MS 5000
 #define AUTO_SLEEP_TIMEOUT_MS (5 * 60 * 1000)
 #define AUTO_SLEEP_POLL_MS 1000
+#define VIGILANTE_REINFORCEMENT_DELAY_MS 30000
+#define VIGILANTE_VACATED_CONFIRM_MS 10000
+#define VIGILANTE_ACTIVE_TIMEOUT_MS (5 * 60 * 1000)
+#define VIGILANTE_STATUS_STALE_MS 5000
+#define SLEEP_CSI_COOLDOWN_MS 4000
+#define WEBRTC_STOP_TIMEOUT_MS 8000
+#define WEBRTC_STOP_TASK_STACK_SIZE (6 * 1024)
+#define WEBRTC_STOP_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
 
-static bool s_audio_runtime_ready = false;
 static bool s_arrival_context_sent = false;
+static TaskHandle_t s_ble_prepare_task_handle = NULL;
 static TaskHandle_t s_ble_release_task_handle = NULL;
+static TaskHandle_t s_webrtc_stop_task_handle = NULL;
+static TaskHandle_t s_alert_dispatch_task_handle = NULL;
+static TaskHandle_t s_vigilante_reinforcement_task_handle = NULL;
+static uint32_t s_alert_timestamp_ms = 0;
+static float s_alert_corr_drop = 0.0f;
+static bool s_alert_dispatch_pending = false;
+static webrtc_session_mode_t s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+static webrtc_session_mode_t s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+static webrtc_session_mode_t s_active_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+static bool s_ble_release_to_sleep = false;
+static uint32_t s_vigilante_active_started_ms = 0;
+static uint32_t s_vigilante_resting_since_ms = 0;
+static bool s_vigilante_reinforcement_sent = false;
+static volatile uint32_t s_sleep_csi_generation = 0;
+static uint32_t s_sleep_motion_allowed_ms = 0;
+static uint32_t s_webrtc_stop_started_ms = 0;
 
 typedef enum
 {
     STATE_WAIT_WIFI = 0,
     STATE_SLEEP,
+    STATE_PREPARING_BLE,
     STATE_VALIDATING_IDENTITY,
     STATE_RELEASING_BLE,
+    STATE_DISPATCHING_ALERT,
     STATE_IGNITING,
     STATE_ACTIVE,
     STATE_AUTO_SLEEPING,
+    STATE_STOPPING_WEBRTC,
 } orchestrator_state_t;
 #define ENABLE_ONE_TIME_PROVISIONING 0 // Pon esto en 0 para deshabilitarlo después del primer arranque
 
@@ -87,6 +118,93 @@ static uint32_t orchestrator_now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
+static void reset_alert_context(void)
+{
+    s_alert_timestamp_ms = 0;
+    s_alert_corr_drop = 0.0f;
+    s_alert_dispatch_pending = false;
+    s_alert_dispatch_task_handle = NULL;
+    s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+}
+
+static void reset_vigilante_runtime_context(void)
+{
+    s_active_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+    s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+    s_vigilante_active_started_ms = 0;
+    s_vigilante_resting_since_ms = 0;
+    s_vigilante_reinforcement_sent = false;
+    s_vigilante_reinforcement_task_handle = NULL;
+}
+
+static bool orchestrator_is_vigilante_active(void)
+{
+    return s_active_webrtc_mode == WEBRTC_SESSION_MODE_VIGILANTE;
+}
+
+static void orchestrator_cancel_sleep_csi_cooldown(void)
+{
+    s_sleep_csi_generation++;
+    s_sleep_motion_allowed_ms = 0;
+}
+
+static bool orchestrator_sleep_cooldown_active(void)
+{
+    return s_sleep_motion_allowed_ms != 0 &&
+           (int32_t)(orchestrator_now_ms() - s_sleep_motion_allowed_ms) < 0;
+}
+
+static void orchestrator_sleep_csi_cooldown_task(void *param)
+{
+    uint32_t generation = (uint32_t)(uintptr_t)param;
+
+    vTaskDelay(pdMS_TO_TICKS(SLEEP_CSI_COOLDOWN_MS));
+
+    if (generation == s_sleep_csi_generation)
+    {
+        ESP_LOGI(TAG, "STATE_SLEEP: CSI cooldown complete; starting motion sensing.");
+        s_sleep_motion_allowed_ms = 0;
+        esp_err_t csi_err = csi_handler_start();
+        if (csi_err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s",
+                     esp_err_to_name(csi_err));
+        }
+    }
+    else
+    {
+        ESP_LOGD(TAG, "STATE_SLEEP: stale CSI cooldown task ignored");
+    }
+
+    vTaskDelete(NULL);
+}
+
+static void orchestrator_schedule_sleep_csi_start(void)
+{
+    uint32_t generation = ++s_sleep_csi_generation;
+    s_sleep_motion_allowed_ms = orchestrator_now_ms() + SLEEP_CSI_COOLDOWN_MS;
+
+    BaseType_t rc = xTaskCreate(orchestrator_sleep_csi_cooldown_task,
+                                "csi_cooldown",
+                                3072,
+                                (void *)(uintptr_t)generation,
+                                5,
+                                NULL);
+    if (rc != pdPASS)
+    {
+        ESP_LOGE(TAG, "STATE_SLEEP: failed to create CSI cooldown task");
+    }
+}
+
+/**
+ * @brief Take and log a heap memory snapshot.
+ *
+ * This function captures the current state of internal and PSRAM memory usage,
+ * including free sizes, minimum free sizes, and largest available blocks.
+ * The snapshot is formatted as a log message for easy analysis.
+ *
+ * @param stage A string label indicating the context or stage where the snapshot was taken
+ */
 static void orchestrator_log_heap_snapshot(const char *stage)
 {
     const char *label = stage ? stage : "unknown";
@@ -125,9 +243,22 @@ static void orchestrator_log_heap_snapshot(const char *stage)
     }
 }
 
+/**
+ * @brief Ensure that the audio runtime is ready for use.
+ *
+ * This function checks if the audio runtime is already initialized and ready.
+ * If not, it initializes the audio runtime by calling `media_sys_buildup()`
+ * and then verifies that the runtime is indeed ready using `media_sys_is_ready()`.
+ *
+ * @note This function must be called before attempting to use audio-related
+ *       features to prevent errors caused by an uninitialized audio runtime.
+ *
+ * @return `ESP_OK` if the audio runtime is ready, `ESP_FAIL` if initialization
+ *         failed or the runtime is not ready after initialization.
+ */
 static esp_err_t orchestrator_ensure_audio_runtime_ready(void)
 {
-    if (s_audio_runtime_ready)
+    if (media_sys_is_ready())
     {
         return ESP_OK;
     }
@@ -150,10 +281,25 @@ static esp_err_t orchestrator_ensure_audio_runtime_ready(void)
         return ESP_FAIL;
     }
 
-    s_audio_runtime_ready = true;
     return ESP_OK;
 }
 
+/**
+ * @brief Check if the active session idle timeout has expired.
+ *
+ * This function determines if the current WebRTC session has been idle
+ * for longer than the configured auto-sleep timeout. It considers both the
+ * last activity timestamp and whether the WebRTC realtime interface is
+ * currently busy.
+ *
+ * @note The auto-sleep timeout is defined by the `AUTO_SLEEP_TIMEOUT_MS`
+ *       configuration constant.
+ * @note The function returns `true` only when the session has been idle for
+ *       the entire timeout duration and the WebRTC interface is not busy.
+ *
+ * @return `true` if the active session idle timeout has expired,
+ *         `false` otherwise.
+ */
 static bool orchestrator_active_idle_expired(void)
 {
     uint32_t last_activity_ms = webrtc_get_last_activity_ms();
@@ -289,16 +435,22 @@ static const char *orchestrator_state_name(orchestrator_state_t state)
         return "STATE_WAIT_WIFI";
     case STATE_SLEEP:
         return "STATE_SLEEP";
+    case STATE_PREPARING_BLE:
+        return "STATE_PREPARING_BLE";
     case STATE_VALIDATING_IDENTITY:
         return "STATE_VALIDATING_IDENTITY";
     case STATE_RELEASING_BLE:
         return "STATE_RELEASING_BLE";
+    case STATE_DISPATCHING_ALERT:
+        return "STATE_DISPATCHING_ALERT";
     case STATE_IGNITING:
         return "STATE_IGNITING";
     case STATE_ACTIVE:
         return "STATE_ACTIVE";
     case STATE_AUTO_SLEEPING:
         return "STATE_AUTO_SLEEPING";
+    case STATE_STOPPING_WEBRTC:
+        return "STATE_STOPPING_WEBRTC";
     default:
         return "STATE_UNKNOWN";
     }
@@ -322,6 +474,10 @@ static const char *orchestrator_event_name(orchestrator_event_t event)
         return "ORCH_EVENT_WIFI_DISCONNECTED";
     case ORCH_EVENT_MOTION_DETECTED:
         return "ORCH_EVENT_MOTION_DETECTED";
+    case ORCH_EVENT_BLE_READY:
+        return "ORCH_EVENT_BLE_READY";
+    case ORCH_EVENT_BLE_BUSY:
+        return "ORCH_EVENT_BLE_BUSY";
     case ORCH_EVENT_IDENTITY_PRESENT:
         return "ORCH_EVENT_IDENTITY_PRESENT";
     case ORCH_EVENT_IDENTITY_REJECTED:
@@ -336,8 +492,18 @@ static const char *orchestrator_event_name(orchestrator_event_t event)
         return "ORCH_EVENT_WEBRTC_DISCONNECTED";
     case ORCH_EVENT_WEBRTC_API_ERROR:
         return "ORCH_EVENT_WEBRTC_API_ERROR";
+    case ORCH_EVENT_WEBRTC_STOPPED:
+        return "ORCH_EVENT_WEBRTC_STOPPED";
     case ORCH_EVENT_AUTO_SLEEP_TIMEOUT:
         return "ORCH_EVENT_AUTO_SLEEP_TIMEOUT";
+    case ORCH_EVENT_ALERT_DISPATCH_COMPLETE:
+        return "ORCH_EVENT_ALERT_DISPATCH_COMPLETE";
+    case ORCH_EVENT_ALERT_DISPATCH_FAILED:
+        return "ORCH_EVENT_ALERT_DISPATCH_FAILED";
+    case ORCH_EVENT_VIGILANTE_ROOM_VACATED:
+        return "ORCH_EVENT_VIGILANTE_ROOM_VACATED";
+    case ORCH_EVENT_VIGILANTE_TIMEOUT:
+        return "ORCH_EVENT_VIGILANTE_TIMEOUT";
     default:
         return "ORCH_EVENT_UNKNOWN";
     }
@@ -353,6 +519,10 @@ static const char *orchestrator_event_name(orchestrator_event_t event)
  */
 void orchestrator_post_event(orchestrator_event_t event)
 {
+    orchestrator_event_msg_t msg = {
+        .type = event,
+    };
+
     if (s_orchestrator_event_queue == NULL)
     {
         ESP_LOGW(TAG, "Orchestrator queue not ready; dropping event=%d", event);
@@ -360,49 +530,176 @@ void orchestrator_post_event(orchestrator_event_t event)
     }
 
     if (xQueueSend(s_orchestrator_event_queue,
-                   &event,
+                   &msg,
                    pdMS_TO_TICKS(ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS)) != pdTRUE)
     {
         ESP_LOGW(TAG, "Orchestrator queue blocked; dropping %s", orchestrator_event_name(event));
     }
 }
 
-static void orchestrator_start_identity_validation(void)
+void orchestrator_post_motion_detected(uint32_t timestamp_ms, float corr_drop)
 {
-    ESP_LOGI(TAG, "Preparing bounded BLE identity validation (%d ms)", IDENTITY_VALIDATION_TIMEOUT_MS);
-    orchestrator_log_heap_snapshot("identity_validation:start");
+    orchestrator_event_msg_t msg = {
+        .type = ORCH_EVENT_MOTION_DETECTED,
+        .timestamp_ms = timestamp_ms,
+        .corr_drop = corr_drop,
+    };
 
-    esp_err_t err = ble_common_ensure_ready(ble_sync_semaphore, false);
+    if (s_orchestrator_event_queue == NULL)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue not ready; dropping motion event");
+        return;
+    }
+
+    if (xQueueSend(s_orchestrator_event_queue,
+                   &msg,
+                   pdMS_TO_TICKS(ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS)) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue blocked; dropping %s", orchestrator_event_name(msg.type));
+    }
+}
+
+static void orchestrator_post_alert_dispatch_result(orchestrator_event_t event,
+                                                    uint32_t timestamp_ms,
+                                                    float corr_drop)
+{
+    if (s_orchestrator_event_queue == NULL)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue not ready; dropping event=%d", event);
+        return;
+    }
+
+    orchestrator_event_msg_t msg = {
+        .type = event,
+        .timestamp_ms = timestamp_ms,
+        .corr_drop = corr_drop,
+    };
+
+    if (xQueueSend(s_orchestrator_event_queue,
+                   &msg,
+                   pdMS_TO_TICKS(ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS)) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue blocked; dropping %s", orchestrator_event_name(event));
+    }
+}
+
+static void orchestrator_ble_prepare_task(void *param)
+{
+    (void)param;
+
+    ESP_LOGI(TAG, "Cold-booting BLE stack for identity validation");
+    orchestrator_log_heap_snapshot("ble_prepare:before");
+
+    esp_err_t err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "BLE host not ready for identity validation: %s", esp_err_to_name(err));
-        orchestrator_log_heap_snapshot("identity_validation:ble_not_ready");
-        orchestrator_post_event(ORCH_EVENT_IDENTITY_REJECTED);
+        ESP_LOGE(TAG, "BLE pre-clean release failed: %s", esp_err_to_name(err));
+        orchestrator_log_heap_snapshot("ble_prepare:preclean_failed");
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
+        s_ble_prepare_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    err = ble_common_ensure_ready(ble_sync_semaphore, false);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "BLE host cold-boot failed: %s", esp_err_to_name(err));
+        ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
+        orchestrator_log_heap_snapshot("ble_prepare:host_failed");
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
+        s_ble_prepare_task_handle = NULL;
+        vTaskDelete(NULL);
         return;
     }
 
     err = ble_device_control_start(NULL);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "BLE central control not ready for identity validation: %s", esp_err_to_name(err));
-        orchestrator_log_heap_snapshot("identity_validation:central_failed");
-        orchestrator_post_event(ORCH_EVENT_IDENTITY_REJECTED);
+        ESP_LOGE(TAG, "BLE central cold-boot failed: %s", esp_err_to_name(err));
+        ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
+        orchestrator_log_heap_snapshot("ble_prepare:central_failed");
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
+        s_ble_prepare_task_handle = NULL;
+        vTaskDelete(NULL);
         return;
     }
 
-    err = ble_device_start_identity_validation(IDENTITY_VALIDATION_TIMEOUT_MS);
+    err = ble_device_prepare_for_identity_scan(BLE_RELEASE_TIMEOUT_MS);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "BLE GAP scanner is not idle: %s", esp_err_to_name(err));
+        ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
+        orchestrator_log_heap_snapshot("ble_prepare:gap_busy");
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
+        s_ble_prepare_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    orchestrator_log_heap_snapshot("ble_prepare:ready");
+    orchestrator_post_event(ORCH_EVENT_BLE_READY);
+    s_ble_prepare_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void orchestrator_start_ble_prepare(void)
+{
+    if (s_ble_prepare_task_handle != NULL)
+    {
+        ESP_LOGW(TAG, "BLE prepare already running");
+        return;
+    }
+
+    BaseType_t rc = xTaskCreate(orchestrator_ble_prepare_task,
+                                "ble_prepare",
+                                6144,
+                                NULL,
+                                6,
+                                &s_ble_prepare_task_handle);
+    if (rc != pdPASS)
+    {
+        s_ble_prepare_task_handle = NULL;
+        ESP_LOGE(TAG, "Failed to create BLE prepare task");
+        orchestrator_log_heap_snapshot("ble_prepare:create_failed");
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
+    }
+}
+
+/**
+ * @brief Start bounded BLE identity validation after BLE has been prepared.
+ *
+ * BLE host initialization and central startup are handled by STATE_PREPARING_BLE.
+ * Any failure here is a stack/lifecycle fault and must not be interpreted as
+ * an unauthorized identity rejection.
+ */
+static void orchestrator_start_identity_validation(void)
+{
+    ESP_LOGI(TAG, "Starting bounded BLE identity validation (%d ms)", IDENTITY_VALIDATION_TIMEOUT_MS);
+    orchestrator_log_heap_snapshot("identity_validation:start");
+
+    esp_err_t err = ble_device_start_identity_validation(IDENTITY_VALIDATION_TIMEOUT_MS);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "BLE identity validation could not be scheduled: %s", esp_err_to_name(err));
-        ble_device_control_stop();
         orchestrator_log_heap_snapshot("identity_validation:schedule_failed");
-        orchestrator_post_event(ORCH_EVENT_IDENTITY_REJECTED);
+        orchestrator_post_event(ORCH_EVENT_BLE_BUSY);
         return;
     }
 
     orchestrator_log_heap_snapshot("identity_validation:scheduled");
 }
 
+/**
+ * @brief Task to release BLE resources asynchronously.
+ *
+ * This function is executed in a separate task to release BLE resources
+ * while the main thread continues with other operations. It logs the heap
+ * state before and after the release and posts the appropriate event to the
+ * orchestrator queue.
+ *
+ * @param param Task parameter (unused)
+ */
 static void orchestrator_ble_release_task(void *param)
 {
     (void)param;
@@ -419,6 +716,18 @@ static void orchestrator_ble_release_task(void *param)
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief Start the BLE release process.
+ *
+ * This function is called by the orchestrator to initiate the release of
+ * BLE resources. It creates a dedicated task to handle the release process
+ * asynchronously, allowing the main thread to continue with other operations.
+ *
+ * @note The BLE release is performed in a separate task to avoid blocking
+ *       the main thread during the release operation.
+ * @note If a BLE release is already in progress, this function will return
+ *       early to prevent concurrent release operations.
+ */
 static void orchestrator_start_ble_release(void)
 {
     if (s_ble_release_task_handle != NULL)
@@ -440,6 +749,238 @@ static void orchestrator_start_ble_release(void)
         orchestrator_log_heap_snapshot("ble_release:create_failed");
         orchestrator_post_event(ORCH_EVENT_BLE_RELEASE_FAILED);
     }
+}
+
+typedef struct
+{
+    uint32_t timestamp_ms;
+    float corr_drop;
+    bool reinforcement;
+} alert_dispatch_task_ctx_t;
+
+static void orchestrator_alert_dispatch_task(void *param)
+{
+    alert_dispatch_task_ctx_t *ctx = (alert_dispatch_task_ctx_t *)param;
+    if (!ctx)
+    {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t err = alert_dispatcher_send_alert(ctx->timestamp_ms, ctx->corr_drop);
+    if (ctx->reinforcement)
+    {
+        if (err == ESP_OK)
+        {
+            ESP_LOGW(TAG, "Vigilante reinforcement alert dispatched");
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Vigilante reinforcement alert failed: %s", esp_err_to_name(err));
+        }
+        s_vigilante_reinforcement_task_handle = NULL;
+    }
+    else
+    {
+        orchestrator_post_alert_dispatch_result((err == ESP_OK)
+                                                    ? ORCH_EVENT_ALERT_DISPATCH_COMPLETE
+                                                    : ORCH_EVENT_ALERT_DISPATCH_FAILED,
+                                                ctx->timestamp_ms,
+                                                ctx->corr_drop);
+        s_alert_dispatch_task_handle = NULL;
+    }
+
+    free(ctx);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t orchestrator_start_alert_dispatch(uint32_t timestamp_ms,
+                                                   float corr_drop,
+                                                   bool reinforcement)
+{
+    TaskHandle_t *task_handle = reinforcement
+                                    ? &s_vigilante_reinforcement_task_handle
+                                    : &s_alert_dispatch_task_handle;
+    if (*task_handle != NULL)
+    {
+        ESP_LOGW(TAG, "%s alert dispatch already running",
+                 reinforcement ? "Reinforcement" : "Initial");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    alert_dispatch_task_ctx_t *ctx = calloc(1, sizeof(alert_dispatch_task_ctx_t));
+    if (!ctx)
+    {
+        ESP_LOGE(TAG, "Failed to allocate alert dispatch context");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ctx->timestamp_ms = timestamp_ms;
+    ctx->corr_drop = corr_drop;
+    ctx->reinforcement = reinforcement;
+
+    BaseType_t rc = xTaskCreate(orchestrator_alert_dispatch_task,
+                                reinforcement ? "alert_reinforce" : "alert_dispatch",
+                                6144,
+                                ctx,
+                                5,
+                                task_handle);
+    if (rc != pdPASS)
+    {
+        *task_handle = NULL;
+        free(ctx);
+        ESP_LOGE(TAG, "Failed to create %s alert task",
+                 reinforcement ? "reinforcement" : "initial");
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
+
+static void orchestrator_webrtc_stop_task(void *param)
+{
+    (void)param;
+
+    ESP_LOGI(TAG, "STATE_STOPPING_WEBRTC: closing WebRTC stack");
+    orchestrator_log_heap_snapshot("webrtc_stop:before");
+    int ret = stop_webrtc();
+    if (ret != 0)
+    {
+        ESP_LOGW(TAG, "WebRTC stop returned %d; continuing shutdown barrier", ret);
+    }
+    orchestrator_log_heap_snapshot("webrtc_stop:after");
+
+    orchestrator_post_event(ORCH_EVENT_WEBRTC_STOPPED);
+    s_webrtc_stop_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void orchestrator_start_webrtc_stop(void)
+{
+    if (s_webrtc_stop_task_handle != NULL)
+    {
+        ESP_LOGW(TAG, "WebRTC stop already running");
+        return;
+    }
+
+    s_webrtc_stop_started_ms = orchestrator_now_ms();
+    BaseType_t rc = xTaskCreate(orchestrator_webrtc_stop_task,
+                                "webrtc_stop",
+                                WEBRTC_STOP_TASK_STACK_SIZE,
+                                NULL,
+                                WEBRTC_STOP_TASK_PRIORITY,
+                                &s_webrtc_stop_task_handle);
+    if (rc != pdPASS)
+    {
+        s_webrtc_stop_task_handle = NULL;
+        ESP_LOGE(TAG, "Failed to create WebRTC stop task");
+        orchestrator_post_event(ORCH_EVENT_WEBRTC_STOPPED);
+    }
+}
+
+static bool orchestrator_webrtc_stop_timeout_expired(void)
+{
+    return s_webrtc_stop_started_ms != 0 &&
+           (uint32_t)(orchestrator_now_ms() - s_webrtc_stop_started_ms) >= WEBRTC_STOP_TIMEOUT_MS;
+}
+
+static bool orchestrator_alert_result_matches(const orchestrator_event_msg_t *msg)
+{
+    return msg &&
+           msg->timestamp_ms == s_alert_timestamp_ms &&
+           msg->corr_drop == s_alert_corr_drop;
+}
+
+static void orchestrator_note_vigilante_motion_detected(const orchestrator_event_msg_t *msg)
+{
+    if (!orchestrator_is_vigilante_active())
+    {
+        return;
+    }
+
+    if (s_vigilante_resting_since_ms != 0)
+    {
+        ESP_LOGI(TAG,
+                 "Vigilante resting window reset by motion event: corr_drop=%.4f timestamp=%lu",
+                 msg ? msg->corr_drop : 0.0f,
+                 (unsigned long)(msg ? msg->timestamp_ms : 0));
+    }
+    s_vigilante_resting_since_ms = 0;
+}
+
+static bool orchestrator_poll_vigilante_monitor(orchestrator_event_msg_t *out_msg)
+{
+    if (!out_msg || !orchestrator_is_vigilante_active())
+    {
+        return false;
+    }
+
+    const uint32_t now_ms = orchestrator_now_ms();
+    if (s_vigilante_active_started_ms == 0)
+    {
+        s_vigilante_active_started_ms = now_ms;
+    }
+
+    if ((uint32_t)(now_ms - s_vigilante_active_started_ms) >= VIGILANTE_ACTIVE_TIMEOUT_MS)
+    {
+        out_msg->type = ORCH_EVENT_VIGILANTE_TIMEOUT;
+        return true;
+    }
+
+    ei_inference_status_t status = {0};
+    ei_inference_get_status(&status);
+    const bool status_fresh = status.valid &&
+                              (uint32_t)(now_ms - status.updated_ms) <= VIGILANTE_STATUS_STALE_MS;
+
+    if (!s_vigilante_reinforcement_sent &&
+        (uint32_t)(now_ms - s_vigilante_active_started_ms) >= VIGILANTE_REINFORCEMENT_DELAY_MS)
+    {
+        s_vigilante_reinforcement_sent = true;
+        if (status_fresh && status.motion_active)
+        {
+            ESP_LOGW(TAG, "Vigilante motion persists after %d ms; dispatching reinforcement alert",
+                     VIGILANTE_REINFORCEMENT_DELAY_MS);
+            esp_err_t err = orchestrator_start_alert_dispatch(now_ms,
+                                                              status.corr_drop,
+                                                              true);
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to start reinforcement alert: %s", esp_err_to_name(err));
+            }
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Vigilante reinforcement skipped; motion is not active");
+        }
+    }
+
+    if (status_fresh && status.resting)
+    {
+        if (s_vigilante_resting_since_ms == 0)
+        {
+            s_vigilante_resting_since_ms = now_ms;
+        }
+        else if ((uint32_t)(now_ms - s_vigilante_resting_since_ms) >= VIGILANTE_VACATED_CONFIRM_MS)
+        {
+            if (webrtc_realtime_is_busy())
+            {
+                ESP_LOGI(TAG, "Vigilante room-vacated candidate suppressed while WebRTC audio/session is busy");
+                s_vigilante_resting_since_ms = now_ms;
+                return false;
+            }
+
+            out_msg->type = ORCH_EVENT_VIGILANTE_ROOM_VACATED;
+            out_msg->timestamp_ms = status.updated_ms;
+            out_msg->corr_drop = status.corr_drop;
+            return true;
+        }
+    }
+    else
+    {
+        s_vigilante_resting_since_ms = 0;
+    }
+
+    return false;
 }
 
 /**
@@ -474,6 +1015,10 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     {
     case STATE_WAIT_WIFI:
         ESP_LOGI(TAG, "STATE_WAIT_WIFI: stopping CSI, WebRTC, and BLE smart/control tasks.");
+        orchestrator_cancel_sleep_csi_cooldown();
+        reset_alert_context();
+        reset_vigilante_runtime_context();
+        s_ble_release_to_sleep = false;
         csi_handler_stop();
         stop_webrtc();
         ble_device_stop_smart_task();
@@ -488,20 +1033,36 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_SLEEP:
     {
         ESP_LOGI(TAG, "STATE_SLEEP: WiFi is up; WebRTC remains off. Starting CSI motion sensing.");
-        stop_webrtc();
+        reset_alert_context();
+        reset_vigilante_runtime_context();
+        s_ble_release_to_sleep = false;
+        s_webrtc_stop_started_ms = 0;
+        csi_handler_stop();
+        esp_err_t sleep_ble_err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
+        if (sleep_ble_err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "STATE_SLEEP: BLE full release failed; continuing CSI recovery path: %s",
+                     esp_err_to_name(sleep_ble_err));
+            orchestrator_log_heap_snapshot("sleep:ble_release_failed");
+        }
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
                                  WEBRTC_API_ERROR_BIT | WIFI_DISCONNECTED_BIT);
-        esp_err_t csi_err = csi_handler_start();
-        if (csi_err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI: %s", esp_err_to_name(csi_err));
-        }
+        ESP_LOGI(TAG, "STATE_SLEEP: waiting %d ms before enabling CSI.", SLEEP_CSI_COOLDOWN_MS);
+        orchestrator_schedule_sleep_csi_start();
         break;
     }
 
+    case STATE_PREPARING_BLE:
+        ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
+        orchestrator_cancel_sleep_csi_cooldown();
+        csi_handler_stop();
+        orchestrator_start_ble_prepare();
+        break;
+
     case STATE_VALIDATING_IDENTITY:
-        ESP_LOGI(TAG, "STATE_VALIDATING_IDENTITY: motion detected; pausing CSI and starting BLE validation.");
+        ESP_LOGI(TAG, "STATE_VALIDATING_IDENTITY: BLE ready; starting identity validation scan.");
+        orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
         orchestrator_start_identity_validation();
 
@@ -513,15 +1074,48 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
 
     case STATE_RELEASING_BLE:
         ESP_LOGI(TAG, "STATE_RELEASING_BLE: releasing NimBLE before audio ignition.");
+        orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
         orchestrator_start_ble_release();
         break;
 
+    case STATE_DISPATCHING_ALERT:
+    {
+        ESP_LOGW(TAG,
+                 "STATE_DISPATCHING_ALERT: dispatching emergency alert after BLE release.");
+        orchestrator_cancel_sleep_csi_cooldown();
+        csi_handler_stop();
+        if (!s_alert_dispatch_pending)
+        {
+            ESP_LOGW(TAG, "STATE_DISPATCHING_ALERT entered without pending alert context");
+            orchestrator_post_alert_dispatch_result(ORCH_EVENT_ALERT_DISPATCH_FAILED,
+                                                    s_alert_timestamp_ms,
+                                                    s_alert_corr_drop);
+            break;
+        }
+
+        esp_err_t alert_err = orchestrator_start_alert_dispatch(s_alert_timestamp_ms,
+                                                                s_alert_corr_drop,
+                                                                false);
+        if (alert_err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "STATE_DISPATCHING_ALERT: failed to start alert task: %s",
+                     esp_err_to_name(alert_err));
+            orchestrator_post_alert_dispatch_result(ORCH_EVENT_ALERT_DISPATCH_FAILED,
+                                                    s_alert_timestamp_ms,
+                                                    s_alert_corr_drop);
+        }
+        break;
+    }
+
     case STATE_IGNITING:
     {
         ESP_LOGI(TAG, "STATE_IGNITING: initializing audio runtime and starting WebRTC.");
+        orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
         s_arrival_context_sent = false;
+        webrtc_session_mode_t ignition_mode = s_ignition_webrtc_mode;
+        s_active_webrtc_mode = ignition_mode;
 
         orchestrator_log_heap_snapshot("igniting:before_audio");
         esp_err_t audio_err = orchestrator_ensure_audio_runtime_ready();
@@ -534,7 +1128,8 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         }
         orchestrator_log_heap_snapshot("igniting:audio_ready");
 
-        int ret = start_webrtc();
+        int ret = start_webrtc(ignition_mode);
+        s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
         if (ret != 0)
         {
             EventBits_t bits = xEventGroupGetBits(app_startup_event_group);
@@ -547,7 +1142,24 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
 
     case STATE_ACTIVE:
         ESP_LOGI(TAG, "STATE_ACTIVE: WebRTC active; injecting arrival context.");
-        csi_handler_stop();
+        orchestrator_cancel_sleep_csi_cooldown();
+        if (orchestrator_is_vigilante_active())
+        {
+            ESP_LOGW(TAG, "STATE_ACTIVE: Vigilante Mode active; starting CSI threat monitor.");
+            s_vigilante_active_started_ms = orchestrator_now_ms();
+            s_vigilante_resting_since_ms = 0;
+            s_vigilante_reinforcement_sent = false;
+            esp_err_t csi_err = csi_handler_start();
+            if (csi_err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "STATE_ACTIVE: failed to start Vigilante CSI monitor: %s",
+                         esp_err_to_name(csi_err));
+            }
+        }
+        else
+        {
+            csi_handler_stop();
+        }
         if (!s_arrival_context_sent)
         {
             if (webrtc_inject_arrival_context() == 0)
@@ -563,12 +1175,24 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         break;
 
     case STATE_AUTO_SLEEPING:
-        ESP_LOGI(TAG, "STATE_AUTO_SLEEPING: stopping WebRTC; audio teardown deferred.");
+        ESP_LOGI(TAG, "STATE_AUTO_SLEEPING: preparing deterministic WebRTC shutdown.");
+        orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
-        stop_webrtc();
+        csi_handler_stop();
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
                                  WEBRTC_API_ERROR_BIT);
+        break;
+
+    case STATE_STOPPING_WEBRTC:
+        ESP_LOGI(TAG, "STATE_STOPPING_WEBRTC: waiting for explicit WebRTC stopped event.");
+        orchestrator_cancel_sleep_csi_cooldown();
+        s_arrival_context_sent = false;
+        csi_handler_stop();
+        xEventGroupClearBits(app_startup_event_group,
+                             WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
+                                 WEBRTC_API_ERROR_BIT);
+        orchestrator_start_webrtc_stop();
         break;
     }
 
@@ -603,21 +1227,39 @@ static void app_startup_orchestrator_task(void *param)
 {
     (void)param;
     orchestrator_state_t state = STATE_WAIT_WIFI;
-    orchestrator_event_t event;
+    orchestrator_event_msg_t event_msg;
 
     ESP_LOGI(TAG, "Orchestrator state machine started in %s", orchestrator_state_name(state));
 
     while (1)
     {
-        TickType_t wait_ticks = (state == STATE_ACTIVE)
+        TickType_t wait_ticks = (state == STATE_ACTIVE || state == STATE_STOPPING_WEBRTC)
                                     ? pdMS_TO_TICKS(AUTO_SLEEP_POLL_MS)
                                     : portMAX_DELAY;
 
-        if (xQueueReceive(s_orchestrator_event_queue, &event, wait_ticks) != pdTRUE)
+        if (xQueueReceive(s_orchestrator_event_queue, &event_msg, wait_ticks) != pdTRUE)
         {
-            if (state == STATE_ACTIVE && orchestrator_active_idle_expired())
+            memset(&event_msg, 0, sizeof(event_msg));
+            if (state == STATE_STOPPING_WEBRTC &&
+                orchestrator_webrtc_stop_timeout_expired())
             {
-                event = ORCH_EVENT_AUTO_SLEEP_TIMEOUT;
+                ESP_LOGE(TAG,
+                         "STATE_STOPPING_WEBRTC: hard timeout after %d ms; forcing sleep",
+                         WEBRTC_STOP_TIMEOUT_MS);
+                orchestrator_enter_state(&state, STATE_SLEEP);
+                continue;
+            }
+            else if (state == STATE_ACTIVE &&
+                     orchestrator_is_vigilante_active() &&
+                     orchestrator_poll_vigilante_monitor(&event_msg))
+            {
+                /* event_msg was filled by the monitor. */
+            }
+            else if (state == STATE_ACTIVE &&
+                     !orchestrator_is_vigilante_active() &&
+                     orchestrator_active_idle_expired())
+            {
+                event_msg.type = ORCH_EVENT_AUTO_SLEEP_TIMEOUT;
             }
             else
             {
@@ -625,6 +1267,7 @@ static void app_startup_orchestrator_task(void *param)
             }
         }
 
+        orchestrator_event_t event = event_msg.type;
         ESP_LOGI(TAG, "Orchestrator event: %s while in %s",
                  orchestrator_event_name(event),
                  orchestrator_state_name(state));
@@ -649,9 +1292,41 @@ static void app_startup_orchestrator_task(void *param)
             }
             else if (event == ORCH_EVENT_MOTION_DETECTED)
             {
-                orchestrator_enter_state(&state, STATE_VALIDATING_IDENTITY);
+                if (orchestrator_sleep_cooldown_active())
+                {
+                    ESP_LOGW(TAG, "Ignoring motion event during %d ms STATE_SLEEP cooldown",
+                             SLEEP_CSI_COOLDOWN_MS);
+                    break;
+                }
+                s_alert_timestamp_ms = event_msg.timestamp_ms ? event_msg.timestamp_ms : orchestrator_now_ms();
+                s_alert_corr_drop = event_msg.corr_drop;
+                s_alert_dispatch_pending = false;
+                s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+                s_ble_release_to_sleep = false;
+                orchestrator_enter_state(&state, STATE_PREPARING_BLE);
             }
             else if (event != ORCH_EVENT_WIFI_CONNECTED)
+            {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_PREPARING_BLE:
+            if (event == ORCH_EVENT_WIFI_DISCONNECTED)
+            {
+                orchestrator_enter_state(&state, STATE_WAIT_WIFI);
+            }
+            else if (event == ORCH_EVENT_BLE_READY)
+            {
+                orchestrator_enter_state(&state, STATE_VALIDATING_IDENTITY);
+            }
+            else if (event == ORCH_EVENT_BLE_BUSY)
+            {
+                ESP_LOGE(TAG, "BLE preparation failed; returning to sleep without alert dispatch");
+                reset_alert_context();
+                orchestrator_enter_state(&state, STATE_SLEEP);
+            }
+            else
             {
                 orchestrator_ignore_event(state, event);
             }
@@ -664,11 +1339,29 @@ static void app_startup_orchestrator_task(void *param)
             }
             else if (event == ORCH_EVENT_IDENTITY_PRESENT)
             {
+                s_alert_dispatch_pending = false;
+                s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+                s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
+                s_ble_release_to_sleep = false;
                 orchestrator_enter_state(&state, STATE_RELEASING_BLE);
             }
             else if (event == ORCH_EVENT_IDENTITY_REJECTED)
             {
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                if (s_alert_timestamp_ms == 0)
+                {
+                    s_alert_timestamp_ms = orchestrator_now_ms();
+                }
+                s_alert_dispatch_pending = true;
+                s_pending_webrtc_mode = WEBRTC_SESSION_MODE_VIGILANTE;
+                s_ble_release_to_sleep = false;
+                orchestrator_enter_state(&state, STATE_RELEASING_BLE);
+            }
+            else if (event == ORCH_EVENT_BLE_BUSY)
+            {
+                ESP_LOGE(TAG, "BLE validation stack fault; releasing BLE and returning to sleep without alert dispatch");
+                reset_alert_context();
+                s_ble_release_to_sleep = true;
+                orchestrator_enter_state(&state, STATE_RELEASING_BLE);
             }
             else
             {
@@ -683,12 +1376,54 @@ static void app_startup_orchestrator_task(void *param)
             }
             else if (event == ORCH_EVENT_BLE_RELEASE_COMPLETE)
             {
-                orchestrator_enter_state(&state, STATE_IGNITING);
+                if (s_ble_release_to_sleep)
+                {
+                    s_ble_release_to_sleep = false;
+                    orchestrator_enter_state(&state, STATE_SLEEP);
+                }
+                else if (s_alert_dispatch_pending)
+                {
+                    orchestrator_enter_state(&state, STATE_DISPATCHING_ALERT);
+                }
+                else
+                {
+                    s_ignition_webrtc_mode = s_pending_webrtc_mode;
+                    orchestrator_enter_state(&state, STATE_IGNITING);
+                }
             }
             else if (event == ORCH_EVENT_BLE_RELEASE_FAILED)
             {
                 orchestrator_log_heap_snapshot("ble_release:failed_to_sleep");
+                s_ble_release_to_sleep = false;
                 orchestrator_enter_state(&state, STATE_SLEEP);
+            }
+            else
+            {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_DISPATCHING_ALERT:
+            if (event == ORCH_EVENT_WIFI_DISCONNECTED)
+            {
+                orchestrator_enter_state(&state, STATE_WAIT_WIFI);
+            }
+            else if (event == ORCH_EVENT_ALERT_DISPATCH_COMPLETE ||
+                     event == ORCH_EVENT_ALERT_DISPATCH_FAILED)
+            {
+                if (!orchestrator_alert_result_matches(&event_msg))
+                {
+                    ESP_LOGW(TAG, "Ignoring stale alert dispatch result");
+                    break;
+                }
+
+                if (event == ORCH_EVENT_ALERT_DISPATCH_FAILED)
+                {
+                    ESP_LOGW(TAG, "Initial alert dispatch failed; continuing to Vigilante ignition");
+                }
+                s_ignition_webrtc_mode = s_pending_webrtc_mode;
+                reset_alert_context();
+                orchestrator_enter_state(&state, STATE_IGNITING);
             }
             else
             {
@@ -708,7 +1443,8 @@ static void app_startup_orchestrator_task(void *param)
             else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
                      event == ORCH_EVENT_WEBRTC_API_ERROR)
             {
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
+                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
             }
             else
             {
@@ -721,15 +1457,30 @@ static void app_startup_orchestrator_task(void *param)
             {
                 orchestrator_enter_state(&state, STATE_WAIT_WIFI);
             }
-            else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT)
+            else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
+                     !orchestrator_is_vigilante_active())
             {
                 orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
+            }
+            else if (event == ORCH_EVENT_VIGILANTE_ROOM_VACATED ||
+                     event == ORCH_EVENT_VIGILANTE_TIMEOUT)
+            {
+                ESP_LOGW(TAG, "Vigilante lifecycle ended by %s", orchestrator_event_name(event));
+                reset_alert_context();
+                orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
+                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
             }
             else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
                      event == ORCH_EVENT_WEBRTC_API_ERROR)
             {
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
+                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
+            }
+            else if (event == ORCH_EVENT_MOTION_DETECTED)
+            {
+                orchestrator_note_vigilante_motion_detected(&event_msg);
+                orchestrator_ignore_event(state, event);
             }
             else
             {
@@ -744,7 +1495,28 @@ static void app_startup_orchestrator_task(void *param)
             }
             else
             {
+                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
+            }
+            break;
+
+        case STATE_STOPPING_WEBRTC:
+            if (event == ORCH_EVENT_WIFI_DISCONNECTED)
+            {
+                orchestrator_enter_state(&state, STATE_WAIT_WIFI);
+            }
+            else if (event == ORCH_EVENT_WEBRTC_STOPPED)
+            {
+                s_webrtc_stop_started_ms = 0;
                 orchestrator_enter_state(&state, STATE_SLEEP);
+            }
+            else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
+                     event == ORCH_EVENT_WEBRTC_API_ERROR)
+            {
+                ESP_LOGI(TAG, "Ignoring WebRTC disconnect notification during local shutdown");
+            }
+            else
+            {
+                orchestrator_ignore_event(state, event);
             }
             break;
         }
@@ -892,7 +1664,7 @@ void app_main(void)
     app_startup_event_group = xEventGroupCreate();
     // Crear el semáforo que usaremos para esperar la sincronización
     ble_sync_semaphore = xSemaphoreCreateBinary();
-    s_orchestrator_event_queue = xQueueCreate(ORCHESTRATOR_QUEUE_DEPTH, sizeof(orchestrator_event_t));
+    s_orchestrator_event_queue = xQueueCreate(ORCHESTRATOR_QUEUE_DEPTH, sizeof(orchestrator_event_msg_t));
     if (app_startup_event_group == NULL || ble_sync_semaphore == NULL || s_orchestrator_event_queue == NULL)
     {
         ESP_LOGE(TAG, "No se pudieron crear primitivas de sincronizacion de arranque");

@@ -3,6 +3,9 @@
 #include "app_events.h"
 #include "csi_dsp.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 
 #define CSI_DSP_CORR_DROP_TRIGGER 0.4f
 #define CSI_DSP_PHASE_ENERGY_TRIGGER 1.0f
@@ -17,6 +20,36 @@ static csi_dsp_state_t csi_dsp_state;
 static bool motion_latched = false;
 static uint8_t clear_frame_count = 0;
 static uint32_t csi_dsp_telemetry_counter = 0;
+static ei_inference_status_t latest_status;
+static portMUX_TYPE latest_status_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint32_t ei_inference_now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static void ei_inference_update_status(const csi_dsp_features_t *features,
+                                       bool motion_active,
+                                       bool resting)
+{
+    if (!features)
+    {
+        return;
+    }
+
+    ei_inference_status_t status = {
+        .valid = true,
+        .motion_active = motion_active,
+        .resting = resting,
+        .updated_ms = ei_inference_now_ms(),
+        .corr_drop = features->corr_drop,
+        .phase_motion_energy = features->phase_motion_energy,
+    };
+
+    portENTER_CRITICAL(&latest_status_mux);
+    latest_status = status;
+    portEXIT_CRITICAL(&latest_status_mux);
+}
 
 static void ei_inference_reset_state(void)
 {
@@ -24,6 +57,10 @@ static void ei_inference_reset_state(void)
     motion_latched = false;
     clear_frame_count = 0;
     csi_dsp_telemetry_counter = 0;
+
+    portENTER_CRITICAL(&latest_status_mux);
+    latest_status = {};
+    portEXIT_CRITICAL(&latest_status_mux);
 }
 
 extern "C" void ei_inference_init(void)
@@ -47,6 +84,8 @@ extern "C" void ei_inference_add_csi_frame(const int8_t *csi_sample,
 
     bool motion_detected = (features.corr_drop > CSI_DSP_CORR_DROP_TRIGGER) ||
                            (features.phase_motion_energy > CSI_DSP_PHASE_ENERGY_TRIGGER);
+    bool resting = (features.corr_drop < CSI_DSP_CORR_DROP_CLEAR) &&
+                   (features.phase_motion_energy < CSI_DSP_PHASE_ENERGY_CLEAR);
 
     if (motion_detected)
     {
@@ -61,11 +100,10 @@ extern "C" void ei_inference_add_csi_frame(const int8_t *csi_sample,
                      features.phase_motion_energy,
                      features.amp_motion_energy,
                      (unsigned int)features.usable_subcarriers);
-            orchestrator_post_event(ORCH_EVENT_MOTION_DETECTED);
+            orchestrator_post_motion_detected(ei_inference_now_ms(), features.corr_drop);
         }
     }
-    else if (features.corr_drop < CSI_DSP_CORR_DROP_CLEAR &&
-             features.phase_motion_energy < CSI_DSP_PHASE_ENERGY_CLEAR)
+    else if (resting)
     {
         if (clear_frame_count < CSI_DSP_CLEAR_FRAMES)
         {
@@ -82,6 +120,8 @@ extern "C" void ei_inference_add_csi_frame(const int8_t *csi_sample,
         clear_frame_count = 0;
     }
 
+    ei_inference_update_status(&features, motion_latched, resting);
+
     csi_dsp_telemetry_counter++;
     if (csi_dsp_telemetry_counter >= CSI_DSP_TELEMETRY_INTERVAL_FRAMES)
     {
@@ -97,4 +137,16 @@ extern "C" void ei_inference_add_csi_frame(const int8_t *csi_sample,
                  features.phase_offset,
                  motion_latched);
     }
+}
+
+extern "C" void ei_inference_get_status(ei_inference_status_t *status)
+{
+    if (!status)
+    {
+        return;
+    }
+
+    portENTER_CRITICAL(&latest_status_mux);
+    *status = latest_status;
+    portEXIT_CRITICAL(&latest_status_mux);
 }

@@ -30,6 +30,14 @@ extern "C"
    bool media_sys_is_ready(void);
 
    /**
+    * @brief Tear down the media system built by media_sys_buildup.
+    *
+    * This function is idempotent and releases the capture/player resources
+    * owned by the media system wrapper.
+    */
+   void media_sys_teardown(void);
+
+   /**
     * @brief  Get media provider
     *
     * @param[out]  provider  Media provider to be returned
