@@ -2613,7 +2613,10 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupSetBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupClearBits(app_startup_event_group, WEBRTC_API_ERROR_BIT | WEBRTC_DISCONNECTED_BIT);
         schedule_session_update();
-        display_online_status(COLOR_CYAN_BGR565);
+        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
+        {
+            display_online_status(COLOR_CYAN_BGR565);
+        }
         break;
 
     case ESP_WEBRTC_EVENT_DATA_CHANNEL_DISCONNECTED:

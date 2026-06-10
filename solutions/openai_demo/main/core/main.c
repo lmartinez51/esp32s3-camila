@@ -1354,6 +1354,10 @@ static void app_startup_orchestrator_task(void *param)
                 s_alert_dispatch_pending = true;
                 s_pending_webrtc_mode = WEBRTC_SESSION_MODE_VIGILANTE;
                 s_ble_release_to_sleep = false;
+
+                // Mostrar la alerta roja
+                display_intruder_alert_message();
+
                 orchestrator_enter_state(&state, STATE_RELEASING_BLE);
             }
             else if (event == ORCH_EVENT_BLE_BUSY)

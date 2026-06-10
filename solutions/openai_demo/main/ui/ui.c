@@ -181,7 +181,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'P': map_buffer[count++] = 31; break;
         case 'Q': map_buffer[count++] = 61; break;  // CORREGIDO: era 33 (colisión con 'v')
         case 'R': map_buffer[count++] = 32; break;
-        case 'S': map_buffer[count++] = 43; break;
+        case 'S': map_buffer[count++] = 38; break;
         case 'T': map_buffer[count++] = 23; break;  // Antes faltaba
         case 'U': map_buffer[count++] = 44; break;
         case 'V': map_buffer[count++] = 46; break;  // Antes faltaba
@@ -553,6 +553,9 @@ static void display_welcome_message(void)
  */
 void display_online_status(uint16_t color)
 {
+    ui_clear_status_message();
+    ui_clear_help_message_below_status();
+
     // Mapeo de caracteres para "is online!"
     int char_map[] = {8, 9, 4, 11, 12, 7, 8, 12, 14, 13};
     int num_chars = sizeof(char_map) / sizeof(char_map[0]);
@@ -579,6 +582,9 @@ void display_online_status(uint16_t color)
  */
 void display_wifi_creds(void)
 {
+    ui_clear_status_message();
+    ui_clear_help_message_below_status();
+
     // Primera línea: "Enter WiFi"
     int char_map_l1[] = {15, 12, 16, 14, 17, 4, 18, 8, 19, 8};
     int num_chars_l1 = sizeof(char_map_l1) / sizeof(char_map_l1[0]);
@@ -622,6 +628,9 @@ void display_wifi_creds(void)
  */
 void display_error_message(void)
 {
+    ui_clear_status_message();
+    ui_clear_help_message_below_status();
+
     // Mapeo de caracteres para "Error!"
     int char_map[] = {15, 17, 17, 11, 17, 13};
     int num_chars = sizeof(char_map) / sizeof(char_map[0]);
@@ -704,6 +713,9 @@ void display_resetting_message(void)
  */
 void display_disconnected_message(void)
 {
+    ui_clear_status_message();
+    ui_clear_help_message_below_status();
+
     // Mapeo de caracteres para "Disconnected!"
     // D-i-s-c-o-n-n-e-c-t-e-d-!
     int char_map[] = {27, 8, 9, 20, 11, 12, 12, 14, 20, 16, 14, 21, 13};
@@ -981,6 +993,52 @@ void display_api_key_error_message(void)
     display_text(line4_x, line4_y, line4_map, num_line4, COLOR_YELLOW_BGR565, TEXT_SCALE);
 
     ESP_LOGI(TAG, "API Key error message displayed with reorganized layout");
+}
+
+/**
+ * @brief Displays an "Intruso Detectado" red alert screen.
+ *        Clears the whole screen and draws a thick red border.
+ *        Renders "INTRUSO" and "DETECTADO" on two lines using scale 3.
+ */
+void display_intruder_alert_message(void)
+{
+    // Limpiar toda la pantalla
+    clear_screen();
+
+    // Dibujar un borde rojo intenso de 4px para resaltar la alerta de seguridad
+    draw_screen_border(COLOR_RED_BGR565, 4);
+
+    const int TEXT_SCALE = 3;
+    const int line_spacing = 10;
+    const int char_h = CHAR_HEIGHT * TEXT_SCALE;
+
+    // Convertir de forma segura las cadenas de texto a nuestro mapa de caracteres
+    int map_l1[10];
+    int num_l1 = convert_string_to_char_map("INTRUSO", map_l1, 10);
+
+    int map_l2[15];
+    int num_l2 = convert_string_to_char_map("DETECTADO", map_l2, 15);
+
+    // Calcular el ancho de cada línea
+    int line1_width = num_l1 * (CHAR_WIDTH * TEXT_SCALE) + (num_l1 - 1) * CHAR_SPACING_SCALE_3X;
+    int line2_width = num_l2 * (CHAR_WIDTH * TEXT_SCALE) + (num_l2 - 1) * CHAR_SPACING_SCALE_3X;
+
+    // Calcular posiciones X para centrar
+    int line1_x = (BSP_LCD_H_RES - line1_width) / 2;
+    int line2_x = (BSP_LCD_H_RES - line2_width) / 2;
+
+    // Calcular posiciones Y para centrar verticalmente
+    int total_height = (char_h * 2) + line_spacing;
+    int start_y = (BSP_LCD_V_RES - total_height) / 2;
+
+    int line1_y = start_y;
+    int line2_y = line1_y + char_h + line_spacing;
+
+    // Mostrar ambas líneas en rojo
+    display_text(line1_x, line1_y, map_l1, num_l1, COLOR_RED_BGR565, TEXT_SCALE);
+    display_text(line2_x, line2_y, map_l2, num_l2, COLOR_RED_BGR565, TEXT_SCALE);
+
+    ESP_LOGW(TAG, "Alerta de INTRUSO DETECTADO renderizada en pantalla");
 }
 /**
  * @brief Safely turns off the LCD backlight without affecting other systems.

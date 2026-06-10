@@ -57,6 +57,12 @@ extern "C"
     void display_api_key_error_message(void);
 
     /**
+     * @brief Muestra alerta roja de intruso detectado.
+     * Limpia la pantalla, dibuja un borde rojo grueso y texto centrado a escala máxima.
+     */
+    void display_intruder_alert_message(void);
+
+    /**
      * @brief Apaga el backlight del LCD y desactiva el panel.
      */
     void ui_backlight_off_safe(void);
@@ -68,8 +74,7 @@ extern "C"
     void display_config_mode_message(void);
 
     /**
-     * @brief Enciende el backlight del LCD.
-     * Restaura el brillo al 50% para uso normal.
+     * @brief Enciende el backlight del LCD para asegurar que la pantalla sea visible.
      */
     void ui_backlight_on(void);
 
