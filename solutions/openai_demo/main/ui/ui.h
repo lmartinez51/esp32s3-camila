@@ -1,6 +1,7 @@
 #ifndef MAIN_UI_H
 #define MAIN_UI_H
 #include <stdint.h>
+#include <stdbool.h>
 #include <esp_err.h>
 
 #ifdef __cplusplus
@@ -15,16 +16,25 @@ extern "C"
     esp_err_t ui_init(void);
 
     /**
+     * @brief Libera temporalmente el panel LCD y el bus SPI asociado.
+     */
+    esp_err_t ui_deinit(void);
+
+    /**
+     * @brief Indica si el panel LCD está inicializado y listo para dibujar.
+     */
+    bool ui_is_initialized(void);
+
+    /**
      * @brief Muestra la pantalla de inicio con mensaje de bienvenida.
      * Dibuja borde azul, mensaje de bienvenida y espera 2 segundos.
      */
     void display_startup_screen(void);
 
     /**
-     * @brief Dibuja "is online!" debajo del mensaje principal.
-     * @param color Color en BGR565.
+     * @brief Muestra bienvenida personalizada tras validar identidad BLE.
      */
-    void display_online_status(uint16_t color);
+    void display_welcome_identity(const char *name);
 
     /**
      * @brief Muestra un mensaje para que el usuario ingrese credenciales WiFi vía BLE.
@@ -80,7 +90,7 @@ extern "C"
 
     /**
      * @brief Muestra un mensaje de estado temporal en la pantalla.
-     * Aparece debajo del mensaje "is online!".
+     * Aparece debajo del retrato de Dr. Simi.
      * @param message El texto a mostrar (e.g., "getting prices...").
      * @param color Color del texto en formato BGR565
      */
@@ -115,6 +125,30 @@ extern "C"
      * @param text The input text string to sanitize (modified in place).
      */
     void ui_sanitize_text(char *text);
+
+    /**
+     * @brief Toma el mutex global del panel LCD (bloqueante).
+     *        Úsalo para agrupar varios blits de forma atómica frente a otras tareas.
+     */
+    void ui_panel_lock(void);
+
+    /**
+     * @brief Libera el mutex global del panel LCD.
+     */
+    void ui_panel_unlock(void);
+
+    /**
+     * @brief Envía un bitmap al panel protegido por el mutex del LCD.
+     * @param x0,y0 Esquina superior izquierda (inclusiva).
+     * @param x1,y1 Esquina inferior derecha (exclusiva).
+     * @param pixels Buffer de píxeles en el formato del panel (16 bpp).
+     */
+    void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels);
+
+    /**
+     * @brief Limpia toda la pantalla a negro.
+     */
+    void ui_clear_screen(void);
 
 // Colores útiles en formato BGR565
 #define COLOR_GREEN_BGR565 0x001F

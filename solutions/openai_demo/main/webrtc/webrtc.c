@@ -21,6 +21,7 @@
 #include "webrtc.h"
 #include "web_search.h"
 #include "ui.h"
+#include "simi.h"
 #include "app_events.h"
 #include "config_manager.h"
 #include "ble_common.h"
@@ -746,6 +747,30 @@ static void schedule_session_update(void)
                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     }
+}
+
+static void display_simi_session_state(simi_state_t state, const char *reason)
+{
+    esp_err_t err = ui_init();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Could not restore LCD UI for %s: %s",
+                 reason ? reason : "session_state",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    err = ui_simi_init();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Could not allocate Dr. Simi canvas for %s: %s",
+                 reason ? reason : "session_state",
+                 esp_err_to_name(err));
+        ui_clear_screen();
+        return;
+    }
+
+    ui_simi_render_static(state);
 }
 
 static void reset_realtime_interaction_state(void)
@@ -2487,6 +2512,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_realtime_session_ready = true;
         mark_realtime_activity();
         orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
+        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
+        {
+            display_simi_session_state(SIMI_STATE_LISTENING, "session_updated");
+        }
     }
     else if (strcmp(event_type, "input_audio_buffer.speech_started") == 0)
     {
@@ -2613,10 +2642,6 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupSetBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupClearBits(app_startup_event_group, WEBRTC_API_ERROR_BIT | WEBRTC_DISCONNECTED_BIT);
         schedule_session_update();
-        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
-        {
-            display_online_status(COLOR_CYAN_BGR565);
-        }
         break;
 
     case ESP_WEBRTC_EVENT_DATA_CHANNEL_DISCONNECTED:
@@ -2629,7 +2654,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
-        display_disconnected_message();
+        display_simi_session_state(SIMI_STATE_SAD, "data_channel_disconnected");
         break;
 
     case ESP_WEBRTC_EVENT_DISCONNECTED:
@@ -2642,7 +2667,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
-        display_disconnected_message();
+        display_simi_session_state(SIMI_STATE_SAD, "webrtc_disconnected");
         break;
 
     case ESP_WEBRTC_EVENT_CONNECTED:

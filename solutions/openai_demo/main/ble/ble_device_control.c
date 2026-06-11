@@ -191,6 +191,7 @@ typedef struct
     bool cancel_requested;
     int8_t best_rssi;
     int8_t last_rssi;
+    char validated_name[32];
 } ble_identity_validation_state_t;
 
 static ble_smart_task_mode_t smart_task_mode = BLE_SMART_TASK_MODE_DISCOVERY;
@@ -201,6 +202,7 @@ static ble_identity_validation_state_t identity_validation_state = {
     .cancel_requested = false,
     .best_rssi = -127,
     .last_rssi = -127,
+    .validated_name = "",
 };
 
 static const ble_uuid128_t s_identity_service_uuid = {
@@ -297,7 +299,7 @@ static void ble_device_run_identity_validation(void);
 static esp_err_t ble_device_start_identity_scan(uint32_t timeout_ms);
 static bool ble_identity_adv_has_target_uuid(const struct ble_hs_adv_fields *fields);
 static void ble_identity_validation_reset(uint32_t timeout_ms);
-static bool ble_identity_validation_record_match(int8_t rssi);
+static bool ble_identity_validation_record_match(int8_t rssi, const char* name);
 static bool ble_identity_validation_is_present(int8_t *best_rssi, int8_t *last_rssi, bool *seen_uuid);
 static void cleanup_stale_connections(void);                                                                   // Nueva función para limpiar conexiones obsoletas
 static bool is_device_state_consistent(ble_device_info_t *device);                                             // Nueva función para verificar consistencia de estado
@@ -2738,11 +2740,20 @@ static void ble_identity_validation_reset(uint32_t timeout_ms)
         identity_validation_state.cancel_requested = false;
         identity_validation_state.best_rssi = -127;
         identity_validation_state.last_rssi = -127;
+        identity_validation_state.validated_name[0] = '\0';
         xSemaphoreGive(identity_validation_mutex);
     }
 }
 
-static bool ble_identity_validation_record_match(int8_t rssi)
+static const char* get_identity_name_from_uuid(const char* uuid_str)
+{
+    if (strcmp(uuid_str, BLE_IDENTITY_SERVICE_UUID_STR) == 0) {
+        return "Lorenzo";
+    }
+    return "Desconocido";
+}
+
+static bool ble_identity_validation_record_match(int8_t rssi, const char* name)
 {
     bool mutex_taken = false;
     bool request_cancel = false;
@@ -2762,6 +2773,10 @@ static bool ble_identity_validation_record_match(int8_t rssi)
 
     identity_validation_state.seen_uuid = true;
     identity_validation_state.last_rssi = rssi;
+    if (name) {
+        strncpy(identity_validation_state.validated_name, name, sizeof(identity_validation_state.validated_name) - 1);
+        identity_validation_state.validated_name[sizeof(identity_validation_state.validated_name) - 1] = '\0';
+    }
     if (rssi > identity_validation_state.best_rssi)
     {
         identity_validation_state.best_rssi = rssi;
@@ -2818,6 +2833,22 @@ static bool ble_identity_validation_is_present(int8_t *best_rssi, int8_t *last_r
     return present;
 }
 
+const char *ble_identity_get_last_validated_name(void)
+{
+    static char name_copy[32];
+    name_copy[0] = '\0';
+
+    if (identity_validation_mutex != NULL &&
+        xSemaphoreTake(identity_validation_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+    {
+        strncpy(name_copy, identity_validation_state.validated_name, sizeof(name_copy) - 1);
+        name_copy[sizeof(name_copy) - 1] = '\0';
+        xSemaphoreGive(identity_validation_mutex);
+    }
+
+    return name_copy;
+}
+
 static void ble_identity_validation_cancel_scan_early(void)
 {
     int rc = ble_gap_disc_cancel();
@@ -2868,7 +2899,8 @@ static int ble_gap_identity_validation_event_handler(struct ble_gap_event *event
         ESP_LOGI(TAG, "Identity service UUID %s observed at RSSI=%d dBm",
                  BLE_IDENTITY_SERVICE_UUID_STR,
                  event->disc.rssi);
-        if (ble_identity_validation_record_match(event->disc.rssi))
+        const char *name = get_identity_name_from_uuid(BLE_IDENTITY_SERVICE_UUID_STR);
+        if (ble_identity_validation_record_match(event->disc.rssi, name))
         {
             ble_identity_validation_cancel_scan_early();
         }

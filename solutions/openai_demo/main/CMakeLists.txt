@@ -18,6 +18,8 @@ idf_component_register(
         "ble/ble_device_control.c"
 
         "ui/ui.c"
+        "ui/simi_canvas.c"
+        "ui/simi.c"
 
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"

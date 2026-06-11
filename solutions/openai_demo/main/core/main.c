@@ -21,6 +21,7 @@
 // Includes del sistema estándar
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <nvs_flash.h>
 // Includes de ESP-IDF
@@ -44,6 +45,7 @@
 #include "ble_common.h"
 #include "codec_init.h"
 #include "ui.h"
+#include "simi.h"
 #include "mute_handler.h"
 #include "bsp/esp-bsp.h"
 #include "nvs_setup.h"
@@ -77,6 +79,7 @@ static QueueHandle_t s_orchestrator_event_queue = NULL;
 #define WEBRTC_STOP_TIMEOUT_MS 8000
 #define WEBRTC_STOP_TASK_STACK_SIZE (6 * 1024)
 #define WEBRTC_STOP_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+#define ORCHESTRATOR_EXTERNAL_STACK_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 static bool s_arrival_context_sent = false;
 static TaskHandle_t s_ble_prepare_task_handle = NULL;
@@ -116,6 +119,44 @@ typedef enum
 static uint32_t orchestrator_now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static void app_heap_alloc_failed_hook(size_t requested_size,
+                                       uint32_t caps,
+                                       const char *function_name)
+{
+    ESP_EARLY_LOGE(TAG,
+                   "[HEAP] alloc_failed | size=%u caps=0x%08" PRIx32 " fn=%s | INTERNAL free=%u largest=%u | DMA free=%u largest=%u | PSRAM free=%u largest=%u",
+                   (unsigned)requested_size,
+                   caps,
+                   function_name ? function_name : "?",
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
+
+static BaseType_t orchestrator_create_external_stack_task(TaskFunction_t task_fn,
+                                                          const char *name,
+                                                          const uint32_t stack_depth,
+                                                          void *param,
+                                                          UBaseType_t priority,
+                                                          TaskHandle_t *task_handle)
+{
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    return xTaskCreatePinnedToCoreWithCaps(task_fn,
+                                           name,
+                                           stack_depth,
+                                           param,
+                                           priority,
+                                           task_handle,
+                                           tskNO_AFFINITY,
+                                           ORCHESTRATOR_EXTERNAL_STACK_CAPS);
+#else
+    return xTaskCreate(task_fn, name, stack_depth, param, priority, task_handle);
+#endif
 }
 
 static void reset_alert_context(void)
@@ -213,6 +254,9 @@ static void orchestrator_log_heap_snapshot(const char *stage)
     const size_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     const size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
+    const size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    const size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+
     const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const size_t psram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
     const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
@@ -220,11 +264,13 @@ static void orchestrator_log_heap_snapshot(const char *stage)
     if (strcmp(label, "telemetry:periodic") == 0)
     {
         ESP_LOGD(TAG,
-                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
+                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | DMA free=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
                  label,
                  internal_free,
                  internal_min,
                  internal_largest,
+                 dma_free,
+                 dma_largest,
                  psram_free,
                  psram_min,
                  psram_largest);
@@ -232,15 +278,35 @@ static void orchestrator_log_heap_snapshot(const char *stage)
     else
     {
         ESP_LOGW(TAG,
-                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
+                 "[HEAP] %s | INTERNAL free=%zu min=%zu largest=%zu | DMA free=%zu largest=%zu | PSRAM free=%zu min=%zu largest=%zu",
                  label,
                  internal_free,
                  internal_min,
                  internal_largest,
+                 dma_free,
+                 dma_largest,
                  psram_free,
                  psram_min,
                  psram_largest);
     }
+}
+
+static esp_err_t orchestrator_ensure_ui_ready(const char *reason)
+{
+    if (ui_is_initialized())
+    {
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Restoring LCD UI after BLE handoff: %s", reason ? reason : "");
+    orchestrator_log_heap_snapshot("ui_restore:before");
+    esp_err_t err = ui_init();
+    orchestrator_log_heap_snapshot((err == ESP_OK) ? "ui_restore:after" : "ui_restore:failed");
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "LCD UI restore failed: %s", esp_err_to_name(err));
+    }
+    return err;
 }
 
 /**
@@ -651,12 +717,12 @@ static void orchestrator_start_ble_prepare(void)
         return;
     }
 
-    BaseType_t rc = xTaskCreate(orchestrator_ble_prepare_task,
-                                "ble_prepare",
-                                6144,
-                                NULL,
-                                6,
-                                &s_ble_prepare_task_handle);
+    BaseType_t rc = orchestrator_create_external_stack_task(orchestrator_ble_prepare_task,
+                                                            "ble_prepare",
+                                                            6144,
+                                                            NULL,
+                                                            6,
+                                                            &s_ble_prepare_task_handle);
     if (rc != pdPASS)
     {
         s_ble_prepare_task_handle = NULL;
@@ -736,12 +802,12 @@ static void orchestrator_start_ble_release(void)
         return;
     }
 
-    BaseType_t rc = xTaskCreate(orchestrator_ble_release_task,
-                                "ble_release",
-                                4096,
-                                NULL,
-                                6,
-                                &s_ble_release_task_handle);
+    BaseType_t rc = orchestrator_create_external_stack_task(orchestrator_ble_release_task,
+                                                            "ble_release",
+                                                            4096,
+                                                            NULL,
+                                                            6,
+                                                            &s_ble_release_task_handle);
     if (rc != pdPASS)
     {
         s_ble_release_task_handle = NULL;
@@ -1057,6 +1123,14 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
+        ui_simi_deinit();
+        esp_err_t ui_deinit_err = ui_deinit();
+        if (ui_deinit_err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "STATE_PREPARING_BLE: LCD release returned %s",
+                     esp_err_to_name(ui_deinit_err));
+        }
+        orchestrator_log_heap_snapshot("ble_prepare:after_ui_release");
         orchestrator_start_ble_prepare();
         break;
 
@@ -1085,6 +1159,10 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
                  "STATE_DISPATCHING_ALERT: dispatching emergency alert after BLE release.");
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
+        if (orchestrator_ensure_ui_ready("dispatching_alert") == ESP_OK)
+        {
+            display_intruder_alert_message();
+        }
         if (!s_alert_dispatch_pending)
         {
             ESP_LOGW(TAG, "STATE_DISPATCHING_ALERT entered without pending alert context");
@@ -1118,6 +1196,16 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         s_active_webrtc_mode = ignition_mode;
 
         orchestrator_log_heap_snapshot("igniting:before_audio");
+        
+        // Ensure UI is ready and show Welcome Screen before audio loads
+        if (orchestrator_ensure_ui_ready("igniting") == ESP_OK)
+        {
+            if (ignition_mode != WEBRTC_SESSION_MODE_VIGILANTE)
+            {
+                display_welcome_identity(ble_identity_get_last_validated_name());
+            }
+        }
+
         esp_err_t audio_err = orchestrator_ensure_audio_runtime_ready();
         if (audio_err != ESP_OK || !media_sys_is_ready())
         {
@@ -1354,9 +1442,6 @@ static void app_startup_orchestrator_task(void *param)
                 s_alert_dispatch_pending = true;
                 s_pending_webrtc_mode = WEBRTC_SESSION_MODE_VIGILANTE;
                 s_ble_release_to_sleep = false;
-
-                // Mostrar la alerta roja
-                display_intruder_alert_message();
 
                 orchestrator_enter_state(&state, STATE_RELEASING_BLE);
             }
@@ -1610,6 +1695,12 @@ void app_main(void)
     esp_log_level_set("PEER_DEF", ESP_LOG_WARN);
     esp_log_level_set("webrtc", ESP_LOG_WARN);
     esp_log_level_set("AV_RENDER", ESP_LOG_WARN);
+
+    esp_err_t heap_hook_err = heap_caps_register_failed_alloc_callback(app_heap_alloc_failed_hook);
+    if (heap_hook_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "No se pudo registrar hook de fallo de heap: %s", esp_err_to_name(heap_hook_err));
+    }
 
     // 1) Inicializa la interfaz de usuario (pantalla LCD)
     esp_err_t err = ui_init();

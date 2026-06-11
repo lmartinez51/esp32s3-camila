@@ -305,6 +305,8 @@ extern "C"
 
     esp_err_t ble_device_prepare_for_identity_scan(uint32_t timeout_ms);
 
+    const char *ble_identity_get_last_validated_name(void);
+
     esp_err_t ble_device_full_release(uint32_t timeout_ms);
 
     /**

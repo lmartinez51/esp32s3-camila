@@ -16,6 +16,7 @@
 // Headers del sistema ESP-IDF
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 
 // Headers de la Board Support Package (BSP)
 #include "bsp/esp-bsp.h"
@@ -24,6 +25,12 @@
 // Headers para control de LCD
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
+#include "driver/spi_master.h"
+
+// Headers de FreeRTOS (mutex de acceso al panel)
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 // Headers de la biblioteca estándar C
 #include <string.h> // Para memset()
@@ -33,6 +40,10 @@
 static const char *TAG = "UI";
 esp_lcd_panel_handle_t g_panel_handle = NULL;
 esp_lcd_panel_io_handle_t g_io_handle = NULL;
+// Mutex que serializa TODO acceso al panel (texto, rects y la tarea de Dr. Simi).
+// Antes no existía: webrtc.c y main.c dibujaban sin protección (race latente).
+static SemaphoreHandle_t s_panel_mutex = NULL;
+static SemaphoreHandle_t s_panel_flush_done = NULL;
 // Variables para recordar la posición y tamaño del último mensaje de estado
 static int g_status_msg_x = 0;
 static int g_status_msg_y = 0;
@@ -61,6 +72,44 @@ static void display_welcome_message(void);
 static void display_camila_text(void);
 static void display_drsimi_text(void);
 static int convert_string_to_char_map(const char *str, int *map_buffer, int max_len);
+
+static bool IRAM_ATTR ui_panel_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
+                                                   esp_lcd_panel_io_event_data_t *edata,
+                                                   void *user_ctx)
+{
+    (void)panel_io;
+    (void)edata;
+
+    BaseType_t high_task_woken = pdFALSE;
+    SemaphoreHandle_t done = (SemaphoreHandle_t)user_ctx;
+    if (done != NULL)
+    {
+        xSemaphoreGiveFromISR(done, &high_task_woken);
+    }
+    return high_task_woken == pdTRUE;
+}
+
+static esp_err_t ui_register_panel_callbacks(void)
+{
+    if (g_io_handle == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_panel_flush_done == NULL)
+    {
+        s_panel_flush_done = xSemaphoreCreateBinary();
+        if (s_panel_flush_done == NULL)
+        {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    const esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = ui_panel_color_trans_done_cb,
+    };
+    return esp_lcd_panel_io_register_event_callbacks(g_io_handle, &cbs, s_panel_flush_done);
+}
 
 /**
  * @brief Custom 8x8 pixel font definition for LCD display.
@@ -133,6 +182,8 @@ static const uint8_t font_8x8[][8] = {
     {0x00, 0x00, 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x06}, // 60 'q' (minúscula)
     {0x3C, 0x66, 0x66, 0x66, 0x6E, 0x3C, 0x0C, 0x00}, // 61 'Q' (mayúscula)
     {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00}, // 62 '?'
+    {0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00}, // 63 'L'
+    {0x00, 0x00, 0x7E, 0x0C, 0x18, 0x30, 0x7E, 0x00}, // 64 'z'
     // {0x06, 0x00, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00}, // 62 í (i con tilde)
     // {0x00, 0x18, 0x00, 0x18, 0x30, 0x60, 0x66, 0x3C}, // 63 '¿' (final, vertical + horizontal mirror)
     // {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00}, // 64 ?
@@ -175,6 +226,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'G': map_buffer[count++] = 42; break;
         case 'I': map_buffer[count++] = 1;  break;  // Antes faltaba
         case 'K': map_buffer[count++] = 29; break;
+        case 'L': map_buffer[count++] = 63; break;
         case 'M': map_buffer[count++] = 41; break;
         case 'N': map_buffer[count++] = 39; break;  // Antes faltaba
         case 'O': map_buffer[count++] = 30; break;
@@ -213,6 +265,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'w': map_buffer[count++] = 22; break;
         case 'x': map_buffer[count++] = 57; break;
         case 'y': map_buffer[count++] = 24; break;
+        case 'z': map_buffer[count++] = 64; break;
         /* ── Símbolos ── */
         case ' ': map_buffer[count++] = 4;  break;
         case '!': map_buffer[count++] = 13; break;
@@ -324,12 +377,181 @@ void ui_sanitize_text(char *text)
 esp_err_t ui_init(void)
 {
     // Configuración del display con buffer de transferencia optimizado
+    // Crear el mutex de panel antes de cualquier dibujo concurrente.
+    if (s_panel_mutex == NULL)
+    {
+        s_panel_mutex = xSemaphoreCreateMutex();
+        if (s_panel_mutex == NULL)
+        {
+            ESP_LOGE(TAG, "No se pudo crear el mutex del panel LCD");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (g_panel_handle != NULL && g_io_handle != NULL)
+    {
+        esp_lcd_panel_disp_on_off(g_panel_handle, true);
+        return ESP_OK;
+    }
+
     const bsp_display_config_t disp_cfg = {.max_transfer_sz = BSP_LCD_H_RES * 100 * sizeof(uint16_t)};
-    bsp_display_new(&disp_cfg, &g_panel_handle, &g_io_handle);
+    esp_err_t err = bsp_display_new(&disp_cfg, &g_panel_handle, &g_io_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "No se pudo inicializar el panel LCD: %s", esp_err_to_name(err));
+        g_panel_handle = NULL;
+        g_io_handle = NULL;
+        return err;
+    }
+
+    err = ui_register_panel_callbacks();
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "No se pudo registrar callback de flush LCD: %s", esp_err_to_name(err));
+        esp_lcd_panel_del(g_panel_handle);
+        esp_lcd_panel_io_del(g_io_handle);
+        spi_bus_free(BSP_LCD_SPI_NUM);
+        g_panel_handle = NULL;
+        g_io_handle = NULL;
+        return err;
+    }
+
     bsp_display_brightness_init();
+    bsp_display_brightness_set(0);
     esp_lcd_panel_disp_on_off(g_panel_handle, true);
-    bsp_display_brightness_set(50); // Brillo inicial al 50%
+    clear_screen();
     return ESP_OK;
+}
+
+bool ui_is_initialized(void)
+{
+    return g_panel_handle != NULL && g_io_handle != NULL;
+}
+
+esp_err_t ui_deinit(void)
+{
+    if (!ui_is_initialized())
+    {
+        return ESP_OK;
+    }
+
+    bsp_display_brightness_set(0);
+
+    esp_err_t ret = ESP_OK;
+    ui_panel_lock();
+
+    if (g_panel_handle != NULL)
+    {
+        esp_err_t err = esp_lcd_panel_disp_on_off(g_panel_handle, false);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "No se pudo apagar el panel LCD: %s", esp_err_to_name(err));
+            ret = err;
+        }
+
+        err = esp_lcd_panel_del(g_panel_handle);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "No se pudo liberar el panel LCD: %s", esp_err_to_name(err));
+            ret = err;
+        }
+        g_panel_handle = NULL;
+    }
+
+    if (g_io_handle != NULL)
+    {
+        esp_err_t err = esp_lcd_panel_io_del(g_io_handle);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "No se pudo liberar el IO SPI del LCD: %s", esp_err_to_name(err));
+            ret = err;
+        }
+        g_io_handle = NULL;
+    }
+
+    esp_err_t bus_err = spi_bus_free(BSP_LCD_SPI_NUM);
+    if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "No se pudo liberar el bus SPI del LCD: %s", esp_err_to_name(bus_err));
+        ret = bus_err;
+    }
+
+    g_status_msg_w = 0;
+    g_status_msg_h = 0;
+    g_help_msg_w = 0;
+    g_help_msg_h = 0;
+
+    ui_panel_unlock();
+    ESP_LOGI(TAG, "LCD panel and SPI bus released");
+    return ret;
+}
+
+/**
+ * @brief Toma el mutex del panel LCD. Bloqueante.
+ *        Permite a otros módulos (p.ej. Dr. Simi) agrupar varios blits atómicos.
+ */
+void ui_panel_lock(void)
+{
+    if (s_panel_mutex)
+    {
+        xSemaphoreTake(s_panel_mutex, portMAX_DELAY);
+    }
+}
+
+/**
+ * @brief Libera el mutex del panel LCD.
+ */
+void ui_panel_unlock(void)
+{
+    if (s_panel_mutex)
+    {
+        xSemaphoreGive(s_panel_mutex);
+    }
+}
+
+/**
+ * @brief Envía un bitmap al panel de forma protegida por el mutex.
+ *        Único punto de acceso a esp_lcd_panel_draw_bitmap dentro del módulo UI.
+ * @param x0,y0 Esquina superior izquierda (inclusiva).
+ * @param x1,y1 Esquina inferior derecha (exclusiva).
+ * @param pixels Buffer de píxeles en formato del panel (16 bpp).
+ */
+void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
+{
+    if (!g_panel_handle || !pixels)
+    {
+        return;
+    }
+    ui_panel_lock();
+
+    int w = x1 - x0;
+    int h = y1 - y0;
+    int max_bytes_per_chunk = 16384; // 16KB to fit in fragmented DMA memory
+    int rows_per_chunk = max_bytes_per_chunk / (w * 2);
+    if (rows_per_chunk < 1) rows_per_chunk = 1;
+
+    const uint8_t *p = (const uint8_t *)pixels;
+    for (int y = y0; y < y1; y += rows_per_chunk) {
+        int end_y = y + rows_per_chunk;
+        if (end_y > y1) end_y = y1;
+
+        if (s_panel_flush_done) {
+            xSemaphoreTake(s_panel_flush_done, 0);
+        }
+
+        esp_err_t err = esp_lcd_panel_draw_bitmap(g_panel_handle, x0, y, x1, end_y, p);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "LCD blit failed: %s", esp_err_to_name(err));
+            break;
+        } else if (s_panel_flush_done &&
+                   xSemaphoreTake(s_panel_flush_done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+            ESP_LOGW(TAG, "LCD blit timed out waiting for SPI flush");
+            break;
+        }
+
+        p += (end_y - y) * w * 2;
+    }
+    ui_panel_unlock();
 }
 
 /**
@@ -353,13 +575,20 @@ static void clear_screen(void)
         int chunk = ((lines_sent + CLEAR_CHUNK_LINES) <= BSP_LCD_V_RES)
                         ? CLEAR_CHUNK_LINES
                         : (BSP_LCD_V_RES - lines_sent);
-        esp_lcd_panel_draw_bitmap(g_panel_handle,
-                                  0, lines_sent,
-                                  BSP_LCD_H_RES, lines_sent + chunk,
-                                  clear_buf);
+        ui_panel_blit(0, lines_sent,
+                      BSP_LCD_H_RES, lines_sent + chunk,
+                      clear_buf);
         lines_sent += chunk;
     }
 #undef CLEAR_CHUNK_LINES
+}
+
+/**
+ * @brief Limpia toda la pantalla a negro (envoltorio público de clear_screen).
+ */
+void ui_clear_screen(void)
+{
+    clear_screen();
 }
 
 /**
@@ -458,7 +687,7 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
     }
 
     // Enviar el buffer completo al display
-    esp_lcd_panel_draw_bitmap(g_panel_handle, start_x, start_y, start_x + total_width, start_y + total_height, full_buffer);
+    ui_panel_blit(start_x, start_y, start_x + total_width, start_y + total_height, full_buffer);
     free(full_buffer);
 }
 
@@ -469,12 +698,42 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
  */
 void display_startup_screen(void)
 {
+    bsp_display_brightness_set(0);
     clear_screen();
     draw_screen_border(COLOR_CYAN_BGR565, 2);
     display_welcome_message();
-    vTaskDelay(pdMS_TO_TICKS(2000)); // Espera 2 segundos para mostrar el siguiente mensaje
-    // display_camila_text();
-    display_drsimi_text();
+    ui_backlight_on();
+}
+
+void display_welcome_identity(const char *name)
+{
+    const char *identity_name = (name && name[0] != '\0') ? name : "Lorenzo";
+    int welcome_map[16];
+    int name_map[32];
+    int welcome_chars = convert_string_to_char_map("Welcome", welcome_map, 16);
+    int name_chars = convert_string_to_char_map(identity_name, name_map, 32);
+    if (welcome_chars == 0 || name_chars == 0)
+    {
+        return;
+    }
+
+    const int scale = 3;
+    const int char_h = CHAR_HEIGHT * scale;
+    const int line_spacing = 16;
+    const int total_h = (char_h * 2) + line_spacing;
+    const int start_y = (BSP_LCD_V_RES - total_h) / 2;
+
+    int welcome_w = welcome_chars * (CHAR_WIDTH * scale) + (welcome_chars - 1) * CHAR_SPACING_SCALE_3X;
+    int name_w = name_chars * (CHAR_WIDTH * scale) + (name_chars - 1) * CHAR_SPACING_SCALE_3X;
+
+    bsp_display_brightness_set(0);
+    clear_screen();
+    draw_screen_border(COLOR_CYAN_BGR565, 2);
+    display_text((BSP_LCD_H_RES - welcome_w) / 2, start_y,
+                 welcome_map, welcome_chars, COLOR_CYAN_BGR565, scale);
+    display_text((BSP_LCD_H_RES - name_w) / 2, start_y + char_h + line_spacing,
+                 name_map, name_chars, COLOR_WHITE_BGR565, scale);
+    ui_backlight_on();
 }
 
 /**
@@ -545,18 +804,13 @@ static void display_welcome_message(void)
     display_text(text_x, welcome_y, welcome_map, num_chars, COLOR_CYAN_BGR565, scale);
 }
 
-/**
- * @brief Displays the online status message on the LCD screen.
- *        Shows "is online!" text centered below the main title area.
- *        Clears any previous WiFi credential messages before displaying.
- * @param color Text color in BGR565 format.
- */
-void display_online_status(uint16_t color)
+#if 0
+static void legacy_online_status_disabled(uint16_t color)
 {
     ui_clear_status_message();
     ui_clear_help_message_below_status();
 
-    // Mapeo de caracteres para "is online!"
+    // Legacy online glyph map (disabled).
     int char_map[] = {8, 9, 4, 11, 12, 7, 8, 12, 14, 13};
     int num_chars = sizeof(char_map) / sizeof(char_map[0]);
     int scale = 2;
@@ -574,6 +828,7 @@ void display_online_status(uint16_t color)
 
     display_text(online_x, online_y, char_map, num_chars, color, scale);
 }
+#endif
 
 /**
  * @brief Displays the WiFi credentials prompt message on the LCD screen.
@@ -618,6 +873,7 @@ void display_wifi_creds(void)
     // Mostrar ambas líneas en amarillo
     display_text(x_l1, y_l1, char_map_l1, num_chars_l1, COLOR_YELLOW_BGR565, scale);
     display_text(x_l2, y_l2, char_map_l2, num_chars_l2, COLOR_YELLOW_BGR565, scale);
+    ui_backlight_on();
 }
 
 /**
@@ -652,6 +908,7 @@ void display_error_message(void)
 
     // Mostrar el mensaje de error en rojo
     display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
+    ui_backlight_on();
 }
 
 /**
@@ -702,6 +959,7 @@ void display_resetting_message(void)
     // Mostrar el mensaje en YELLOW (indica proceso en curso)
     display_text(x_msg, y_msg, resetting_map, num_resetting,
                  COLOR_YELLOW_BGR565, scale);
+    ui_backlight_on();
 
     ESP_LOGI(TAG, "Resetting message displayed - Screen cleaned, only borders remain");
 }
@@ -738,6 +996,7 @@ void display_disconnected_message(void)
 
     // Mostrar el mensaje de desconexión en rojo
     display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
+    ui_backlight_on();
 }
 
 /**
@@ -870,6 +1129,7 @@ void display_config_mode_message(void)
 
     display_text(line3_x, info_y_start + (line_height * 3), line3_map, num_line3,
                  COLOR_WHITE_BGR565, scale_info);
+    ui_backlight_on();
 }
 
 /**
@@ -991,14 +1251,15 @@ void display_api_key_error_message(void)
     // Dibujar líneas de instrucciones en amarillo
     display_text(line3_x, line3_y, line3_map, num_line3, COLOR_YELLOW_BGR565, TEXT_SCALE);
     display_text(line4_x, line4_y, line4_map, num_line4, COLOR_YELLOW_BGR565, TEXT_SCALE);
+    ui_backlight_on();
 
     ESP_LOGI(TAG, "API Key error message displayed with reorganized layout");
 }
 
 /**
- * @brief Displays an "Intruso Detectado" red alert screen.
+ * @brief Displays an "Intruder Detected" red alert screen.
  *        Clears the whole screen and draws a thick red border.
- *        Renders "INTRUSO" and "DETECTADO" on two lines using scale 3.
+ *        Renders "INTRUDER" and "DETECTED" on two lines using scale 3.
  */
 void display_intruder_alert_message(void)
 {
@@ -1014,10 +1275,10 @@ void display_intruder_alert_message(void)
 
     // Convertir de forma segura las cadenas de texto a nuestro mapa de caracteres
     int map_l1[10];
-    int num_l1 = convert_string_to_char_map("INTRUSO", map_l1, 10);
+    int num_l1 = convert_string_to_char_map("INTRUDER", map_l1, 10);
 
     int map_l2[15];
-    int num_l2 = convert_string_to_char_map("DETECTADO", map_l2, 15);
+    int num_l2 = convert_string_to_char_map("DETECTED", map_l2, 15);
 
     // Calcular el ancho de cada línea
     int line1_width = num_l1 * (CHAR_WIDTH * TEXT_SCALE) + (num_l1 - 1) * CHAR_SPACING_SCALE_3X;
@@ -1037,9 +1298,11 @@ void display_intruder_alert_message(void)
     // Mostrar ambas líneas en rojo
     display_text(line1_x, line1_y, map_l1, num_l1, COLOR_RED_BGR565, TEXT_SCALE);
     display_text(line2_x, line2_y, map_l2, num_l2, COLOR_RED_BGR565, TEXT_SCALE);
+    ui_backlight_on();
 
     ESP_LOGW(TAG, "Alerta de INTRUSO DETECTADO renderizada en pantalla");
 }
+
 /**
  * @brief Safely turns off the LCD backlight without affecting other systems.
  *        Uses gradual brightness reduction and only disables backlight, not the panel.
@@ -1105,10 +1368,9 @@ static void draw_filled_rect(int x, int y, int width, int height, uint16_t color
 
     for (int row = 0; row < height; row++)
     {
-        esp_lcd_panel_draw_bitmap(g_panel_handle,
-                                  x,       y + row,
-                                  x + width, y + row + 1,
-                                  row_buf);
+        ui_panel_blit(x,         y + row,
+                      x + width, y + row + 1,
+                      row_buf);
     }
 }
 
