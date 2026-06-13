@@ -681,30 +681,32 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
 
 static void draw_body(simi_canvas_t *cv)
 {
-    // Cuello ancho y corto para que la cabeza caiga sobre un cuerpo mas robusto.
-    canvas_fill_rect(cv, SIMI_CX - 23, 147, 46, 34, C_SKIN);
-    canvas_fill_ellipse(cv, SIMI_CX, 151, 30, 13, C_SKIN_SH);
+    // Sin cuello visible para dar la ilusión de estar más "gordito" y compacto.
+    // La cabeza (dibujada después) tapará la parte superior de la ropa.
 
-    // Hombros y panza redondeada: Dr. Simi debe verse chaparrito/gordito,
-    // no como una bata triangular delgada.
-    canvas_fill_ellipse(cv, SIMI_CX - 70, 195, 38, 32, C_COAT_SH);
-    canvas_fill_ellipse(cv, SIMI_CX + 70, 195, 38, 32, C_COAT_SH);
-    canvas_fill_ellipse(cv, SIMI_CX, 208, 92, 50, C_COAT_SH);
-    canvas_fill_ellipse(cv, SIMI_CX - 66, 191, 34, 30, C_COAT);
-    canvas_fill_ellipse(cv, SIMI_CX + 66, 191, 34, 30, C_COAT);
-    canvas_fill_ellipse(cv, SIMI_CX, 202, 86, 46, C_COAT);
-    canvas_fill_round_rect(cv, 34, 166, SIMI_CANVAS_W - 68, 62, 40, C_COAT);
+    // Sombra trasera (opcional para dar volumen)
+    canvas_fill_ellipse(cv, SIMI_CX, 210, 104, 74, C_COAT_SH);
 
-    // Camisa mas compacta; deja dominar el volumen blanco de la bata.
-    canvas_fill_triangle(cv, SIMI_CX, 206, SIMI_CX - 29, 166, SIMI_CX + 29, 166, C_SHIRT);
+    // Hombros muy caídos y amplios
+    canvas_fill_ellipse(cv, SIMI_CX - 64, 184, 52, 44, C_COAT);
+    canvas_fill_ellipse(cv, SIMI_CX + 64, 184, 52, 44, C_COAT);
+    
+    // Panza grande central
+    canvas_fill_ellipse(cv, SIMI_CX, 210, 96, 68, C_COAT);
+    
+    // Relleno central para conectar hombros
+    canvas_fill_round_rect(cv, 24, 170, SIMI_CANVAS_W - 48, 60, 40, C_COAT);
 
-    // Corbata azul oscura, un poco mas corta para no adelgazar visualmente el torso.
-    canvas_fill_triangle(cv, SIMI_CX, 187, SIMI_CX - 9, 175, SIMI_CX + 9, 175, C_TIE);
-    canvas_fill_triangle(cv, SIMI_CX - 7, 185, SIMI_CX + 7, 185, SIMI_CX, 205, C_TIE);
+    // Camisa en V (cuello), movida más arriba porque no hay cuello
+    canvas_fill_triangle(cv, SIMI_CX, 196, SIMI_CX - 32, 146, SIMI_CX + 32, 146, C_SHIRT);
 
-    // Cruz medica roja en la solapa izquierda.
-    canvas_fill_rect(cv, 52 - 2, 194 - 7, 4, 16, C_CROSS);
-    canvas_fill_rect(cv, 52 - 7, 194 - 2, 16, 4, C_CROSS);
+    // Corbata azul oscura, más arriba y un poco más ancha
+    canvas_fill_triangle(cv, SIMI_CX, 182, SIMI_CX - 12, 156, SIMI_CX + 12, 156, C_TIE);
+    canvas_fill_triangle(cv, SIMI_CX - 10, 178, SIMI_CX + 10, 178, SIMI_CX, 210, C_TIE);
+
+    // Cruz médica roja en la solapa izquierda (ajustada a la nueva altura)
+    canvas_fill_rect(cv, 48 - 2, 184 - 7, 4, 16, C_CROSS);
+    canvas_fill_rect(cv, 48 - 7, 184 - 2, 16, 4, C_CROSS);
 }
 
 static void draw_eye(simi_canvas_t *cv, int ex, int ey, const simi_face_t *f)
@@ -742,13 +744,14 @@ static void simi_render(const simi_face_t *f)
     // Cuerpo primero (queda detrás del mentón)
     draw_body(cv);
 
-    // ── Cabeza ──
-    // Piel completa (es calvo)
-    canvas_fill_ellipse(cv, SIMI_CX, 96 + dy, 66, 72, C_SKIN); // Forma base de la cabeza
+    // ── Cabeza (Forma de aguacate/pera) ──
+    // Para lograrlo, usamos dos elipses superpuestas: una estrecha arriba y una ancha abajo
+    canvas_fill_ellipse(cv, SIMI_CX, 82 + dy, 52, 60, C_SKIN); // Frente/Cráneo (más estrecho)
+    canvas_fill_ellipse(cv, SIMI_CX, 110 + dy, 74, 58, C_SKIN); // Mejillas/Mandíbula (más ancho)
     
-    // Orejas
-    canvas_fill_circle(cv, SIMI_CX - 66, 102 + dy, 14, C_SKIN);
-    canvas_fill_circle(cv, SIMI_CX + 66, 102 + dy, 14, C_SKIN);
+    // Orejas (bajadas ligeramente para coincidir con la parte ancha)
+    canvas_fill_circle(cv, SIMI_CX - 72, 108 + dy, 14, C_SKIN);
+    canvas_fill_circle(cv, SIMI_CX + 72, 108 + dy, 14, C_SKIN);
 
     // ── Los 3 cabellos a cada lado (más gruesos, blancos y como patitas de araña) ──
     // Izquierda (salen hacia arriba/afuera y luego caen)
