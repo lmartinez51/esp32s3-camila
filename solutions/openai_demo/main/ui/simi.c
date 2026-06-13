@@ -41,8 +41,8 @@ static const char *TAG = "SIMI";
 #define SIMI_ANIM_TRY_LOCK_MS 5
 #define SIMI_ANIM_STOP_WAIT_MS 2600
 #define SIMI_IDLE_WAKE_MS 500
-#define SIMI_IDLE_BLINK_MIN_MS 4200
-#define SIMI_IDLE_BLINK_JITTER_MS 1800
+#define SIMI_IDLE_BLINK_MIN_MS 5200
+#define SIMI_IDLE_BLINK_JITTER_MS 2200
 
 /* ── Paleta (RGB lógico; SIMI_RGB la traduce al formato del panel) ── */
 #define C_BG SIMI_RGB(0, 0, 0)
@@ -276,24 +276,24 @@ static void simi_anim_task(void *arg)
         simi_state_t visual_state = simi_effective_state(base_state, speaking);
         bool state_changed = (visual_state != last_visual_state) || (speaking != last_speaking);
         bool render = state_changed;
-        bool blocking_blit = state_changed;
+        bool blocking_blit = false;
 
         wait_ms = SIMI_IDLE_WAKE_MS;
 
         if (visual_state == SIMI_STATE_TALKING)
         {
             render = true;
-            wait_ms = 125;
+            wait_ms = 250;
         }
         else if (visual_state == SIMI_STATE_THINKING)
         {
             render = true;
-            wait_ms = 250;
+            wait_ms = 500;
         }
         else if (visual_state == SIMI_STATE_ALERT)
         {
             render = true;
-            wait_ms = 180;
+            wait_ms = 333;
         }
         else if (visual_state == SIMI_STATE_LISTENING ||
                  visual_state == SIMI_STATE_IDLE ||
@@ -308,7 +308,7 @@ static void simi_anim_task(void *arg)
             if (blink_active)
             {
                 render = true;
-                wait_ms = 80;
+                wait_ms = 140;
             }
             else if (next_blink_ms > now_ms)
             {

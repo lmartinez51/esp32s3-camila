@@ -280,7 +280,9 @@ int dtls_srtp_read(dtls_srtp_t *dtls_srtp, unsigned char *buf, size_t len)
             ESP_LOGE(TAG, "Detected DTLS connection close ret %d", ret);
             ret = MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY;
             break;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+        } else if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                   ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
+                   ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             ret = 0;
             break;
         } else {

@@ -44,6 +44,10 @@
 #define SESSION_UPDATE_INITIAL_DELAY_MS 350
 #define SESSION_UPDATE_RETRY_DELAY_MS 250
 #define SESSION_UPDATE_MAX_ATTEMPTS 8
+#define SIMI_SESSION_STATIC_DELAY_MS 750
+#define SIMI_SESSION_ANIM_PROTECT_MS 8000
+#define SIMI_SESSION_TASK_STACK_SIZE 6144
+#define SIMI_SESSION_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define DATA_CHANNEL_STATS_LOG_INTERVAL_MS 1000
 #define ENABLE_DATA_CHANNEL_SNAPSHOT_LOGS 0
 #define ENABLE_REALTIME_EVENT_DEBUG_LOGS 0
@@ -119,6 +123,7 @@ static QueueHandle_t g_webrtc_action_queue = NULL;
 static TaskHandle_t g_capture_recovery_task = NULL;
 #endif
 static TaskHandle_t g_session_update_task = NULL;
+static TaskHandle_t g_simi_session_task = NULL;
 static volatile uint32_t g_last_input_speech_ms = 0;
 static volatile uint32_t g_last_response_done_ms = 0;
 static volatile bool g_input_speech_active = false;
@@ -138,9 +143,15 @@ static SemaphoreHandle_t g_webrtc_mutex = NULL;
 static uint32_t g_webrtc_generation = 0;
 static volatile uint32_t g_last_realtime_activity_ms = 0;
 static volatile uint32_t g_session_update_generation = 0;
+static volatile uint32_t g_simi_session_generation = 0;
+static volatile uint32_t g_simi_anim_allowed_ms = 0;
+static volatile simi_state_t g_simi_pending_state = SIMI_STATE_IDLE;
+static volatile bool g_simi_pending_speaking = false;
+static volatile bool g_simi_static_ready = false;
 static volatile webrtc_session_mode_t g_webrtc_session_mode = WEBRTC_SESSION_MODE_FRIENDLY;
 
 static uint32_t app_millis(void);
+static void simi_session_set_state(simi_state_t state, const char *reason);
 
 static esp_err_t ensure_webrtc_mutex(void)
 {
@@ -749,6 +760,37 @@ static void schedule_session_update(void)
     }
 }
 
+static bool simi_session_generation_is_current(uint32_t generation)
+{
+    return g_realtime_session_ready && webrtc_generation_is_current(generation);
+}
+
+static bool simi_session_animation_allowed(void)
+{
+    uint32_t allowed_ms = g_simi_anim_allowed_ms;
+    return allowed_ms != 0 &&
+           (int32_t)(app_millis() - allowed_ms) >= 0;
+}
+
+static void simi_session_finish_task(uint32_t generation)
+{
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+
+    if (ensure_webrtc_mutex() == ESP_OK &&
+        xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+    {
+        if (g_simi_session_task == self)
+        {
+            g_simi_session_task = NULL;
+            if (g_simi_session_generation == generation)
+            {
+                g_simi_session_generation = 0;
+            }
+        }
+        xSemaphoreGive(g_webrtc_mutex);
+    }
+}
+
 static void display_simi_session_state(simi_state_t state, const char *reason)
 {
     esp_err_t err = ui_init();
@@ -771,22 +813,157 @@ static void display_simi_session_state(simi_state_t state, const char *reason)
     }
 
     ui_simi_set_state(state);
-    err = ui_simi_start();
-    if (err != ESP_OK)
+    ui_simi_render_static(state);
+}
+
+static void simi_session_deferred_task(void *arg)
+{
+    uint32_t generation = (uint32_t)(uintptr_t)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(SIMI_SESSION_STATIC_DELAY_MS));
+    if (!simi_session_generation_is_current(generation))
     {
-        ESP_LOGW(TAG, "Could not start Dr. Simi animation for %s: %s; using static frame",
-                 reason ? reason : "session_state",
-                 esp_err_to_name(err));
-        ui_simi_render_static(state);
+        simi_session_finish_task(generation);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    simi_state_t state = (simi_state_t)g_simi_pending_state;
+    display_simi_session_state(state, "session_updated_deferred");
+    g_simi_static_ready = true;
+
+    if (SIMI_SESSION_ANIM_PROTECT_MS > 0)
+    {
+        vTaskDelay(pdMS_TO_TICKS(SIMI_SESSION_ANIM_PROTECT_MS));
+    }
+
+    if (simi_session_generation_is_current(generation))
+    {
+        g_simi_anim_allowed_ms = app_millis();
+        ui_simi_set_state((simi_state_t)g_simi_pending_state);
+        ui_simi_notify_speaking(g_simi_pending_speaking);
+
+        esp_err_t err = ui_simi_start();
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Could not start delayed Dr. Simi animation: %s",
+                     esp_err_to_name(err));
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Dr. Simi animation enabled after audio protection window");
+        }
+    }
+
+    simi_session_finish_task(generation);
+    vTaskDelete(NULL);
+}
+
+static void schedule_simi_session_visual(simi_state_t state, const char *reason)
+{
+    uint32_t generation = 0;
+    bool already_scheduled = false;
+    bool animation_already_allowed = false;
+
+    if (ensure_webrtc_mutex() == ESP_OK &&
+        xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(200)) == pdTRUE)
+    {
+        if (webrtc != NULL)
+        {
+            generation = g_webrtc_generation;
+            g_simi_pending_state = state;
+            animation_already_allowed = simi_session_animation_allowed();
+            if (!animation_already_allowed)
+            {
+                g_simi_pending_speaking = false;
+                g_simi_static_ready = false;
+                g_simi_anim_allowed_ms = 0;
+            }
+
+            already_scheduled = (g_simi_session_task != NULL &&
+                                 g_simi_session_generation == generation);
+            if (!already_scheduled)
+            {
+                g_simi_session_generation = generation;
+            }
+        }
+        xSemaphoreGive(g_webrtc_mutex);
+    }
+
+    if (generation == 0)
+    {
+        ESP_LOGW(TAG, "Cannot schedule Dr. Simi visual for %s: no active WebRTC generation",
+                 reason ? reason : "session_state");
+        return;
+    }
+
+    if (animation_already_allowed)
+    {
+        simi_session_set_state(state, reason);
+        return;
+    }
+
+    if (already_scheduled)
+    {
+        ESP_LOGI(TAG, "Dr. Simi visual already scheduled for %s",
+                 reason ? reason : "session_state");
+        return;
+    }
+
+    TaskHandle_t task = NULL;
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(simi_session_deferred_task,
+                                                    "simi_ui_gate",
+                                                    SIMI_SESSION_TASK_STACK_SIZE,
+                                                    (void *)(uintptr_t)generation,
+                                                    SIMI_SESSION_TASK_PRIORITY,
+                                                    &task,
+                                                    tskNO_AFFINITY,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    BaseType_t ok = xTaskCreate(simi_session_deferred_task,
+                                "simi_ui_gate",
+                                SIMI_SESSION_TASK_STACK_SIZE,
+                                (void *)(uintptr_t)generation,
+                                SIMI_SESSION_TASK_PRIORITY,
+                                &task);
+#endif
+    if (ok != pdPASS || task == NULL)
+    {
+        if (ensure_webrtc_mutex() == ESP_OK &&
+            xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+        {
+            if (g_simi_session_generation == generation)
+            {
+                g_simi_session_generation = 0;
+            }
+            xSemaphoreGive(g_webrtc_mutex);
+        }
+        ESP_LOGW(TAG, "Could not create delayed Dr. Simi visual task for %s",
+                 reason ? reason : "session_state");
+        return;
+    }
+
+    if (ensure_webrtc_mutex() == ESP_OK &&
+        xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+    {
+        g_simi_session_task = task;
+        xSemaphoreGive(g_webrtc_mutex);
     }
 }
 
 static void simi_session_set_state(simi_state_t state, const char *reason)
 {
+    g_simi_pending_state = state;
+
+    if (!simi_session_animation_allowed())
+    {
+        return;
+    }
+
     if (!ui_is_initialized() || !ui_simi_ready())
     {
         display_simi_session_state(state, reason);
-        return;
     }
 
     ui_simi_set_state(state);
@@ -801,10 +978,12 @@ static void simi_session_set_state(simi_state_t state, const char *reason)
 
 static void simi_session_notify_speaking(bool active)
 {
+    g_simi_pending_speaking = active;
+
     if (ui_is_initialized() && ui_simi_ready())
     {
         ui_simi_notify_speaking(active);
-        if (active)
+        if (active && simi_session_animation_allowed())
         {
             esp_err_t err = ui_simi_start();
             if (err != ESP_OK)
@@ -834,6 +1013,10 @@ static void reset_realtime_interaction_state(void)
     g_dc_last_event_size = 0;
     g_dc_last_event_type[0] = '\0';
     g_last_realtime_activity_ms = 0;
+    g_simi_anim_allowed_ms = 0;
+    g_simi_pending_state = SIMI_STATE_IDLE;
+    g_simi_pending_speaking = false;
+    g_simi_static_ready = false;
 }
 
 /**
@@ -2554,14 +2737,22 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     }
     else if (strcmp(event_type, "session.updated") == 0)
     {
+        const bool first_session_ready = !g_realtime_session_ready;
         ESP_LOGI(TAG, "Realtime session updated; respuestas automaticas por VAD habilitadas");
         g_realtime_session_ready = true;
         mark_realtime_activity();
-        orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
-        display_simi_session_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                       ? SIMI_STATE_ALERT
-                                       : SIMI_STATE_LISTENING,
-                                   "session_updated");
+        if (first_session_ready)
+        {
+            orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
+            schedule_simi_session_visual(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                             ? SIMI_STATE_ALERT
+                                             : SIMI_STATE_LISTENING,
+                                         "session_updated");
+        }
+        else
+        {
+            ESP_LOGD(TAG, "Duplicate session.updated ignored for orchestrator/Simi scheduling");
+        }
     }
     else if (strcmp(event_type, "input_audio_buffer.speech_started") == 0)
     {

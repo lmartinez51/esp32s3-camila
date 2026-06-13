@@ -109,6 +109,7 @@
 
 #define BLE_CENTRAL_MIN_INTERNAL_FREE_BYTES (4 * 1024)
 #define BLE_CENTRAL_MIN_INTERNAL_LARGEST_BLOCK_BYTES (2 * 1024)
+#define IDENTITY_EARLY_EXIT_CANCEL_WAIT_MS 1000
 
 // Variables globales
 static const char *TAG = "BLE_DEVICE_CTRL";
@@ -2855,6 +2856,10 @@ static void ble_identity_validation_cancel_scan_early(void)
     if (rc == 0)
     {
         ESP_LOGI(TAG, "Identity match accepted; GAP discovery cancel requested for early validation exit");
+        if (scan_complete_semaphore != NULL)
+        {
+            xSemaphoreGive(scan_complete_semaphore);
+        }
         return;
     }
 
@@ -3002,6 +3007,36 @@ static void ble_device_run_identity_validation(void)
     int8_t last_rssi = -127;
     bool seen_uuid = false;
     bool present = ble_identity_validation_is_present(&best_rssi, &last_rssi, &seen_uuid);
+
+    if (scan_completed && present)
+    {
+        if (!ble_device_gap_discovery_active())
+        {
+            scanning_active = false;
+            ESP_LOGI(TAG, "Identity early exit completed; GAP discovery already idle");
+        }
+        else
+        {
+            bool cancel_acknowledged = false;
+            if (scan_complete_semaphore != NULL)
+            {
+                cancel_acknowledged =
+                    xSemaphoreTake(scan_complete_semaphore,
+                                   pdMS_TO_TICKS(IDENTITY_EARLY_EXIT_CANCEL_WAIT_MS)) == pdTRUE;
+            }
+
+            if (cancel_acknowledged || !ble_device_gap_discovery_active())
+            {
+                scanning_active = false;
+                ESP_LOGI(TAG, "Identity early exit completed; GAP discovery idle");
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Identity early exit woke before GAP idle; forcing scan stop");
+                ble_device_stop_scan();
+            }
+        }
+    }
 
     if (seen_uuid && present)
     {

@@ -44,6 +44,7 @@ esp_lcd_panel_io_handle_t g_io_handle = NULL;
 // Antes no existía: webrtc.c y main.c dibujaban sin protección (race latente).
 static SemaphoreHandle_t s_panel_mutex = NULL;
 static SemaphoreHandle_t s_panel_flush_done = NULL;
+static int s_backlight_percent = -1;
 // Variables para recordar la posición y tamaño del último mensaje de estado
 static int g_status_msg_x = 0;
 static int g_status_msg_y = 0;
@@ -69,6 +70,7 @@ static void clear_screen(void);
 static void draw_filled_rect(int x, int y, int width, int height, uint16_t color);
 static void draw_screen_border(uint16_t color, int thickness);
 static int convert_string_to_char_map(const char *str, int *map_buffer, int max_len);
+static void ui_backlight_set_if_changed(int brightness_percent);
 
 static bool IRAM_ATTR ui_panel_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
                                                    esp_lcd_panel_io_event_data_t *edata,
@@ -413,8 +415,8 @@ esp_err_t ui_init(void)
         return err;
     }
 
-    bsp_display_brightness_init();
-    bsp_display_brightness_set(0);
+    s_backlight_percent = -1;
+    ui_backlight_set_if_changed(0);
     esp_lcd_panel_disp_on_off(g_panel_handle, true);
     clear_screen();
     return ESP_OK;
@@ -434,7 +436,7 @@ static esp_err_t ui_deinit_internal(bool keep_last_frame)
 
     if (!keep_last_frame)
     {
-        bsp_display_brightness_set(0);
+        ui_backlight_set_if_changed(0);
     }
 
     esp_err_t ret = ESP_OK;
@@ -767,7 +769,6 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
     const int total_h = (has_title && has_subtitle) ? (char_h * 2 + line_gap) : char_h;
     int y = (BSP_LCD_V_RES - total_h) / 2;
 
-    bsp_display_brightness_set(0);
     clear_screen();
     draw_screen_border(color, 2);
 
@@ -817,7 +818,7 @@ void display_welcome_identity(const char *name)
     int welcome_w = welcome_chars * (CHAR_WIDTH * scale) + (welcome_chars - 1) * CHAR_SPACING_SCALE_3X;
     int name_w = name_chars * (CHAR_WIDTH * scale) + (name_chars - 1) * CHAR_SPACING_SCALE_3X;
 
-    bsp_display_brightness_set(0);
+    ui_backlight_set_if_changed(0);
     clear_screen();
     draw_screen_border(COLOR_CYAN_BGR565, 2);
     display_text((BSP_LCD_H_RES - welcome_w) / 2, start_y,
@@ -1397,6 +1398,35 @@ void display_intruder_alert_message(void)
     ESP_LOGW(TAG, "Alerta de INTRUSO DETECTADO renderizada en pantalla");
 }
 
+static void ui_backlight_set_if_changed(int brightness_percent)
+{
+    if (brightness_percent < 0)
+    {
+        brightness_percent = 0;
+    }
+    else if (brightness_percent > 100)
+    {
+        brightness_percent = 100;
+    }
+
+    if (s_backlight_percent == brightness_percent)
+    {
+        return;
+    }
+
+    esp_err_t err = bsp_display_brightness_set(brightness_percent);
+    if (err == ESP_OK)
+    {
+        s_backlight_percent = brightness_percent;
+    }
+    else
+    {
+        ESP_LOGW(TAG, "No se pudo ajustar backlight a %d%%: %s",
+                 brightness_percent,
+                 esp_err_to_name(err));
+    }
+}
+
 /**
  * @brief Safely turns off the LCD backlight without affecting other systems.
  *        Uses gradual brightness reduction and only disables backlight, not the panel.
@@ -1407,13 +1437,13 @@ void ui_backlight_off_safe(void)
     // Apagado gradual del brillo para evitar cambios bruscos en el sistema
     for (int brightness = 50; brightness >= 0; brightness -= 5)
     {
-        bsp_display_brightness_set(brightness);
+        ui_backlight_set_if_changed(brightness);
         vTaskDelay(pdMS_TO_TICKS(50)); // 50ms entre cada paso
     }
 
     // SOLO apagar el backlight, NO el panel LCD
     // Esto evita conflictos con recursos compartidos del SPI
-    bsp_display_brightness_set(0);
+    ui_backlight_set_if_changed(0);
 
     // NO llamar esp_lcd_panel_disp_on_off() aquí para evitar conflictos
     // ESP_LOGI(TAG, "LCD backlight turned off safely (panel remains active).");
@@ -1425,8 +1455,7 @@ void ui_backlight_off_safe(void)
  */
 void ui_backlight_on(void)
 {
-    bsp_display_brightness_set(50); // Restaurar brillo al 50%
-    ESP_LOGI(TAG, "LCD backlight turned on.");
+    ui_backlight_set_if_changed(50); // Restaurar brillo al 50%
 }
 
 /**
