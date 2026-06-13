@@ -68,9 +68,6 @@ static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int o
 static void clear_screen(void);
 static void draw_filled_rect(int x, int y, int width, int height, uint16_t color);
 static void draw_screen_border(uint16_t color, int thickness);
-static void display_welcome_message(void);
-static void display_camila_text(void);
-static void display_drsimi_text(void);
 static int convert_string_to_char_map(const char *str, int *map_buffer, int max_len);
 
 static bool IRAM_ATTR ui_panel_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
@@ -428,28 +425,34 @@ bool ui_is_initialized(void)
     return g_panel_handle != NULL && g_io_handle != NULL;
 }
 
-esp_err_t ui_deinit(void)
+static esp_err_t ui_deinit_internal(bool keep_last_frame)
 {
     if (!ui_is_initialized())
     {
         return ESP_OK;
     }
 
-    bsp_display_brightness_set(0);
+    if (!keep_last_frame)
+    {
+        bsp_display_brightness_set(0);
+    }
 
     esp_err_t ret = ESP_OK;
     ui_panel_lock();
 
     if (g_panel_handle != NULL)
     {
-        esp_err_t err = esp_lcd_panel_disp_on_off(g_panel_handle, false);
-        if (err != ESP_OK)
+        if (!keep_last_frame)
         {
-            ESP_LOGW(TAG, "No se pudo apagar el panel LCD: %s", esp_err_to_name(err));
-            ret = err;
+            esp_err_t err = esp_lcd_panel_disp_on_off(g_panel_handle, false);
+            if (err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "No se pudo apagar el panel LCD: %s", esp_err_to_name(err));
+                ret = err;
+            }
         }
 
-        err = esp_lcd_panel_del(g_panel_handle);
+        esp_err_t err = esp_lcd_panel_del(g_panel_handle);
         if (err != ESP_OK)
         {
             ESP_LOGW(TAG, "No se pudo liberar el panel LCD: %s", esp_err_to_name(err));
@@ -482,8 +485,19 @@ esp_err_t ui_deinit(void)
     g_help_msg_h = 0;
 
     ui_panel_unlock();
-    ESP_LOGI(TAG, "LCD panel and SPI bus released");
+    ESP_LOGI(TAG, "LCD panel and SPI bus released%s",
+             keep_last_frame ? " (last frame requested)" : "");
     return ret;
+}
+
+esp_err_t ui_deinit(void)
+{
+    return ui_deinit_internal(false);
+}
+
+esp_err_t ui_deinit_keep_last_frame(void)
+{
+    return ui_deinit_internal(true);
 }
 
 /**
@@ -509,27 +523,36 @@ void ui_panel_unlock(void)
     }
 }
 
-/**
- * @brief Envía un bitmap al panel de forma protegida por el mutex.
- *        Único punto de acceso a esp_lcd_panel_draw_bitmap dentro del módulo UI.
- * @param x0,y0 Esquina superior izquierda (inclusiva).
- * @param x1,y1 Esquina inferior derecha (exclusiva).
- * @param pixels Buffer de píxeles en formato del panel (16 bpp).
- */
-void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
+static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
+                                   const void *pixels,
+                                   TickType_t lock_wait_ticks,
+                                   TickType_t flush_wait_ticks,
+                                   bool log_failures)
 {
     if (!g_panel_handle || !pixels)
     {
-        return;
+        return false;
     }
-    ui_panel_lock();
+    if (x1 <= x0 || y1 <= y0)
+    {
+        return false;
+    }
+    if (!s_panel_mutex)
+    {
+        return false;
+    }
+
+    if (xSemaphoreTake(s_panel_mutex, lock_wait_ticks) != pdTRUE)
+    {
+        return false;
+    }
 
     int w = x1 - x0;
-    int h = y1 - y0;
     int max_bytes_per_chunk = 16384; // 16KB to fit in fragmented DMA memory
     int rows_per_chunk = max_bytes_per_chunk / (w * 2);
     if (rows_per_chunk < 1) rows_per_chunk = 1;
 
+    bool ok = true;
     const uint8_t *p = (const uint8_t *)pixels;
     for (int y = y0; y < y1; y += rows_per_chunk) {
         int end_y = y + rows_per_chunk;
@@ -541,17 +564,48 @@ void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
 
         esp_err_t err = esp_lcd_panel_draw_bitmap(g_panel_handle, x0, y, x1, end_y, p);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "LCD blit failed: %s", esp_err_to_name(err));
+            if (log_failures) {
+                ESP_LOGW(TAG, "LCD blit failed: %s", esp_err_to_name(err));
+            }
+            ok = false;
             break;
         } else if (s_panel_flush_done &&
-                   xSemaphoreTake(s_panel_flush_done, pdMS_TO_TICKS(2000)) != pdTRUE) {
-            ESP_LOGW(TAG, "LCD blit timed out waiting for SPI flush");
+                   xSemaphoreTake(s_panel_flush_done, flush_wait_ticks) != pdTRUE) {
+            if (log_failures) {
+                ESP_LOGW(TAG, "LCD blit timed out waiting for SPI flush");
+            }
+            ok = false;
             break;
         }
 
         p += (end_y - y) * w * 2;
     }
-    ui_panel_unlock();
+    xSemaphoreGive(s_panel_mutex);
+    return ok;
+}
+
+/**
+ * @brief Envía un bitmap al panel de forma protegida por el mutex.
+ *        Único punto de acceso a esp_lcd_panel_draw_bitmap dentro del módulo UI.
+ * @param x0,y0 Esquina superior izquierda (inclusiva).
+ * @param x1,y1 Esquina inferior derecha (exclusiva).
+ * @param pixels Buffer de píxeles en formato del panel (16 bpp).
+ */
+void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
+{
+    (void)ui_panel_blit_internal(x0, y0, x1, y1, pixels,
+                                 portMAX_DELAY,
+                                 pdMS_TO_TICKS(2000),
+                                 true);
+}
+
+bool ui_panel_try_blit(int x0, int y0, int x1, int y1,
+                       const void *pixels, uint32_t lock_timeout_ms)
+{
+    return ui_panel_blit_internal(x0, y0, x1, y1, pixels,
+                                  pdMS_TO_TICKS(lock_timeout_ms),
+                                  pdMS_TO_TICKS(120),
+                                  false);
 }
 
 /**
@@ -691,18 +745,55 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
     free(full_buffer);
 }
 
-/**
- * @brief Displays the startup screen sequence.
- *        Shows the initial welcome screen with border, displays the welcome message,
- *        waits for 2 seconds, then shows the "AI'm Camila" text.
- */
-void display_startup_screen(void)
+void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
 {
+    int title_map[32];
+    int subtitle_map[32];
+    int title_chars = title ? convert_string_to_char_map(title, title_map, 32) : 0;
+    int subtitle_chars = subtitle ? convert_string_to_char_map(subtitle, subtitle_map, 32) : 0;
+
+    if (title_chars <= 0 && subtitle_chars <= 0)
+    {
+        ESP_LOGW(TAG, "System phase message skipped: no supported glyphs");
+        return;
+    }
+
+    const int scale = 2;
+    const int spacing = CHAR_SPACING_SCALE_2X;
+    const int char_h = CHAR_HEIGHT * scale;
+    const int line_gap = 16;
+    const bool has_title = title_chars > 0;
+    const bool has_subtitle = subtitle_chars > 0;
+    const int total_h = (has_title && has_subtitle) ? (char_h * 2 + line_gap) : char_h;
+    int y = (BSP_LCD_V_RES - total_h) / 2;
+
     bsp_display_brightness_set(0);
     clear_screen();
-    draw_screen_border(COLOR_CYAN_BGR565, 2);
-    display_welcome_message();
+    draw_screen_border(color, 2);
+
+    if (has_title)
+    {
+        int title_w = title_chars * (CHAR_WIDTH * scale) + (title_chars - 1) * spacing;
+        int x = (BSP_LCD_H_RES - title_w) / 2;
+        display_text(x, y, title_map, title_chars, color, scale);
+        y += char_h + line_gap;
+    }
+
+    if (has_subtitle)
+    {
+        int subtitle_w = subtitle_chars * (CHAR_WIDTH * scale) + (subtitle_chars - 1) * spacing;
+        int x = (BSP_LCD_H_RES - subtitle_w) / 2;
+        display_text(x, y, subtitle_map, subtitle_chars, COLOR_WHITE_BGR565, scale);
+    }
+
     ui_backlight_on();
+    ESP_LOGI(TAG, "System phase displayed: %s / %s",
+             title ? title : "", subtitle ? subtitle : "");
+}
+
+void display_startup_screen(void)
+{
+    display_system_phase_message("Welcome!", "Starting up", COLOR_CYAN_BGR565);
 }
 
 void display_welcome_identity(const char *name)
@@ -736,6 +827,7 @@ void display_welcome_identity(const char *name)
     ui_backlight_on();
 }
 
+#if 0
 /**
  * @brief Displays the "AI'm Camila" text on the LCD screen.
  *        Renders the chatbot's name centered on the screen with blue color.
@@ -803,6 +895,8 @@ static void display_welcome_message(void)
 
     display_text(text_x, welcome_y, welcome_map, num_chars, COLOR_CYAN_BGR565, scale);
 }
+
+#endif
 
 #if 0
 static void legacy_online_status_disabled(uint16_t color)

@@ -76,6 +76,7 @@ static QueueHandle_t s_orchestrator_event_queue = NULL;
 #define VIGILANTE_ACTIVE_TIMEOUT_MS (5 * 60 * 1000)
 #define VIGILANTE_STATUS_STALE_MS 5000
 #define SLEEP_CSI_COOLDOWN_MS 4000
+#define SLEEP_WIFI_READY_DISPLAY_MS 900
 #define WEBRTC_STOP_TIMEOUT_MS 8000
 #define WEBRTC_STOP_TASK_STACK_SIZE (6 * 1024)
 #define WEBRTC_STOP_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
@@ -115,6 +116,11 @@ typedef enum
     STATE_STOPPING_WEBRTC,
 } orchestrator_state_t;
 #define ENABLE_ONE_TIME_PROVISIONING 0 // Pon esto en 0 para deshabilitarlo después del primer arranque
+
+static void orchestrator_show_phase(const char *reason,
+                                    const char *title,
+                                    const char *subtitle,
+                                    uint16_t color);
 
 static uint32_t orchestrator_now_ms(void)
 {
@@ -199,7 +205,26 @@ static void orchestrator_sleep_csi_cooldown_task(void *param)
 {
     uint32_t generation = (uint32_t)(uintptr_t)param;
 
-    vTaskDelay(pdMS_TO_TICKS(SLEEP_CSI_COOLDOWN_MS));
+    const uint32_t quiet_scan_delay_ms =
+        (SLEEP_WIFI_READY_DISPLAY_MS < SLEEP_CSI_COOLDOWN_MS)
+            ? SLEEP_WIFI_READY_DISPLAY_MS
+            : SLEEP_CSI_COOLDOWN_MS;
+
+    vTaskDelay(pdMS_TO_TICKS(quiet_scan_delay_ms));
+
+    if (generation != s_sleep_csi_generation)
+    {
+        ESP_LOGD(TAG, "STATE_SLEEP: stale CSI cooldown task ignored");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    orchestrator_show_phase("sleep_csi_cooldown", "Quiet scan", "Warming up", COLOR_CYAN_BGR565);
+
+    if (SLEEP_CSI_COOLDOWN_MS > quiet_scan_delay_ms)
+    {
+        vTaskDelay(pdMS_TO_TICKS(SLEEP_CSI_COOLDOWN_MS - quiet_scan_delay_ms));
+    }
 
     if (generation == s_sleep_csi_generation)
     {
@@ -210,6 +235,10 @@ static void orchestrator_sleep_csi_cooldown_task(void *param)
         {
             ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s",
                      esp_err_to_name(csi_err));
+        }
+        else
+        {
+            orchestrator_show_phase("csi_watch", "Watching", "Motion scan", COLOR_GREEN_BGR565);
         }
     }
     else
@@ -307,6 +336,38 @@ static esp_err_t orchestrator_ensure_ui_ready(const char *reason)
         ESP_LOGE(TAG, "LCD UI restore failed: %s", esp_err_to_name(err));
     }
     return err;
+}
+
+static void orchestrator_show_phase(const char *reason,
+                                    const char *title,
+                                    const char *subtitle,
+                                    uint16_t color)
+{
+    if (orchestrator_ensure_ui_ready(reason) == ESP_OK)
+    {
+        display_system_phase_message(title, subtitle, color);
+    }
+}
+
+static void orchestrator_show_vigilante_alert_visual(void)
+{
+    esp_err_t err = orchestrator_ensure_ui_ready("dispatching_alert");
+    if (err != ESP_OK)
+    {
+        return;
+    }
+
+    err = ui_simi_init();
+    if (err == ESP_OK)
+    {
+        ui_simi_render_static(SIMI_STATE_ALERT);
+        ESP_LOGW(TAG, "Vigilante Dr. Simi alert visual rendered");
+        return;
+    }
+
+    ESP_LOGW(TAG, "Could not allocate Dr. Simi alert canvas: %s; using text fallback",
+             esp_err_to_name(err));
+    display_intruder_alert_message();
 }
 
 /**
@@ -1086,6 +1147,8 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
         csi_handler_stop();
+        ui_simi_stop();
+        ui_simi_deinit();
         stop_webrtc();
         ble_device_stop_smart_task();
         ble_device_control_stop();
@@ -1104,6 +1167,9 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         s_ble_release_to_sleep = false;
         s_webrtc_stop_started_ms = 0;
         csi_handler_stop();
+        ui_simi_stop();
+        ui_simi_deinit();
+        orchestrator_show_phase("wifi_ready", "WiFi ready", "Standing by", COLOR_GREEN_BGR565);
         esp_err_t sleep_ble_err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
         if (sleep_ble_err != ESP_OK)
         {
@@ -1123,8 +1189,10 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
+        ui_simi_stop();
         ui_simi_deinit();
-        esp_err_t ui_deinit_err = ui_deinit();
+        orchestrator_show_phase("ble_prepare_status", "Checking ID", "Stay close", COLOR_YELLOW_BGR565);
+        esp_err_t ui_deinit_err = ui_deinit_keep_last_frame();
         if (ui_deinit_err != ESP_OK)
         {
             ESP_LOGW(TAG, "STATE_PREPARING_BLE: LCD release returned %s",
@@ -1159,10 +1227,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
                  "STATE_DISPATCHING_ALERT: dispatching emergency alert after BLE release.");
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
-        if (orchestrator_ensure_ui_ready("dispatching_alert") == ESP_OK)
-        {
-            display_intruder_alert_message();
-        }
+        orchestrator_show_vigilante_alert_visual();
         if (!s_alert_dispatch_pending)
         {
             ESP_LOGW(TAG, "STATE_DISPATCHING_ALERT entered without pending alert context");
@@ -1391,6 +1456,7 @@ static void app_startup_orchestrator_task(void *param)
                 s_alert_dispatch_pending = false;
                 s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
                 s_ble_release_to_sleep = false;
+                orchestrator_show_phase("motion_detected", "Motion seen", "Checking ID", COLOR_YELLOW_BGR565);
                 orchestrator_enter_state(&state, STATE_PREPARING_BLE);
             }
             else if (event != ORCH_EVENT_WIFI_CONNECTED)

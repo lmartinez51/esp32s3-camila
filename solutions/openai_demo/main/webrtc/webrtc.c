@@ -770,7 +770,50 @@ static void display_simi_session_state(simi_state_t state, const char *reason)
         return;
     }
 
-    ui_simi_render_static(state);
+    ui_simi_set_state(state);
+    err = ui_simi_start();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Could not start Dr. Simi animation for %s: %s; using static frame",
+                 reason ? reason : "session_state",
+                 esp_err_to_name(err));
+        ui_simi_render_static(state);
+    }
+}
+
+static void simi_session_set_state(simi_state_t state, const char *reason)
+{
+    if (!ui_is_initialized() || !ui_simi_ready())
+    {
+        display_simi_session_state(state, reason);
+        return;
+    }
+
+    ui_simi_set_state(state);
+    esp_err_t err = ui_simi_start();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Could not keep Dr. Simi animation active for %s: %s",
+                 reason ? reason : "session_state",
+                 esp_err_to_name(err));
+    }
+}
+
+static void simi_session_notify_speaking(bool active)
+{
+    if (ui_is_initialized() && ui_simi_ready())
+    {
+        ui_simi_notify_speaking(active);
+        if (active)
+        {
+            esp_err_t err = ui_simi_start();
+            if (err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "Could not start Dr. Simi speaking animation: %s",
+                         esp_err_to_name(err));
+            }
+        }
+    }
 }
 
 static void reset_realtime_interaction_state(void)
@@ -868,6 +911,7 @@ static void webrtc_action_task(void *arg)
 
                 // 7. Restaurar la pantalla
                 ui_clear_status_message(); // Limpiar el "¿Sigues ahí?"
+                simi_session_set_state(SIMI_STATE_MUTED, "idle_alert_remute");
                 ui_show_status_message("Muted", COLOR_RED_BGR565);
                 vTaskDelay(pdMS_TO_TICKS(200)); // Brief delay to ensure visibility
                 ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
@@ -2004,6 +2048,7 @@ static void activate_mute_task(void *arg)
 {
     ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Muting microphone...");
     vTaskDelay(pdMS_TO_TICKS(500)); // Delay to ensure chatbot's response is complete
+    simi_session_set_state(SIMI_STATE_MUTED, "activate_mute");
     ui_show_status_message("Muted", COLOR_RED_BGR565);
     vTaskDelay(pdMS_TO_TICKS(200)); // Brief delay to ensure visibility
     ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
@@ -2504,6 +2549,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         else
         {
             g_response_in_progress = false;
+            simi_session_set_state(SIMI_STATE_SAD, "server_error");
         }
     }
     else if (strcmp(event_type, "session.updated") == 0)
@@ -2512,10 +2558,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_realtime_session_ready = true;
         mark_realtime_activity();
         orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
-        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
-        {
-            display_simi_session_state(SIMI_STATE_LISTENING, "session_updated");
-        }
+        display_simi_session_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                       ? SIMI_STATE_ALERT
+                                       : SIMI_STATE_LISTENING,
+                                   "session_updated");
     }
     else if (strcmp(event_type, "input_audio_buffer.speech_started") == 0)
     {
@@ -2539,6 +2585,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         mark_realtime_activity();
         reset_data_channel_response_stats();
         track_data_channel_event(event_type, size);
+        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
+        {
+            simi_session_set_state(SIMI_STATE_THINKING, "response_created");
+        }
     }
     else if (strcmp(event_type, "response.done") == 0)
     {
@@ -2547,6 +2597,14 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_response_in_progress = false;
         mark_realtime_activity();
         schedule_post_response_capture_recovery();
+        if (!g_output_audio_active)
+        {
+            simi_session_notify_speaking(false);
+            simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                       ? SIMI_STATE_ALERT
+                                       : SIMI_STATE_LISTENING,
+                                   "response_done");
+        }
     }
     else if (strcmp(event_type, "response.audio.done") == 0 ||
              strcmp(event_type, "response.output_audio.done") == 0)
@@ -2557,6 +2615,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     {
         g_output_audio_active = true;
         mark_realtime_activity();
+        simi_session_notify_speaking(true);
     }
     else if (strcmp(event_type, "output_audio_buffer.stopped") == 0 ||
              strcmp(event_type, "output_audio_buffer.cleared") == 0)
@@ -2564,6 +2623,11 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_output_audio_active = false;
         g_last_output_audio_stopped_ms = app_millis();
         mark_realtime_activity();
+        simi_session_notify_speaking(false);
+        simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                   ? SIMI_STATE_ALERT
+                                   : SIMI_STATE_LISTENING,
+                               "output_audio_done");
     }
     else if (strcmp(event_type, "conversation.item.input_audio_transcription.completed") == 0 ||
              strcmp(event_type, "response.audio_transcript.done") == 0 ||
@@ -2589,6 +2653,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     }
     else if (strcmp(event_type, "response.function_call_arguments.done") == 0)
     {
+        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
+        {
+            simi_session_set_state(SIMI_STATE_THINKING, "function_call_arguments_done");
+        }
         process_json((const char *)data, size);
     }
     else if (strcmp(event_type, "response.output_item.added") == 0 ||
@@ -2690,6 +2758,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
+        display_simi_session_state(SIMI_STATE_SAD, "webrtc_connect_failed");
         break;
 
     default:

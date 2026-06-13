@@ -7,6 +7,7 @@
 #include "esp_rom_sys.h"
 #include <stdint.h>
 #include "ui.h"
+#include "simi.h"
 #include "freertos/timers.h"
 #include "mute_handler.h"
 #include "webrtc.h"
@@ -89,12 +90,14 @@ static void mute_evt_task(void *arg)
                     // Mostrar o limpiar mensaje "Muted"
                     if (mic_muted)
                     {
+                        ui_simi_set_state(SIMI_STATE_MUTED);
                         ui_show_status_message("Muted", COLOR_RED_BGR565);
                         vTaskDelay(pdMS_TO_TICKS(100)); // Brief delay to ensure visibility
                         mute_handler_start_idle_timer();
                     }
                     else
                     {
+                        ui_simi_set_state(SIMI_STATE_LISTENING);
                         ui_clear_status_message();
                         mute_handler_stop_idle_timer();
                     }

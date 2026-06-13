@@ -21,6 +21,12 @@ extern "C"
     esp_err_t ui_deinit(void);
 
     /**
+     * @brief Libera el panel LCD/SPI sin apagar backlight ni enviar disp_off.
+     *        Intenta dejar visible el ultimo frame mientras otros subsistemas usan RAM/SPI.
+     */
+    esp_err_t ui_deinit_keep_last_frame(void);
+
+    /**
      * @brief Indica si el panel LCD está inicializado y listo para dibujar.
      */
     bool ui_is_initialized(void);
@@ -35,6 +41,11 @@ extern "C"
      * @brief Muestra bienvenida personalizada tras validar identidad BLE.
      */
     void display_welcome_identity(const char *name);
+
+    /**
+     * @brief Muestra una pantalla ligera de fase del sistema.
+     */
+    void display_system_phase_message(const char *title, const char *subtitle, uint16_t color);
 
     /**
      * @brief Muestra un mensaje para que el usuario ingrese credenciales WiFi vía BLE.
@@ -144,6 +155,12 @@ extern "C"
      * @param pixels Buffer de píxeles en el formato del panel (16 bpp).
      */
     void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels);
+
+    /**
+     * @brief Intenta enviar un bitmap al panel sin esperar indefinidamente por el mutex.
+     * @return true si el frame se envio completo; false si el panel estaba ocupado o fallo el flush.
+     */
+    bool ui_panel_try_blit(int x0, int y0, int x1, int y1, const void *pixels, uint32_t lock_timeout_ms);
 
     /**
      * @brief Limpia toda la pantalla a negro.

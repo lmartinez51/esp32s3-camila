@@ -81,6 +81,27 @@ void simi_face_for_state(simi_state_t state, simi_face_t *out);
 void ui_simi_render_static(simi_state_t state);
 
 /**
+ * @brief Starts the low-duty Dr. Simi animation runtime.
+ *        The canvas must already be initialized with ui_simi_init().
+ */
+esp_err_t ui_simi_start(void);
+
+/**
+ * @brief Stops the animation task and waits briefly until it exits.
+ */
+void ui_simi_stop(void);
+
+/**
+ * @brief Updates the target visual state. Last state wins; no event backlog is kept.
+ */
+void ui_simi_set_state(simi_state_t state);
+
+/**
+ * @brief Tells the runtime whether assistant output audio is actively playing.
+ */
+void ui_simi_notify_speaking(bool active);
+
+/**
  * @brief Releases the canvas buffer.
  */
 void ui_simi_deinit(void);
