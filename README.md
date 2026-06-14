@@ -29,7 +29,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 ### 🧠 AI Autonomy & Background Tasks
 The chatbot has access to a robust set of background functions to control the device and fetch data:
 - **Web Search**: Real-time web search capabilities for fetching up-to-date information.
-- **Assistant Delegation**: Offloads specialized queries (e.g., medical or product data) to a secondary AI assistant (`get_assistants_help`).
+- **Product Lookup**: Consults an external API to retrieve detailed information and prices about specific products (`lookup_product_info`).
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
@@ -106,9 +106,9 @@ You can control various device features simply by talking to Dr. Simi. Here are 
 - **Search the Web**:
   - *"Doctor, búscame las noticias más recientes sobre tecnología."* (Context: "Doc, pull up the latest tech news.")
   - **Action**: Triggers `web_search`.
-- **Consult Specialized Assistant**:
+- **Product Information Lookup**:
   - *"¿Cuánto cuesta el paracetamol?"* (Context: "How much does Tylenol usually go for?")
-  - **Action**: Triggers `get_assistants_help`.
+  - **Action**: Triggers `lookup_product_info`.
 
 ---
 

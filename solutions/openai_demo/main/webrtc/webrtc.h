@@ -12,15 +12,6 @@ extern "C"
 #include <stdbool.h>
 #include <stdint.h>
 
-    // Estructura de contexto para la tarea del asistente
-    typedef struct
-    {
-        const char *user;
-        const char *input;
-        char *call_id;
-        esp_webrtc_handle_t webrtc; // Handle general de WebRTC
-    } assistant_task_ctx_t;
-
     // typedef struct
     // {
     //     const char *type;
@@ -47,18 +38,13 @@ extern "C"
         // ... (aquí podríamos añadir más acciones en el futuro)
     } webrtc_action_t;
 
-    char *remove_source_annotation(const char *input);
-    char *getAssistantData(const char *userName, const char *task);
     int sendEvent(const char *type, const char *text);
     char *get_web_info(const char *request);
+    int send_function_output(const char *call_id, const char *output);
 
     // void free_user_location(user_location_t *location);
     // user_location_t *parse_user_location(const cJSON *user_location_item);
 
-#define ASSISTANT_TASK_STACK_SIZE (8 * 1024)
-#define ASSISTANT_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
-
-    void start_assistant_task(const char *user, const char *input, const char *call_id, esp_webrtc_handle_t webrtc_handle);
 
 #define WEB_SEARCH_TASK_STACK_SIZE (8 * 1024)
 #define WEB_SEARCH_TASK_PRIORITY (tskIDLE_PRIORITY + 1)

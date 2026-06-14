@@ -25,7 +25,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 ### 🧠 Autonomía de IA y Tareas en Segundo Plano
 El asistente cuenta con un conjunto robusto de funciones en segundo plano para controlar el dispositivo y obtener datos:
 - **Búsqueda Web**: Capacidades de búsqueda en la web en tiempo real para obtener información actualizada.
-- **Delegación de Asistente**: Transfiere consultas especializadas (ej. datos médicos o de productos) a un asistente de IA secundario (`get_assistants_help`).
+- **Búsqueda de Productos**: Consulta una API externa para obtener información detallada y precios sobre productos específicos (`lookup_product_info`).
 - **Configuración del Dispositivo**: La IA puede poner el dispositivo en modo de configuración BLE si se le solicita (`enter_config_mode`).
 - **Gestión de Memoria**: La IA puede borrar de forma segura las credenciales WiFi (`delete_credentials`) y la clave API de OpenAI (`delete_api_key`) de la memoria persistente del dispositivo (NVS).
 
@@ -102,9 +102,9 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
 - **Búsqueda en la Web**:
   - *"Doctor, búscame las noticias más recientes sobre tecnología."*
   - **Acción**: Ejecuta `web_search`.
-- **Consultar Asistente Especializado**:
+- **Búsqueda de Información de Productos**:
   - *"¿Cuánto cuesta el paracetamol?"*
-  - **Acción**: Ejecuta `get_assistants_help`.
+  - **Acción**: Ejecuta `lookup_product_info`.
 
 ---
 

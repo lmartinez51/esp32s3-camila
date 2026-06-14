@@ -24,9 +24,9 @@ idf_component_register(
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"
 
-        "openai/assistants.c"
         "openai/http_client.c"
         "openai/web_search.c"
+        "openai/responses_client.c"
 
         "sensing/csi_handler.c"
         "sensing/csi_dsp.c"

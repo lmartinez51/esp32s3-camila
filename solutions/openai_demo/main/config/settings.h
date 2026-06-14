@@ -51,9 +51,9 @@ extern "C"
 #define OPENAI_API_KEY ""
 
 /**
- * @brief  Set OpenAI assistant ID
+ * @brief  Set OpenAI Vector Store ID
  */
-#define SANTIAGO_ID "place_your_assistant_id_here"
+#define VECTOR_STORE_ID "vs_6a2e3c146a7081918e0a09313ee77e8c"
 
 /**
  * @brief  Set default playback volume
