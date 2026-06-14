@@ -102,6 +102,12 @@ void ui_simi_set_state(simi_state_t state);
 void ui_simi_notify_speaking(bool active);
 
 /**
+ * @brief Sets an overlay text (like a thought bubble) to be rendered on top of Dr. Simi.
+ *        Pass NULL to clear the text.
+ */
+void ui_simi_set_overlay_text(const char *text, uint16_t color);
+
+/**
  * @brief Releases the canvas buffer.
  */
 void ui_simi_deinit(void);

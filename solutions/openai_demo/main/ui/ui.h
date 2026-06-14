@@ -137,6 +137,12 @@ extern "C"
      */
     void ui_sanitize_text(char *text);
 
+    void ui_draw_text_to_buffer(uint16_t *buffer, int buffer_w, int buffer_h,
+                                int start_x, int start_y,
+                                const char *text, uint16_t color, int scale);
+
+    int ui_get_text_width(const char *text, int scale);
+
     /**
      * @brief Toma el mutex global del panel LCD (bloqueante).
      *        Úsalo para agrupar varios blits de forma atómica frente a otras tareas.

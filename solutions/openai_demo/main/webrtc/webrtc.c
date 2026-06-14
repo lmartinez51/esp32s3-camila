@@ -1095,9 +1095,8 @@ static void webrtc_action_task(void *arg)
                 // 7. Restaurar la pantalla
                 ui_clear_status_message(); // Limpiar el "¿Sigues ahí?"
                 simi_session_set_state(SIMI_STATE_MUTED, "idle_alert_remute");
-                ui_show_status_message("Muted", COLOR_RED_BGR565);
-                vTaskDelay(pdMS_TO_TICKS(200)); // Brief delay to ensure visibility
-                ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
+                ui_show_status_message("Muted(2x to unmute)", COLOR_RED_BGR565);
+                // ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
 
                 // 8. ¡Reiniciar el timer!
                 if (g_idle_timer != NULL)
@@ -1747,7 +1746,7 @@ static void assistant_task(void *arg)
 
     // --- INICIO DE LA CORRECCIÓN ---
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    ui_show_status_message("Getting info..", COLOR_GREEN_BGR565);
+    ui_show_status_message("Getting info..", COLOR_BLACK_BGR565);
     // --- FIN DE LA CORRECCIÓN ---
 
     // 1) Llamada al asistente
@@ -1957,7 +1956,7 @@ static void web_search_task(void *arg)
 
     // --- INICIO DE LA CORRECCIÓN ---
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    ui_show_status_message("Getting info..", COLOR_GREEN_BGR565);
+    ui_show_status_message("Getting info..", COLOR_BLACK_BGR565);
     // --- FIN DE LA CORRECCIÓN ---
 
     char *response = get_web_info(ctx->query);

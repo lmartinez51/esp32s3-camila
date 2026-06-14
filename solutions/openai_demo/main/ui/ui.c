@@ -22,6 +22,8 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 
+#include "simi.h"
+
 // Headers para control de LCD
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
@@ -65,7 +67,7 @@ static int g_help_msg_h = 0;
 
 // Prototipos de funciones privadas
 static void display_text(int start_x, int start_y, const int *char_map, int num_chars, uint16_t color, int scale);
-static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int offset_x, int offset_y, int char_index, uint16_t color, int scale);
+static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int buffer_height, int offset_x, int offset_y, int char_index, uint16_t color, int scale);
 static void clear_screen(void);
 static void draw_filled_rect(int x, int y, int width, int height, uint16_t color);
 static void draw_screen_border(uint16_t color, int thickness);
@@ -659,26 +661,26 @@ void ui_clear_screen(void)
  * @param color Character color in BGR565 format.
  * @param scale Scaling factor (1, 2, or 3).
  */
-static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int offset_x, int offset_y, int char_index, uint16_t color, int scale)
+static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int buffer_height, int offset_x, int offset_y, int char_index, uint16_t color, int scale)
 {
-    // Recorrer cada fila del carácter (8 filas)
     for (int row = 0; row < CHAR_HEIGHT; row++)
     {
         uint8_t line = font_8x8[char_index][row];
-        // Recorrer cada columna del carácter (8 columnas)
         for (int col = 0; col < CHAR_WIDTH; col++)
         {
-            // Determinar si el píxel debe estar encendido o apagado
             uint16_t px_color = (line & (0x80 >> col)) ? color : 0x0000;
+            if (px_color == 0x0000) continue; // transparent background
 
-            // Aplicar la escala (dibujar píxel como un bloque de scale x scale)
             for (int dy = 0; dy < scale; dy++)
             {
                 for (int dx = 0; dx < scale; dx++)
                 {
                     int final_px = offset_x + (col * scale) + dx;
                     int final_py = offset_y + (row * scale) + dy;
-                    target_buffer[final_py * buffer_width + final_px] = px_color;
+                    if (final_px >= 0 && final_px < buffer_width && final_py >= 0 && final_py < buffer_height)
+                    {
+                        target_buffer[final_py * buffer_width + final_px] = px_color;
+                    }
                 }
             }
         }
@@ -739,12 +741,43 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
     for (int i = 0; i < num_chars; i++)
     {
         int char_offset_x = i * (display_char_width + char_spacing);
-        draw_char_to_buffer(full_buffer, total_width, char_offset_x, 0, char_map[i], color, scale);
+        draw_char_to_buffer(full_buffer, total_width, total_height, char_offset_x, 0, char_map[i], color, scale);
     }
 
     // Enviar el buffer completo al display
     ui_panel_blit(start_x, start_y, start_x + total_width, start_y + total_height, full_buffer);
     free(full_buffer);
+}
+
+void ui_draw_text_to_buffer(uint16_t *buffer, int buffer_w, int buffer_h,
+                            int start_x, int start_y,
+                            const char *text, uint16_t color, int scale)
+{
+    if (!buffer || !text) return;
+
+    int char_map[32];
+    int num_chars = convert_string_to_char_map(text, char_map, 32);
+    if (num_chars == 0) return;
+
+    int display_char_width = CHAR_WIDTH * scale;
+    int char_spacing = (scale == 3) ? CHAR_SPACING_SCALE_3X : CHAR_SPACING_SCALE_2X;
+
+    for (int i = 0; i < num_chars; i++) {
+        int char_offset_x = start_x + i * (display_char_width + char_spacing);
+        draw_char_to_buffer(buffer, buffer_w, buffer_h, char_offset_x, start_y, char_map[i], color, scale);
+    }
+}
+
+int ui_get_text_width(const char *text, int scale)
+{
+    if (!text) return 0;
+    int char_map[32];
+    int num_chars = convert_string_to_char_map(text, char_map, 32);
+    if (num_chars == 0) return 0;
+    
+    int display_char_width = CHAR_WIDTH * scale;
+    int char_spacing = (scale == 3) ? CHAR_SPACING_SCALE_3X : CHAR_SPACING_SCALE_2X;
+    return num_chars * display_char_width + (num_chars - 1) * char_spacing;
 }
 
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
@@ -1531,6 +1564,12 @@ static void draw_screen_border(uint16_t color, int thickness)
  */
 void ui_show_status_message(const char *message, uint16_t color)
 {
+    if (ui_simi_ready())
+    {
+        ui_simi_set_overlay_text(message, color);
+        return;
+    }
+
     ui_clear_status_message();
     if (!message)
         return;
@@ -1566,6 +1605,12 @@ void ui_show_status_message(const char *message, uint16_t color)
 
 void ui_clear_status_message(void)
 {
+    if (ui_simi_ready())
+    {
+        ui_simi_set_overlay_text(NULL, 0);
+        return;
+    }
+
     if (g_status_msg_w <= 0)
     {
         return;
@@ -1586,6 +1631,11 @@ void ui_clear_status_message(void)
  */
 void ui_show_help_message_below_status(const char *message, uint16_t color)
 {
+    if (ui_simi_ready())
+    {
+        return;
+    }
+
     ui_clear_help_message_below_status();
 
     if (!message)
@@ -1633,7 +1683,12 @@ void ui_show_help_message_below_status(const char *message, uint16_t color)
  */
 void ui_clear_help_message_below_status(void)
 {
-    if (g_help_msg_w <= 0 || g_help_msg_h <= 0)
+    if (ui_simi_ready())
+    {
+        return;
+    }
+
+    if (g_help_msg_w <= 0)
     {
         return;
     }

@@ -91,7 +91,7 @@ static void mute_evt_task(void *arg)
                     if (mic_muted)
                     {
                         ui_simi_set_state(SIMI_STATE_MUTED);
-                        ui_show_status_message("Muted", COLOR_RED_BGR565);
+                        ui_show_status_message("Muted(2x to unmute)", COLOR_RED_BGR565);
                         vTaskDelay(pdMS_TO_TICKS(100)); // Brief delay to ensure visibility
                         mute_handler_start_idle_timer();
                     }

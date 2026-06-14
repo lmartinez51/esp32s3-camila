@@ -67,6 +67,10 @@ static const char *TAG = "SIMI";
 static simi_canvas_t s_cv = {0};
 static bool s_simi_screen_cleared = false;
 static bool s_simi_backlight_ready = false;
+
+static char s_simi_overlay_text[32] = {0};
+static uint16_t s_simi_overlay_color = 0;
+
 static SemaphoreHandle_t s_anim_mutex = NULL;
 static TaskHandle_t s_anim_task = NULL;
 static bool s_anim_stop_requested = false;
@@ -587,6 +591,36 @@ void ui_simi_notify_speaking(bool active)
     }
 }
 
+void ui_simi_set_overlay_text(const char *text, uint16_t color)
+{
+    if (simi_anim_ensure_mutex() != ESP_OK)
+    {
+        return;
+    }
+
+    TaskHandle_t task = NULL;
+    if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
+        if (text)
+        {
+            strncpy(s_simi_overlay_text, text, sizeof(s_simi_overlay_text) - 1);
+            s_simi_overlay_text[sizeof(s_simi_overlay_text) - 1] = '\0';
+            s_simi_overlay_color = color;
+        }
+        else
+        {
+            s_simi_overlay_text[0] = '\0';
+        }
+        task = s_anim_task;
+        xSemaphoreGive(s_anim_mutex);
+    }
+
+    if (task != NULL)
+    {
+        xTaskNotifyGive(task);
+    }
+}
+
 void ui_simi_deinit(void)
 {
     ui_simi_stop();
@@ -846,6 +880,43 @@ static void simi_render(const simi_face_t *f)
         canvas_fill_rect(cv, 0, cv->h - t, cv->w, t, C_ALERT);
         canvas_fill_rect(cv, 0, 0, t, cv->h, C_ALERT);
         canvas_fill_rect(cv, cv->w - t, 0, t, cv->h, C_ALERT);
+    }
+
+    // ── Burbuja de Pensamiento (Overlay Text) ──
+    if (s_simi_overlay_text[0] != '\0')
+    {
+        // Usa funciones públicas de UI para dibujar el texto, pero apuntando a nuestro buffer PSRAM
+        int text_scale = 1; // 8x8 font, scale 1 is small, maybe scale 2 is better? Let's use 2.
+        int text_width = ui_get_text_width(s_simi_overlay_text, text_scale);
+        
+        // Si no cabe con escala 2, caemos a escala 1
+        if (text_width > cv->w - 20) {
+            text_scale = 1;
+            text_width = ui_get_text_width(s_simi_overlay_text, text_scale);
+        }
+
+        int text_height = 8 * text_scale;
+        int pad_x = 8;
+        int pad_y = 6;
+        int bubble_w = text_width + pad_x * 2;
+        int bubble_h = text_height + pad_y * 2;
+        
+        // Posicionar la burbuja arriba a la derecha (o centrada arriba si es muy grande)
+        int bx = (cv->w - bubble_w) / 2;
+        int by = 6; // margen superior
+
+        // Dibujar nubecitas para el globo de pensamiento (3 círculos pequeños hacia la cabeza)
+        if (!alert_face) {
+            canvas_fill_circle(cv, SIMI_CX + 40, by + bubble_h + 4, 3, SIMI_RGB(240, 240, 240));
+            canvas_fill_circle(cv, SIMI_CX + 20, by + bubble_h + 12, 5, SIMI_RGB(240, 240, 240));
+            canvas_fill_circle(cv, SIMI_CX, by + bubble_h + 22, 7, SIMI_RGB(240, 240, 240));
+        }
+
+        // Fondo de la burbuja (rectángulo redondeado blanco)
+        canvas_fill_round_rect(cv, bx, by, bubble_w, bubble_h, 8, SIMI_RGB(240, 240, 240));
+        
+        // Dibujar texto dentro del canvas
+        ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, bx + pad_x, by + pad_y, s_simi_overlay_text, s_simi_overlay_color, text_scale);
     }
 }
 
