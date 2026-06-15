@@ -50,6 +50,10 @@ typedef struct
     uint16_t *buf; /**< Pixel buffer, w*h uint16_t, row-major. */
     int w;         /**< Width in pixels. */
     int h;         /**< Height in pixels. */
+    int clip_x0;   /**< Clip rect left (inclusive). */
+    int clip_y0;   /**< Clip rect top (inclusive). */
+    int clip_x1;   /**< Clip rect right (inclusive). */
+    int clip_y1;   /**< Clip rect bottom (inclusive). */
 } simi_canvas_t;
 
 /* ── Primitivas de relleno ── */

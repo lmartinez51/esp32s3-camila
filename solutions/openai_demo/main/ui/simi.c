@@ -29,12 +29,15 @@
 
 static const char *TAG = "SIMI";
 
-/* ── Geometría del lienzo (retrato centrado en la pantalla 320×240) ── */
-#define SIMI_CANVAS_W 220
-#define SIMI_CANVAS_H 210
-#define SIMI_BLIT_X ((BSP_LCD_H_RES - SIMI_CANVAS_W) / 2) /* 50 */
-#define SIMI_BLIT_Y ((BSP_LCD_V_RES - SIMI_CANVAS_H) / 2) /* 15 */
-#define SIMI_CX (SIMI_CANVAS_W / 2)                       /* 110 */
+/* ── Geometría del lienzo (pantalla completa 320×240) ── */
+#define SIMI_CANVAS_W 320
+#define SIMI_CANVAS_H 240
+#define SIMI_BLIT_X 0
+#define SIMI_BLIT_Y 0
+#define SIMI_CX 160
+
+#define SIMI_DIRTY_BUF_SIZE 16384
+static uint16_t *s_dirty_buf = NULL;
 
 #define SIMI_ANIM_STACK_SIZE 4096
 #define SIMI_ANIM_PRIORITY (tskIDLE_PRIORITY + 1)
@@ -212,8 +215,15 @@ static void simi_apply_animation(simi_state_t visual_state,
     }
 }
 
-static bool simi_blit_frame(bool blocking)
+static bool simi_blit_dirty_rect(int x0, int y0, int x1, int y1, bool blocking)
 {
+    if (!s_dirty_buf) return false;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > s_cv.w - 1) x1 = s_cv.w - 1;
+    if (y1 > s_cv.h - 1) y1 = s_cv.h - 1;
+    if (x0 > x1 || y0 > y1) return true;
+
     if (!s_simi_screen_cleared)
     {
         ui_clear_screen();
@@ -221,18 +231,31 @@ static bool simi_blit_frame(bool blocking)
         blocking = true;
     }
 
+    int w = x1 - x0 + 1;
+    int max_rows = SIMI_DIRTY_BUF_SIZE / (w * sizeof(uint16_t));
+    if (max_rows < 1) max_rows = 1;
+
     bool ok = true;
-    if (blocking)
+    for (int y = y0; y <= y1; y += max_rows)
     {
-        ui_panel_blit(SIMI_BLIT_X, SIMI_BLIT_Y,
-                      SIMI_BLIT_X + SIMI_CANVAS_W, SIMI_BLIT_Y + SIMI_CANVAS_H,
-                      s_cv.buf);
-    }
-    else
-    {
-        ok = ui_panel_try_blit(SIMI_BLIT_X, SIMI_BLIT_Y,
-                               SIMI_BLIT_X + SIMI_CANVAS_W, SIMI_BLIT_Y + SIMI_CANVAS_H,
-                               s_cv.buf, SIMI_ANIM_TRY_LOCK_MS);
+        int rows = y1 - y + 1 < max_rows ? y1 - y + 1 : max_rows;
+        for (int r = 0; r < rows; r++)
+        {
+            memcpy(&s_dirty_buf[r * w], &s_cv.buf[(y + r) * s_cv.w + x0], w * sizeof(uint16_t));
+        }
+        if (blocking)
+        {
+            ui_panel_blit(SIMI_BLIT_X + x0, SIMI_BLIT_Y + y,
+                          SIMI_BLIT_X + x0 + w, SIMI_BLIT_Y + y + rows,
+                          s_dirty_buf);
+        }
+        else
+        {
+            ok = ui_panel_try_blit(SIMI_BLIT_X + x0, SIMI_BLIT_Y + y,
+                                   SIMI_BLIT_X + x0 + w, SIMI_BLIT_Y + y + rows,
+                                   s_dirty_buf, SIMI_ANIM_TRY_LOCK_MS);
+        }
+        if (!ok) break;
     }
 
     if (ok && !s_simi_backlight_ready)
@@ -241,6 +264,11 @@ static bool simi_blit_frame(bool blocking)
         s_simi_backlight_ready = true;
     }
     return ok;
+}
+
+static bool simi_blit_frame(bool blocking)
+{
+    return simi_blit_dirty_rect(0, 0, s_cv.w - 1, s_cv.h - 1, blocking);
 }
 
 static void simi_anim_task(void *arg)
@@ -255,6 +283,8 @@ static void simi_anim_task(void *arg)
     bool blink_active = false;
     uint8_t blink_frame = 0;
 
+    uint32_t last_render_ms = 0;
+
     while (1)
     {
         if (wait_ms > 0)
@@ -264,6 +294,12 @@ static void simi_anim_task(void *arg)
         else
         {
             (void)ulTaskNotifyTake(pdTRUE, 0);
+        }
+
+        uint32_t current_ms = simi_now_ms();
+        if (last_render_ms != 0 && (current_ms - last_render_ms) < 100)
+        {
+            vTaskDelay(pdMS_TO_TICKS(100 - (current_ms - last_render_ms)));
         }
 
         simi_state_t base_state = SIMI_STATE_IDLE;
@@ -280,7 +316,7 @@ static void simi_anim_task(void *arg)
         simi_state_t visual_state = simi_effective_state(base_state, speaking);
         bool state_changed = (visual_state != last_visual_state) || (speaking != last_speaking);
         bool render = state_changed;
-        bool blocking_blit = false;
+        bool blocking_blit = true;
 
         wait_ms = SIMI_IDLE_WAKE_MS;
 
@@ -323,17 +359,64 @@ static void simi_anim_task(void *arg)
 
         if (render)
         {
+            last_render_ms = simi_now_ms();
+            
             simi_face_t f;
             simi_face_for_state(visual_state, &f);
             simi_apply_animation(visual_state, frame, speaking, blink_active, blink_frame, &f);
-            simi_render(&f);
 
-            bool blit_ok = simi_blit_frame(blocking_blit);
-            if (blit_ok || blocking_blit)
+            static simi_face_t last_f = {0};
+            static char last_overlay_text[32] = {0};
+            bool text_changed = strncmp(s_simi_overlay_text, last_overlay_text, sizeof(last_overlay_text)) != 0;
+            if (text_changed) strncpy(last_overlay_text, s_simi_overlay_text, sizeof(last_overlay_text));
+
+            bool full_redraw = (visual_state != last_visual_state) || (last_visual_state == SIMI_STATE_MAX);
+
+            if (full_redraw)
             {
-                last_visual_state = visual_state;
-                last_speaking = speaking;
+                s_cv.clip_x0 = 0; s_cv.clip_y0 = 0; s_cv.clip_x1 = s_cv.w - 1; s_cv.clip_y1 = s_cv.h - 1;
+                simi_render(&f);
+                simi_blit_dirty_rect(0, 0, s_cv.w - 1, s_cv.h - 1, blocking_blit);
             }
+            else
+            {
+                bool head_moved = (f.head_dy != last_f.head_dy);
+                bool eyes_changed = (f.eye_open != last_f.eye_open) || (f.eyes_up != last_f.eyes_up) || (f.brow_angle != last_f.brow_angle);
+                bool mouth_changed = (f.mouth_open != last_f.mouth_open) || (f.mouth_curve != last_f.mouth_curve);
+
+                if (head_moved)
+                {
+                    s_cv.clip_x0 = 40; s_cv.clip_y0 = 60; s_cv.clip_x1 = 280; s_cv.clip_y1 = 180;
+                    simi_render(&f);
+                    simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
+                }
+                else
+                {
+                    if (eyes_changed)
+                    {
+                        s_cv.clip_x0 = 80; s_cv.clip_y0 = 70; s_cv.clip_x1 = 240; s_cv.clip_y1 = 120;
+                        simi_render(&f);
+                        simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
+                    }
+                    if (mouth_changed)
+                    {
+                        s_cv.clip_x0 = 100; s_cv.clip_y0 = 120; s_cv.clip_x1 = 220; s_cv.clip_y1 = 180;
+                        simi_render(&f);
+                        simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
+                    }
+                }
+
+                if (text_changed)
+                {
+                    s_cv.clip_x0 = 0; s_cv.clip_y0 = s_cv.h - 40; s_cv.clip_x1 = s_cv.w - 1; s_cv.clip_y1 = s_cv.h - 1;
+                    simi_render(&f);
+                    simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
+                }
+            }
+
+            last_f = f;
+            last_visual_state = visual_state;
+            last_speaking = speaking;
 
             frame++;
 
@@ -392,7 +475,6 @@ esp_err_t ui_simi_init(void)
     }
     else
     {
-        // UI opcional: no caer a RAM interna, porque BLE necesita esa memoria.
         s_cv.buf = NULL;
     }
 
@@ -402,13 +484,22 @@ esp_err_t ui_simi_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    if (!s_dirty_buf) {
+        s_dirty_buf = heap_caps_malloc(SIMI_DIRTY_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!s_dirty_buf) {
+            ESP_LOGE(TAG, "Fallo al asignar s_dirty_buf en DMA (%u B)", SIMI_DIRTY_BUF_SIZE);
+            heap_caps_free(s_cv.buf);
+            s_cv.buf = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     s_cv.w = SIMI_CANVAS_W;
     s_cv.h = SIMI_CANVAS_H;
+    s_cv.clip_x0 = 0; s_cv.clip_y0 = 0; s_cv.clip_x1 = s_cv.w - 1; s_cv.clip_y1 = s_cv.h - 1;
     s_simi_screen_cleared = false;
     s_simi_backlight_ready = false;
 
-    // Diagnóstico: confirma DÓNDE quedó el lienzo y cuánta RAM interna costó.
-    // Si 'ext_ram=1' el lienzo está en PSRAM y NO toca la RAM interna del BLE.
     ESP_LOGW(TAG, "[HEAP] simi_canvas:after  | ptr=%p ext_ram=%d | INTERNAL free=%u largest=%u | PSRAM free=%u",
              s_cv.buf, esp_ptr_external_ram(s_cv.buf) ? 1 : 0,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -453,23 +544,13 @@ esp_err_t ui_simi_start(void)
     xSemaphoreGive(s_anim_mutex);
 
     TaskHandle_t new_task = NULL;
-#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(simi_anim_task,
-                                                    "simi_anim",
-                                                    SIMI_ANIM_STACK_SIZE,
-                                                    NULL,
-                                                    SIMI_ANIM_PRIORITY,
-                                                    &new_task,
-                                                    tskNO_AFFINITY,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-    BaseType_t ok = xTaskCreate(simi_anim_task,
-                                "simi_anim",
-                                SIMI_ANIM_STACK_SIZE,
-                                NULL,
-                                SIMI_ANIM_PRIORITY,
-                                &new_task);
-#endif
+    BaseType_t ok = xTaskCreatePinnedToCore(simi_anim_task,
+                                            "simi_anim",
+                                            SIMI_ANIM_STACK_SIZE,
+                                            NULL,
+                                            SIMI_ANIM_PRIORITY,
+                                            &new_task,
+                                            tskNO_AFFINITY);
     if (ok != pdPASS || new_task == NULL)
     {
         ESP_LOGE(TAG, "No se pudo crear simi_anim_task");
@@ -549,8 +630,10 @@ void ui_simi_set_state(simi_state_t state)
     }
 
     TaskHandle_t task = NULL;
+    bool changed = false;
     if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
     {
+        changed = (s_anim_state != state);
         s_anim_state = state;
         if (state == SIMI_STATE_TALKING)
         {
@@ -564,7 +647,7 @@ void ui_simi_set_state(simi_state_t state)
         xSemaphoreGive(s_anim_mutex);
     }
 
-    if (task != NULL)
+    if (changed && task != NULL)
     {
         xTaskNotifyGive(task);
     }
@@ -578,14 +661,16 @@ void ui_simi_notify_speaking(bool active)
     }
 
     TaskHandle_t task = NULL;
+    bool changed = false;
     if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
     {
+        changed = (s_anim_speaking != active);
         s_anim_speaking = active;
         task = s_anim_task;
         xSemaphoreGive(s_anim_mutex);
     }
 
-    if (task != NULL)
+    if (changed && task != NULL)
     {
         xTaskNotifyGive(task);
     }
@@ -599,23 +684,35 @@ void ui_simi_set_overlay_text(const char *text, uint16_t color)
     }
 
     TaskHandle_t task = NULL;
+    bool changed = false;
     if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
     {
         if (text)
         {
-            strncpy(s_simi_overlay_text, text, sizeof(s_simi_overlay_text) - 1);
-            s_simi_overlay_text[sizeof(s_simi_overlay_text) - 1] = '\0';
-            s_simi_overlay_color = color;
+            if (strncmp(s_simi_overlay_text, text, sizeof(s_simi_overlay_text)) != 0 || s_simi_overlay_color != color)
+            {
+                strncpy(s_simi_overlay_text, text, sizeof(s_simi_overlay_text) - 1);
+                s_simi_overlay_text[sizeof(s_simi_overlay_text) - 1] = '\0';
+                s_simi_overlay_color = color;
+                changed = true;
+            }
         }
         else
         {
-            s_simi_overlay_text[0] = '\0';
+            if (s_simi_overlay_text[0] != '\0')
+            {
+                s_simi_overlay_text[0] = '\0';
+                changed = true;
+            }
         }
-        task = s_anim_task;
+        if (changed)
+        {
+            task = s_anim_task;
+        }
         xSemaphoreGive(s_anim_mutex);
     }
 
-    if (task != NULL)
+    if (task != NULL && changed)
     {
         xTaskNotifyGive(task);
     }
@@ -634,6 +731,11 @@ void ui_simi_deinit(void)
     {
         heap_caps_free(s_cv.buf);
         s_cv.buf = NULL;
+    }
+    if (s_dirty_buf)
+    {
+        heap_caps_free(s_dirty_buf);
+        s_dirty_buf = NULL;
     }
     s_simi_screen_cleared = false;
     s_simi_backlight_ready = false;
@@ -715,32 +817,40 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
 
 static void draw_body(simi_canvas_t *cv)
 {
-    // Sin cuello visible para dar la ilusión de estar más "gordito" y compacto.
-    // La cabeza (dibujada después) tapará la parte superior de la ropa.
+    int by = 15;
 
-    // Sombra trasera (opcional para dar volumen)
-    canvas_fill_ellipse(cv, SIMI_CX, 210, 104, 74, C_COAT_SH);
-
-    // Hombros muy caídos y amplios
-    canvas_fill_ellipse(cv, SIMI_CX - 64, 184, 52, 44, C_COAT);
-    canvas_fill_ellipse(cv, SIMI_CX + 64, 184, 52, 44, C_COAT);
+    // --- Sombras traseras ---
+    canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_COAT_SH);
+    canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, C_COAT_SH);
     
-    // Panza grande central
-    canvas_fill_ellipse(cv, SIMI_CX, 210, 96, 68, C_COAT);
+    // Sombra del cuello
+    canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, C_COAT_SH);
+    canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, C_COAT_SH);
+    canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, C_COAT_SH);
+
+    // --- Cuerpo Principal (Abrigo Blanco) ---
+    // 1. Cuerpo inferior (curva amplia hacia abajo)
+    canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, C_COAT);
     
-    // Relleno central para conectar hombros
-    canvas_fill_round_rect(cv, 24, 170, SIMI_CANVAS_W - 48, 60, 40, C_COAT);
+    // 2. Hombros medios (curva más estrecha para transición)
+    canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, C_COAT);
 
-    // Camisa en V (cuello), movida más arriba porque no hay cuello
-    canvas_fill_triangle(cv, SIMI_CX, 196, SIMI_CX - 32, 146, SIMI_CX + 32, 146, C_SHIRT);
+    // 3. Pequeño cuello (diagonal recta)
+    canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, C_COAT);
+    canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, C_COAT);
+    canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, C_COAT);
 
-    // Corbata azul oscura, más arriba y un poco más ancha
-    canvas_fill_triangle(cv, SIMI_CX, 182, SIMI_CX - 12, 156, SIMI_CX + 12, 156, C_TIE);
-    canvas_fill_triangle(cv, SIMI_CX - 10, 178, SIMI_CX + 10, 178, SIMI_CX, 210, C_TIE);
+    // --- Ropa Interior ---
+    // Camisa en V
+    canvas_fill_triangle(cv, SIMI_CX, 196 + by, SIMI_CX - 32, 146 + by, SIMI_CX + 32, 146 + by, C_SHIRT);
 
-    // Cruz médica roja en la solapa izquierda (ajustada a la nueva altura)
-    canvas_fill_rect(cv, 48 - 2, 184 - 7, 4, 16, C_CROSS);
-    canvas_fill_rect(cv, 48 - 7, 184 - 2, 16, 4, C_CROSS);
+    // Corbata
+    canvas_fill_triangle(cv, SIMI_CX, 182 + by, SIMI_CX - 12, 156 + by, SIMI_CX + 12, 156 + by, C_TIE);
+    canvas_fill_triangle(cv, SIMI_CX - 10, 178 + by, SIMI_CX + 10, 178 + by, SIMI_CX, 210 + by, C_TIE);
+
+    // Cruz médica roja
+    canvas_fill_rect(cv, (SIMI_CX - 68) - 2, 184 + by - 7, 4, 16, C_CROSS);
+    canvas_fill_rect(cv, (SIMI_CX - 68) - 7, 184 + by - 2, 16, 4, C_CROSS);
 }
 
 static void draw_eye(simi_canvas_t *cv, int ex, int ey, const simi_face_t *f)
@@ -770,7 +880,7 @@ static void draw_eye(simi_canvas_t *cv, int ex, int ey, const simi_face_t *f)
 static void simi_render(const simi_face_t *f)
 {
     simi_canvas_t *cv = &s_cv;
-    const int dy = f->head_dy;
+    const int dy = f->head_dy + 15;
     const bool alert_face = f->alert_border && f->brow_angle >= 80;
 
     canvas_clear(cv, f->bg);
@@ -778,35 +888,36 @@ static void simi_render(const simi_face_t *f)
     // Cuerpo primero (queda detrás del mentón)
     draw_body(cv);
 
-    // ── Cabeza (Forma de aguacate/pera) ──
-    // Para lograrlo, usamos dos elipses superpuestas: una estrecha arriba y una ancha abajo
-    canvas_fill_ellipse(cv, SIMI_CX, 82 + dy, 52, 60, C_SKIN); // Frente/Cráneo (más estrecho)
-    canvas_fill_ellipse(cv, SIMI_CX, 110 + dy, 74, 58, C_SKIN); // Mejillas/Mandíbula (más ancho)
+    // ── Cabeza (Forma de domo ancho) ──
+    // Para lograrlo, usamos dos elipses superpuestas: una más achatada y ancha arriba, y las mejillas abajo
+    canvas_fill_ellipse(cv, SIMI_CX, 78 + dy, 70, 48, C_SKIN); // Frente/Cráneo (más ancho y achatado)
+    canvas_fill_ellipse(cv, SIMI_CX, 110 + dy, 78, 58, C_SKIN); // Mejillas/Mandíbula (ligeramente más anchas)
     
     // Orejas (bajadas ligeramente para coincidir con la parte ancha)
-    canvas_fill_circle(cv, SIMI_CX - 72, 108 + dy, 14, C_SKIN);
-    canvas_fill_circle(cv, SIMI_CX + 72, 108 + dy, 14, C_SKIN);
+    canvas_fill_circle(cv, SIMI_CX - 76, 108 + dy, 14, C_SKIN);
+    canvas_fill_circle(cv, SIMI_CX + 76, 108 + dy, 14, C_SKIN);
 
     // ── Los 3 cabellos a cada lado (más gruesos, blancos y como patitas de araña) ──
+    // Movidos ligeramente hacia afuera para coincidir con la nueva cabeza ancha
     // Izquierda (salen hacia arriba/afuera y luego caen)
-    canvas_thick_line(cv, SIMI_CX - 62, 66 + dy, SIMI_CX - 76, 60 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 76, 60 + dy, SIMI_CX - 88, 68 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 66, 66 + dy, SIMI_CX - 80, 60 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 80, 60 + dy, SIMI_CX - 92, 68 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX - 64, 80 + dy, SIMI_CX - 78, 76 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 78, 76 + dy, SIMI_CX - 90, 84 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 68, 80 + dy, SIMI_CX - 82, 76 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 82, 76 + dy, SIMI_CX - 94, 84 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX - 64, 94 + dy, SIMI_CX - 76, 92 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 76, 92 + dy, SIMI_CX - 86, 102 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 72, 94 + dy, SIMI_CX - 84, 92 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX - 84, 92 + dy, SIMI_CX - 94, 102 + dy, 4, C_HAIR);
 
     // Derecha (salen hacia arriba/afuera y luego caen)
-    canvas_thick_line(cv, SIMI_CX + 62, 66 + dy, SIMI_CX + 76, 60 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 76, 60 + dy, SIMI_CX + 88, 68 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 66, 66 + dy, SIMI_CX + 80, 60 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 80, 60 + dy, SIMI_CX + 92, 68 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX + 64, 80 + dy, SIMI_CX + 78, 76 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 78, 76 + dy, SIMI_CX + 90, 84 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 68, 80 + dy, SIMI_CX + 82, 76 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 82, 76 + dy, SIMI_CX + 94, 84 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX + 64, 94 + dy, SIMI_CX + 76, 92 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 76, 92 + dy, SIMI_CX + 86, 102 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 72, 94 + dy, SIMI_CX + 84, 92 + dy, 4, C_HAIR);
+    canvas_thick_line(cv, SIMI_CX + 84, 92 + dy, SIMI_CX + 94, 102 + dy, 4, C_HAIR);
 
     // ── Cejas (blancas y arqueadas para dar expresión de felicidad) ──
     int browY = 66 + dy;
@@ -882,41 +993,24 @@ static void simi_render(const simi_face_t *f)
         canvas_fill_rect(cv, cv->w - t, 0, t, cv->h, C_ALERT);
     }
 
-    // ── Burbuja de Pensamiento (Overlay Text) ──
-    if (s_simi_overlay_text[0] != '\0')
+    // ── Zócalo de Subtítulos (Option B) ──
+    if (s_simi_overlay_text[0] != '\0' && cv->clip_y1 >= cv->h - 40)
     {
-        // Usa funciones públicas de UI para dibujar el texto, pero apuntando a nuestro buffer PSRAM
-        int text_scale = 1; // 8x8 font, scale 1 is small, maybe scale 2 is better? Let's use 2.
+        int bar_h = 40;
+        int bar_y = cv->h - bar_h;
+        canvas_fill_rect(cv, 0, bar_y, cv->w, bar_h, SIMI_RGB(20, 20, 20));
+
+        int text_scale = 1;
         int text_width = ui_get_text_width(s_simi_overlay_text, text_scale);
-        
-        // Si no cabe con escala 2, caemos a escala 1
-        if (text_width > cv->w - 20) {
-            text_scale = 1;
-            text_width = ui_get_text_width(s_simi_overlay_text, text_scale);
-        }
+        if (text_width < cv->w - 20) text_scale = 2;
+        text_width = ui_get_text_width(s_simi_overlay_text, text_scale);
+        if (text_width > cv->w - 10) text_scale = 1;
 
         int text_height = 8 * text_scale;
-        int pad_x = 8;
-        int pad_y = 6;
-        int bubble_w = text_width + pad_x * 2;
-        int bubble_h = text_height + pad_y * 2;
-        
-        // Posicionar la burbuja arriba a la derecha (o centrada arriba si es muy grande)
-        int bx = (cv->w - bubble_w) / 2;
-        int by = 6; // margen superior
+        int bx = (cv->w - text_width) / 2;
+        int by = bar_y + (bar_h - text_height) / 2;
 
-        // Dibujar nubecitas para el globo de pensamiento (3 círculos pequeños hacia la cabeza)
-        if (!alert_face) {
-            canvas_fill_circle(cv, SIMI_CX + 40, by + bubble_h + 4, 3, SIMI_RGB(240, 240, 240));
-            canvas_fill_circle(cv, SIMI_CX + 20, by + bubble_h + 12, 5, SIMI_RGB(240, 240, 240));
-            canvas_fill_circle(cv, SIMI_CX, by + bubble_h + 22, 7, SIMI_RGB(240, 240, 240));
-        }
-
-        // Fondo de la burbuja (rectángulo redondeado blanco)
-        canvas_fill_round_rect(cv, bx, by, bubble_w, bubble_h, 8, SIMI_RGB(240, 240, 240));
-        
-        // Dibujar texto dentro del canvas
-        ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, bx + pad_x, by + pad_y, s_simi_overlay_text, s_simi_overlay_color, text_scale);
+        ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, bx, by, s_simi_overlay_text, s_simi_overlay_color, text_scale);
     }
 }
 

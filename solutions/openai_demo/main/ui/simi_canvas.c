@@ -27,17 +27,21 @@ static inline void set_px(simi_canvas_t *cv, int x, int y, uint16_t color)
 /** @brief Fill a horizontal run [x0, x1] on row y, clipped to the canvas. */
 static inline void hspan(simi_canvas_t *cv, int x0, int x1, int y, uint16_t color)
 {
-    if (y < 0 || y >= cv->h)
+    if (y < cv->clip_y0 || y > cv->clip_y1)
     {
         return;
     }
-    if (x0 < 0)
+    if (x0 < cv->clip_x0)
     {
-        x0 = 0;
+        x0 = cv->clip_x0;
     }
-    if (x1 > cv->w - 1)
+    if (x1 > cv->clip_x1)
     {
-        x1 = cv->w - 1;
+        x1 = cv->clip_x1;
+    }
+    if (x0 > x1)
+    {
+        return;
     }
     uint16_t *row = &cv->buf[y * cv->w];
     for (int x = x0; x <= x1; x++)
@@ -52,11 +56,7 @@ void canvas_clear(simi_canvas_t *cv, uint16_t color)
     {
         return;
     }
-    const int n = cv->w * cv->h;
-    for (int i = 0; i < n; i++)
-    {
-        cv->buf[i] = color;
-    }
+    canvas_fill_rect(cv, cv->clip_x0, cv->clip_y0, cv->clip_x1 - cv->clip_x0 + 1, cv->clip_y1 - cv->clip_y0 + 1, color);
 }
 
 void canvas_fill_rect(simi_canvas_t *cv, int x, int y, int w, int h, uint16_t color)

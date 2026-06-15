@@ -1650,7 +1650,7 @@ static void web_search_task(void *arg)
 
     // --- INICIO DE LA CORRECCIÓN ---
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    ui_show_status_message("Getting info..", COLOR_BLACK_BGR565);
+    ui_show_status_message("Getting info..", COLOR_WHITE_BGR565);
     // --- FIN DE LA CORRECCIÓN ---
 
     char *response = get_web_info(ctx->query);
