@@ -20,7 +20,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
 - 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado y una capa de desinfección (sanitization) para hardware con juego de caracteres limitado.
-- 🌡️ **Sensores Ambientales** — monitoreo en tiempo real de temperatura y humedad por I2C (AHT20/AHT30), mostrado directamente en la pantalla LCD.
+- 🌡️ **Sensores Ambientales** — monitoreo en tiempo real de temperatura y humedad por I2C (AHT30), mostrado directamente en la pantalla LCD.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
 
 ### 🧠 Autonomía de IA y Tareas en Segundo Plano
@@ -180,7 +180,7 @@ idf.py -p <PORT> flash monitor
  ├── ble/                  # Lógica BLE central y aprovisionamiento
  ├── config/               # Gestor de ajustes y configuración NVS
  ├── core/                 # Aplicación principal y orquestación de alto nivel
- ├── hardware/             # Códec/I2C, sensores ambientales (AHT20/AHT30) y periféricos de placa
+ ├── hardware/             # Códec/I2C, sensores ambientales (AHT30) y periféricos de placa
  ├── openai/               # Asistentes, búsqueda web y señalización Realtime
  ├── sensing/              # Detección de movimiento CSI con DSP puro
  ├── ui/                   # Renderizado LCD, mapeo de caracteres y UI
