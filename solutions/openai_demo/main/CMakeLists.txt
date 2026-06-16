@@ -7,6 +7,7 @@ idf_component_register(
 
         "hardware/board.c"
         "hardware/aht30.c"
+        "hardware/radar.c"
 
         "audio/media_sys.c"
         "audio/mute_handler.c"

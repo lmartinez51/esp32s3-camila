@@ -16,7 +16,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 
 ## ⚙️ Key Features
 
-- 📡 **Two-Factor Presence Detection (CSI + BLE)** — uses deterministic Wi-Fi CSI DSP for radar-like motion sensing, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
+- 📡 **Two-Factor Presence Detection (Radar/CSI + BLE)** — uses an optional hardware radar or deterministic Wi-Fi CSI DSP for motion sensing, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
@@ -34,14 +34,14 @@ The chatbot has access to a robust set of background functions to control the de
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
-### 🔐 Two-Factor Presence Detection (CSI + BLE)
+### 🔐 Two-Factor Presence Detection (Radar/CSI + BLE)
 The system employs a highly customized, dual-layer authentication mechanism to detect presence and validate identity before waking up the assistant:
-- **Wi-Fi CSI DSP (Motion)**: A secondary ESP32-S3 acts as a radar beacon and captures full HT20 CSI LTF blocks (`128` bytes, `64` complex subcarriers). The firmware masks noisy edge and DC subcarriers, performs Phase Sanitization / Phase Cleaning by removing clock drift and CFO with a weighted least-squares linear phase fit, and triggers motion deterministically from normalized Correlation Drop and Phase Energy metrics.
+- **Motion Detection (Hardware Radar or Wi-Fi CSI)**: The system supports an optional external I2C hardware radar (at 0x28) for high-precision presence detection. If unavailable, it falls back to a secondary ESP32-S3 acting as a Wi-Fi CSI radar beacon that captures full HT20 CSI LTF blocks (`128` bytes, `64` complex subcarriers). The firmware masks noisy edge and DC subcarriers, performs Phase Sanitization / Phase Cleaning by removing clock drift and CFO with a weighted least-squares linear phase fit, and triggers motion deterministically from normalized Correlation Drop and Phase Energy metrics.
 - **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When the primary ESP32 detects this specific UUID nearby, it confirms the owner's identity.
 
 *In short: the CSI DSP radar detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
 
-- **🚨 Intruder Alert (Alert Dispatcher)**: If the CSI DSP radar detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
+- **🚨 Intruder Alert (Alert Dispatcher)**: If the motion sensor detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
 
 ---
 
@@ -184,7 +184,7 @@ idf.py -p <PORT> flash monitor
  ├── ble/                  # BLE central logic and provisioning
  ├── config/               # Settings manager, NVS setup
  ├── core/                 # Main app and high-level orchestration
- ├── hardware/             # Codec/I2C init, environmental sensors (AHT30), and board peripherals
+ ├── hardware/             # Codec/I2C init, environmental (AHT30) and radar sensors, board peripherals
  ├── openai/               # Assistant logic, Web Search, Realtime API signaling
  ├── sensing/              # Pure DSP CSI motion detection
  ├── ui/                   # LCD rendering, charset mapping, and UI logic

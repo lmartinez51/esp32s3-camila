@@ -12,7 +12,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 
 ## ⚙️ Características Principales
 
-- 📡 **Detección de Presencia de Doble Factor (CSI + BLE)** — utiliza DSP determinista sobre la Información de Estado del Canal (CSI) de Wi-Fi para detectar movimiento físico como radar, combinada con la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar al asistente.
+- 📡 **Detección de Presencia de Doble Factor (Radar/CSI + BLE)** — utiliza un radar de hardware opcional o DSP determinista sobre Wi-Fi CSI para detectar movimiento físico, combinada con la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar al asistente.
 - 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2**).
 - 🎧 **Control dinámico de audio** — activa o desactiva el silencio con una estrategia robusta de reinicio de la tubería de audio.
 - 🤫 **Modo Silencio Inteligente** — cuando el usuario pide al asistente que guarde silencio, este silencia el micrófono pero mantiene activa la sesión, pudiendo enviar mensajes cortos de solo texto a la pantalla.
@@ -30,14 +30,14 @@ El asistente cuenta con un conjunto robusto de funciones en segundo plano para c
 - **Configuración del Dispositivo**: La IA puede poner el dispositivo en modo de configuración BLE si se le solicita (`enter_config_mode`).
 - **Gestión de Memoria**: La IA puede borrar de forma segura las credenciales WiFi (`delete_credentials`) y la clave API de OpenAI (`delete_api_key`) de la memoria persistente del dispositivo (NVS).
 
-### 🔐 Detección de Presencia de Doble Factor (CSI + BLE)
+### 🔐 Detección de Presencia de Doble Factor (Radar/CSI + BLE)
 El sistema emplea un mecanismo de autenticación de doble capa altamente personalizado para detectar presencia y validar la identidad antes de despertar al asistente:
-- **Wi-Fi CSI DSP (Movimiento)**: Un segundo ESP32-S3 actúa como baliza de radar y captura bloques LTF HT20 completos (`128` bytes, `64` subportadoras complejas). El firmware enmascara subportadoras ruidosas de borde y DC, realiza saneamiento/limpieza de fase eliminando deriva de reloj y CFO mediante ajuste lineal de mínimos cuadrados ponderados, y dispara eventos de movimiento de forma determinista usando métricas normalizadas de Caída de Correlación y Energía de Fase.
+- **Detección de Movimiento (Radar de Hardware o Wi-Fi CSI)**: El sistema soporta un radar de hardware I2C externo opcional (en 0x28) para detección de presencia de alta precisión. Si no está disponible, el sistema utiliza un segundo ESP32-S3 que actúa como baliza de radar y captura bloques LTF HT20 completos (`128` bytes, `64` subportadoras complejas). El firmware enmascara subportadoras ruidosas de borde y DC, realiza saneamiento/limpieza de fase eliminando deriva de reloj y CFO mediante ajuste lineal de mínimos cuadrados ponderados, y dispara eventos de movimiento de forma determinista usando métricas normalizadas de Caída de Correlación y Energía de Fase.
 - **Proximidad BLE (Identidad)**: Una aplicación de smartphone personalizada llamada **"Nexus"** opera como un servicio en segundo plano ininterrumpible, convirtiendo el teléfono en una llave digital invisible. Transmite continuamente un UUID secreto a través de BLE, incluso cuando el teléfono está bloqueado o en reposo. Cuando el ESP32 principal detecta este UUID específico cerca, confirma la identidad del propietario.
 
 *En resumen: el radar CSI DSP detecta que **alguien se movió**, y la baliza BLE Nexus confirma que eres **tú**.*
 
-- **🚨 Alerta de Intruso (Alert Dispatcher)**: Si el radar CSI DSP detecta movimiento físico pero la baliza BLE Nexus autorizada **NO** está presente para validar tu identidad, el sistema registra inmediatamente un intento de acceso no autorizado. El `alert_dispatcher` entonces dispara un evento de alerta, notificándote (o a la sesión WebRTC/OpenAI) que se detectó una presencia no reconocida.
+- **🚨 Alerta de Intruso (Alert Dispatcher)**: Si el sensor de movimiento detecta presencia física pero la baliza BLE Nexus autorizada **NO** está presente para validar tu identidad, el sistema registra inmediatamente un intento de acceso no autorizado. El `alert_dispatcher` entonces dispara un evento de alerta, notificándote (o a la sesión WebRTC/OpenAI) que se detectó una presencia no reconocida.
 
 ---
 
@@ -180,7 +180,7 @@ idf.py -p <PORT> flash monitor
  ├── ble/                  # Lógica BLE central y aprovisionamiento
  ├── config/               # Gestor de ajustes y configuración NVS
  ├── core/                 # Aplicación principal y orquestación de alto nivel
- ├── hardware/             # Códec/I2C, sensores ambientales (AHT30) y periféricos de placa
+ ├── hardware/             # Códec/I2C, sensores ambientales (AHT30) y de radar, periféricos de placa
  ├── openai/               # Asistentes, búsqueda web y señalización Realtime
  ├── sensing/              # Detección de movimiento CSI con DSP puro
  ├── ui/                   # Renderizado LCD, mapeo de caracteres y UI

@@ -32,6 +32,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_err.h"
+#include "driver/gpio.h"
 #include "freertos/idf_additions.h"
 
 // Includes de WebRTC y Media
@@ -40,6 +41,7 @@
 #include "media_lib_os.h"
 
 // Includes del proyecto
+#include "hardware/radar.h"
 #include "common.h"
 #include "ble_config.h"
 #include "ble_common.h"
@@ -89,6 +91,7 @@ static i2c_master_bus_handle_t sensor_board_i2c_init(void)
     return bus_handle;
 }
 
+bool g_hardware_radar_present = false;
 static bool s_aht30_present = false;
 static aht30_dev_handle_t s_aht30_handle = NULL;
 static uint32_t s_last_aht30_poll_ms = 0;
@@ -101,6 +104,17 @@ static void aht30_init_once(void)
         ESP_LOGW(TAG, "Failed to get External I2C handle. Sensor disabled.");
         return;
     }
+
+    // --- NON-DESTRUCTIVE I2C PING TO SENSOR DOCK (0x28) ---
+    esp_err_t ping_err = i2c_master_probe(bus_handle, 0x28, -1);
+    if (ping_err == ESP_OK) {
+        g_hardware_radar_present = true;
+        ESP_LOGI(TAG, "Sensor Dock detected at 0x28. Hardware Radar Presence ENABLED.");
+    } else {
+        ESP_LOGI(TAG, "No device at 0x28. Software CSI Presence ENABLED.");
+    }
+    // ------------------------------------------------------
+
     if (aht30_init(bus_handle, &s_aht30_handle) == ESP_OK) {
         s_aht30_present = true;
         ESP_LOGI(TAG, "AHT30 initialized successfully. Tolerant Architecture enabled.");
@@ -129,7 +143,7 @@ static void poll_and_draw_temperature(void)
     // Pass the text to the Dr. Simi UI renderer for safe double-buffered compositing
     ui_simi_set_temperature_text(temp_str);
 }
-static QueueHandle_t s_orchestrator_event_queue = NULL;
+QueueHandle_t s_orchestrator_event_queue = NULL;
 #define ORCHESTRATOR_QUEUE_DEPTH 8
 #define ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS 200
 #define IDENTITY_VALIDATION_TIMEOUT_MS BLE_DEVICE_SCAN_TIMEOUT_MS
@@ -293,17 +307,24 @@ static void orchestrator_sleep_csi_cooldown_task(void *param)
 
     if (generation == s_sleep_csi_generation)
     {
-        ESP_LOGI(TAG, "STATE_SLEEP: CSI cooldown complete; starting motion sensing.");
+        ESP_LOGI(TAG, "STATE_SLEEP: Cooldown complete; starting unified motion sensing.");
         s_sleep_motion_allowed_ms = 0;
-        esp_err_t csi_err = csi_handler_start();
-        if (csi_err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s",
-                     esp_err_to_name(csi_err));
-        }
-        else
-        {
-            orchestrator_show_phase("csi_watch", "Watching", "Motion scan", COLOR_GREEN_BGR565);
+        
+        if (g_hardware_radar_present) {
+            ESP_LOGI(TAG, "STATE_SLEEP: Arming One-Shot Hardware Radar.");
+            radar_hal_enable();
+            orchestrator_show_phase("radar_watch", "Watching", "Radar Armed", COLOR_GREEN_BGR565);
+        } else {
+            esp_err_t csi_err = csi_handler_start();
+            if (csi_err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s",
+                         esp_err_to_name(csi_err));
+            }
+            else
+            {
+                orchestrator_show_phase("csi_watch", "Watching", "Motion scan", COLOR_GREEN_BGR565);
+            }
         }
     }
     else
@@ -1211,6 +1232,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         reset_alert_context();
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
+        radar_hal_disable();
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
@@ -1231,6 +1253,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
         s_webrtc_stop_started_ms = 0;
+        radar_hal_disable();
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
@@ -1253,6 +1276,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_PREPARING_BLE:
         ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
         orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
@@ -1270,6 +1294,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_VALIDATING_IDENTITY:
         ESP_LOGI(TAG, "STATE_VALIDATING_IDENTITY: BLE ready; starting identity validation scan.");
         orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
         csi_handler_stop();
         orchestrator_start_identity_validation();
 
@@ -1282,6 +1307,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_RELEASING_BLE:
         ESP_LOGI(TAG, "STATE_RELEASING_BLE: releasing NimBLE before audio ignition.");
         orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
         csi_handler_stop();
         orchestrator_start_ble_release();
         break;
@@ -1291,6 +1317,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         ESP_LOGW(TAG,
                  "STATE_DISPATCHING_ALERT: dispatching emergency alert after BLE release.");
         orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
         csi_handler_stop();
         orchestrator_show_vigilante_alert_visual();
         if (!s_alert_dispatch_pending)
@@ -1320,6 +1347,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     {
         ESP_LOGI(TAG, "STATE_IGNITING: initializing audio runtime and starting WebRTC.");
         orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
         csi_handler_stop();
         s_arrival_context_sent = false;
         webrtc_session_mode_t ignition_mode = s_ignition_webrtc_mode;
@@ -1376,6 +1404,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         }
         else
         {
+            radar_hal_disable();
             csi_handler_stop();
         }
         if (!s_arrival_context_sent)
@@ -1396,6 +1425,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         ESP_LOGI(TAG, "STATE_AUTO_SLEEPING: preparing deterministic WebRTC shutdown.");
         orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
+        radar_hal_disable();
         csi_handler_stop();
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
@@ -1406,6 +1436,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         ESP_LOGI(TAG, "STATE_STOPPING_WEBRTC: waiting for explicit WebRTC stopped event.");
         orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
+        radar_hal_disable();
         csi_handler_stop();
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
@@ -1908,6 +1939,12 @@ void app_main(void)
         ESP_LOGE(TAG, "No se pudieron crear primitivas de sincronizacion de arranque");
         return;
     }
+
+    // --- BARE-METAL RADAR HAL INIT ---
+    if (radar_hal_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize Radar HAL");
+    }
+    // ---------------------------------
 
     // 5) BLE se inicializa bajo demanda para no competir con el primer intento WiFi.
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
