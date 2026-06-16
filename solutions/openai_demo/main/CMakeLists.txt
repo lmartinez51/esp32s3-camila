@@ -6,6 +6,7 @@ idf_component_register(
         "config/nvs_setup.c"
 
         "hardware/board.c"
+        "hardware/aht30.c"
 
         "audio/media_sys.c"
         "audio/mute_handler.c"

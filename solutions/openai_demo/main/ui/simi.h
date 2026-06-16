@@ -108,6 +108,12 @@ void ui_simi_notify_speaking(bool active);
 void ui_simi_set_overlay_text(const char *text, uint16_t color);
 
 /**
+ * @brief Sets the temperature overlay text (AHT30 sensor) to be rendered on top of Dr. Simi.
+ *        Pass NULL to clear the text.
+ */
+void ui_simi_set_temperature_text(const char *text);
+
+/**
  * @brief Releases the canvas buffer.
  */
 void ui_simi_deinit(void);

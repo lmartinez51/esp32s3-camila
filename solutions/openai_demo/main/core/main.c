@@ -60,10 +60,75 @@
 #include "csi_handler.h"
 #include "ei_inference.h"
 #include "alert_dispatcher.h"
+#include "aht30.h"
 
 EventGroupHandle_t app_startup_event_group;
 static const char *TAG = "MAIN";
 static SemaphoreHandle_t ble_sync_semaphore = NULL;
+
+#define SENSOR_I2C_SDA_PIN 41
+#define SENSOR_I2C_SCL_PIN 40
+
+static i2c_master_bus_handle_t sensor_board_i2c_init(void)
+{
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = -1, // Auto select port
+        .scl_io_num = SENSOR_I2C_SCL_PIN,
+        .sda_io_num = SENSOR_I2C_SDA_PIN,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    i2c_master_bus_handle_t bus_handle;
+    esp_err_t err = i2c_new_master_bus(&i2c_mst_config, &bus_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize external I2C bus: %s", esp_err_to_name(err));
+        return NULL;
+    }
+    return bus_handle;
+}
+
+static bool s_aht30_present = false;
+static aht30_dev_handle_t s_aht30_handle = NULL;
+static uint32_t s_last_aht30_poll_ms = 0;
+
+static void aht30_init_once(void)
+{
+    ESP_LOGI(TAG, "Initializing External I2C Bus for Sensor Dock (10kHz)...");
+    i2c_master_bus_handle_t bus_handle = sensor_board_i2c_init();
+    if (!bus_handle) {
+        ESP_LOGW(TAG, "Failed to get External I2C handle. Sensor disabled.");
+        return;
+    }
+    if (aht30_init(bus_handle, &s_aht30_handle) == ESP_OK) {
+        s_aht30_present = true;
+        ESP_LOGI(TAG, "AHT30 initialized successfully. Tolerant Architecture enabled.");
+    } else {
+        ESP_LOGW(TAG, "AHT30 not found on bus. Hardware optionality triggered (Disabled).");
+    }
+}
+
+static void poll_and_draw_temperature(void)
+{
+    if (!s_aht30_present || !s_aht30_handle) {
+        return;
+    }
+
+    float temp = 0.0f;
+    esp_err_t err = aht30_read_temp_humid(s_aht30_handle, &temp, NULL);
+    
+    char temp_str[16];
+    if (err == ESP_OK) {
+        snprintf(temp_str, sizeof(temp_str), "%.1f C", temp);
+    } else {
+        snprintf(temp_str, sizeof(temp_str), "-- C");
+        ESP_LOGW(TAG, "AHT30 read failed mid-session. Continuing gracefully.");
+    }
+
+    // Pass the text to the Dr. Simi UI renderer for safe double-buffered compositing
+    ui_simi_set_temperature_text(temp_str);
+}
 static QueueHandle_t s_orchestrator_event_queue = NULL;
 #define ORCHESTRATOR_QUEUE_DEPTH 8
 #define ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS 200
@@ -1388,7 +1453,7 @@ static void app_startup_orchestrator_task(void *param)
     {
         TickType_t wait_ticks = (state == STATE_ACTIVE || state == STATE_STOPPING_WEBRTC)
                                     ? pdMS_TO_TICKS(AUTO_SLEEP_POLL_MS)
-                                    : portMAX_DELAY;
+                                    : (s_aht30_present ? pdMS_TO_TICKS(10000) : portMAX_DELAY);
 
         if (xQueueReceive(s_orchestrator_event_queue, &event_msg, wait_ticks) != pdTRUE)
         {
@@ -1416,6 +1481,13 @@ static void app_startup_orchestrator_task(void *param)
             }
             else
             {
+                if (s_aht30_present) {
+                    uint32_t now = orchestrator_now_ms();
+                    if (now - s_last_aht30_poll_ms >= 600000) {
+                        poll_and_draw_temperature();
+                        s_last_aht30_poll_ms = now;
+                    }
+                }
                 continue;
             }
         }
@@ -1424,6 +1496,11 @@ static void app_startup_orchestrator_task(void *param)
         ESP_LOGI(TAG, "Orchestrator event: %s while in %s",
                  orchestrator_event_name(event),
                  orchestrator_state_name(state));
+
+        if (s_aht30_present && (event == ORCH_EVENT_WEBRTC_CONNECTED || event == ORCH_EVENT_WEBRTC_DISCONNECTED)) {
+            poll_and_draw_temperature();
+            s_last_aht30_poll_ms = orchestrator_now_ms();
+        }
 
         switch (state)
         {
@@ -1839,6 +1916,8 @@ void app_main(void)
     // 6) Iniciar tarea orquestadora de arranque
     xTaskCreate(app_startup_orchestrator_task, "startup_orch", 4096, NULL, 5, NULL);
 
+    aht30_init_once();
+
     bool wifi_connected = false;
     if (boot_to_provisioning)
     {
@@ -1851,6 +1930,10 @@ void app_main(void)
         // Flujo normal: intentar conectar a WiFi.
         ESP_LOGI(TAG, "Inicializando WiFi. WebRTC queda bajo demanda.");
         display_startup_screen();
+        if (s_aht30_present) {
+            poll_and_draw_temperature();
+            s_last_aht30_poll_ms = orchestrator_now_ms();
+        }
         ESP_ERROR_CHECK(network_wifi_init(network_event_handler));
         wifi_connected = network_wifi_connect_main(WIFI_SSID, WIFI_PASSWORD);
     }
