@@ -35,9 +35,9 @@ El sistema emplea un mecanismo de autenticación de doble capa altamente persona
 - **Detección de Movimiento (Radar de Hardware o Wi-Fi CSI)**: El sistema soporta un radar de hardware I2C externo opcional (en 0x28) para detección de presencia de alta precisión. Si no está disponible, el sistema utiliza un segundo ESP32-S3 que actúa como baliza de radar y captura bloques LTF HT20 completos (`128` bytes, `64` subportadoras complejas). El firmware enmascara subportadoras ruidosas de borde y DC, realiza saneamiento/limpieza de fase eliminando deriva de reloj y CFO mediante ajuste lineal de mínimos cuadrados ponderados, y dispara eventos de movimiento de forma determinista usando métricas normalizadas de Caída de Correlación y Energía de Fase.
 - **Proximidad BLE (Identidad)**: Una aplicación de smartphone personalizada llamada **"Nexus"** opera como un servicio en segundo plano ininterrumpible, convirtiendo el teléfono en una llave digital invisible. Transmite continuamente un UUID secreto a través de BLE, incluso cuando el teléfono está bloqueado o en reposo. Cuando el ESP32 principal detecta este UUID específico cerca, confirma la identidad del propietario.
 
-*En resumen: el radar CSI DSP detecta que **alguien se movió**, y la baliza BLE Nexus confirma que eres **tú**.*
+*En resumen: el radar (por Hardware o CSI DSP) detecta que **alguien se movió**, y la baliza BLE Nexus confirma que eres **tú**.*
 
-- **🚨 Alerta de Intruso (Alert Dispatcher)**: Si el sensor de movimiento detecta presencia física pero la baliza BLE Nexus autorizada **NO** está presente para validar tu identidad, el sistema registra inmediatamente un intento de acceso no autorizado. El `alert_dispatcher` entonces dispara un evento de alerta, notificándote (o a la sesión WebRTC/OpenAI) que se detectó una presencia no reconocida.
+- **🚨 Alerta de Intruso (Alert Dispatcher)**: Si el radar (por Hardware o CSI DSP) detecta movimiento físico pero la baliza BLE Nexus autorizada **NO** está presente para validar tu identidad, el sistema registra inmediatamente un intento de acceso no autorizado. El `alert_dispatcher` entonces dispara un evento de alerta, notificándote (o a la sesión WebRTC/OpenAI) que se detectó una presencia no reconocida.
 
 ---
 

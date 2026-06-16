@@ -39,9 +39,9 @@ The system employs a highly customized, dual-layer authentication mechanism to d
 - **Motion Detection (Hardware Radar or Wi-Fi CSI)**: The system supports an optional external I2C hardware radar (at 0x28) for high-precision presence detection. If unavailable, it falls back to a secondary ESP32-S3 acting as a Wi-Fi CSI radar beacon that captures full HT20 CSI LTF blocks (`128` bytes, `64` complex subcarriers). The firmware masks noisy edge and DC subcarriers, performs Phase Sanitization / Phase Cleaning by removing clock drift and CFO with a weighted least-squares linear phase fit, and triggers motion deterministically from normalized Correlation Drop and Phase Energy metrics.
 - **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When the primary ESP32 detects this specific UUID nearby, it confirms the owner's identity.
 
-*In short: the CSI DSP radar detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
+*In short: the radar (Hardware or CSI DSP) detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
 
-- **🚨 Intruder Alert (Alert Dispatcher)**: If the motion sensor detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
+- **🚨 Intruder Alert (Alert Dispatcher)**: If the radar (Hardware or CSI DSP) detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
 
 ---
 
