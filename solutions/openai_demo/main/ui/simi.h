@@ -52,6 +52,7 @@ typedef struct
     bool eyes_up;        /**< Look upward (thinking). */
     bool blush;          /**< Cheek blush overlay. */
     bool alert_border;   /**< Draw red alarm border on screen. */
+    int16_t bubble_radius; /**< Radius of the sleep snot bubble (0 if none). */
     uint16_t bg;         /**< Canvas background color. */
 } simi_face_t;
 

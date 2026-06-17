@@ -14,7 +14,7 @@
 #include "app_events.h"
 
 #define TAG "MUTE_HANDLER"
-#define IDLE_TIMEOUT_MS (2 * 60 * 1000)
+#define IDLE_TIMEOUT_MS (14 * 60 * 1000)
 #define MUTE_BUTTON_GPIO GPIO_NUM_1
 
 typedef enum

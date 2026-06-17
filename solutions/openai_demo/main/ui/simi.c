@@ -221,6 +221,7 @@ static void simi_apply_animation(simi_state_t visual_state,
         
         f->head_dy += (breath_val / 3);    // Gentle head bob (0 to 2 pixels)
         f->mouth_open += (breath_val / 2); // Subtle mouth expansion (0 to 3 pixels)
+        f->bubble_radius = breath_val * 2; // Snot bubble inflates/deflates (0 to 14 pixels)
         break;
     }
     default:
@@ -428,6 +429,10 @@ static void simi_anim_task(void *arg)
             current_f.alert_border = target_f.alert_border;
             current_f.bg = target_f.bg;
             
+            if (visual_state != SIMI_STATE_SLEEP && visual_state != SIMI_STATE_MUTED) {
+                current_f.bubble_radius = 0; // Instantly reset when awake
+            }
+            
             simi_face_t f = current_f;
             simi_apply_animation(visual_state, frame, speaking, blink_active, blink_frame, &f);
 
@@ -450,7 +455,7 @@ static void simi_anim_task(void *arg)
             }
             else
             {
-                bool head_moved = (f.head_dy != last_f.head_dy);
+                bool head_moved = (f.head_dy != last_f.head_dy) || (f.bubble_radius != last_f.bubble_radius);
                 bool eyes_changed = (f.eye_open != last_f.eye_open) || (f.eyes_up != last_f.eyes_up) || (f.brow_angle != last_f.brow_angle);
                 bool mouth_changed = (f.mouth_open != last_f.mouth_open) || (f.mouth_curve != last_f.mouth_curve);
 
@@ -535,10 +540,10 @@ esp_err_t ui_simi_init(void)
     const size_t bytes = (size_t)SIMI_CANVAS_W * SIMI_CANVAS_H * sizeof(uint16_t);
 
     // Diagnóstico: estado de la RAM interna ANTES de reservar el lienzo.
-    ESP_LOGW(TAG, "[HEAP] simi_canvas:before | INTERNAL free=%u largest=%u | PSRAM free=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    // ESP_LOGW(TAG, "[HEAP] simi_canvas:before | INTERNAL free=%u largest=%u | PSRAM free=%u",
+    //          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+    //          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+    //          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // El canvas DEBE vivir en PSRAM: la RAM interna es escasa y la necesita el
     // controlador BLE (su init falla con ESP_ERR_NO_MEM si se la quitamos).
@@ -577,11 +582,11 @@ esp_err_t ui_simi_init(void)
     s_simi_screen_cleared = false;
     s_simi_backlight_ready = false;
 
-    ESP_LOGW(TAG, "[HEAP] simi_canvas:after  | ptr=%p ext_ram=%d | INTERNAL free=%u largest=%u | PSRAM free=%u",
-             s_cv.buf, esp_ptr_external_ram(s_cv.buf) ? 1 : 0,
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    // ESP_LOGW(TAG, "[HEAP] simi_canvas:after  | ptr=%p ext_ram=%d | INTERNAL free=%u largest=%u | PSRAM free=%u",
+    //          s_cv.buf, esp_ptr_external_ram(s_cv.buf) ? 1 : 0,
+    //          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+    //          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+    //          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return ESP_OK;
 }
 
@@ -880,6 +885,7 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
     f->blush = false;
     f->alert_border = false;
     f->bg = C_BG;
+    f->bubble_radius = 0;
 
     switch (state)
     {
@@ -1029,6 +1035,64 @@ static void canvas_draw_thermometer_icon(simi_canvas_t *cv, int x, int y)
             int py = y + r;
             if (px >= 0 && py >= 0 && px < cv->w && py < cv->h) {
                 cv->buf[py * cv->w + px] = palette[p];
+            }
+        }
+    }
+}
+
+static inline bool is_in_teardrop(int dx, int dy, int r)
+{
+    if (r <= 0) return false;
+    if (dy >= 0) {
+        return (dx * dx + dy * dy) <= (r * r);
+    } else {
+        return (dx * dx * r) <= (r * r - dy * dy) * (r + dy);
+    }
+}
+
+static void simi_draw_teardrop(int cx, int cy, int r)
+{
+    simi_canvas_t *cv = &s_cv;
+    if (r <= 0) return;
+    
+    int y_start = cy - r;
+    if (y_start < 0) y_start = 0;
+    int y_end = cy + r;
+    if (y_end >= cv->h) y_end = cv->h - 1;
+    
+    int x_start = cx - r;
+    if (x_start < 0) x_start = 0;
+    int x_end = cx + r;
+    if (x_end >= cv->w) x_end = cv->w - 1;
+
+    uint16_t c_border = SIMI_RGB(120, 190, 220);
+    uint16_t c_highlight = SIMI_RGB(255, 255, 255);
+    uint16_t c_interior = SIMI_RGB(200, 230, 255);
+
+    for (int y = y_start; y <= y_end; y++)
+    {
+        for (int x = x_start; x <= x_end; x++)
+        {
+            int dx = x - cx;
+            int dy_ = y - cy;
+            
+            if (is_in_teardrop(dx, dy_, r))
+            {
+                if (!is_in_teardrop(dx, dy_, r - 1))
+                {
+                    // Rule A: Border - Opaque stroke
+                    cv->buf[y * cv->w + x] = c_border;
+                }
+                else if (r > 4 && dx > 1 && dy_ < -1 && !is_in_teardrop(dx, dy_, r - 3))
+                {
+                    // Rule B: Specular Highlight - Opaque pure white crescent
+                    cv->buf[y * cv->w + x] = c_highlight;
+                }
+                else
+                {
+                    // Rule C: Interior - Flat pastel fill
+                    cv->buf[y * cv->w + x] = c_interior;
+                }
             }
         }
     }
@@ -1225,6 +1289,14 @@ static void simi_render(const simi_face_t *f)
             canvas_fill_rect(cv, degree_x, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
             canvas_fill_rect(cv, degree_x + 2, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
         }
+    }
+
+    // ── Procedural Snot Bubble (Teardrop) (drawn at the very end to sit on top of everything) ──
+    if (f->bubble_radius > 0)
+    {
+        int bubble_x = SIMI_CX + 6; // Position slightly offset from the nose
+        int bubble_y = 112 + dy + f->bubble_radius; // Anchor the tip (cy - r) dynamically to the nose
+        simi_draw_teardrop(bubble_x, bubble_y, f->bubble_radius);
     }
 }
 

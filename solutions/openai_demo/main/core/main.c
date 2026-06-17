@@ -1242,10 +1242,10 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         return;
     }
 
-    ESP_LOGI(TAG, "Orchestrator transition: %s -> %s",
-             orchestrator_state_name(*state),
-             orchestrator_state_name(next_state));
-    orchestrator_log_heap_snapshot("state_transition:before");
+    // ESP_LOGI(TAG, "Orchestrator transition: %s -> %s",
+    //          orchestrator_state_name(*state),
+    //          orchestrator_state_name(next_state));
+    // orchestrator_log_heap_snapshot("state_transition:before");
 
     *state = next_state;
 
@@ -1419,7 +1419,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
             ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
             media_sys_mic_mute(true);
             ui_simi_set_state(SIMI_STATE_MUTED);
-            ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+            ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
         }
         if (orchestrator_is_vigilante_active())
         {
@@ -1477,7 +1477,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         break;
     }
 
-    orchestrator_log_heap_snapshot("state_transition:after");
+    //orchestrator_log_heap_snapshot("state_transition:after");
 }
 
 /**
@@ -1769,7 +1769,7 @@ static void app_startup_orchestrator_task(void *param)
                 {
                     mute_handler_start_idle_timer();
                     ui_simi_set_state(SIMI_STATE_MUTED);
-                    ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+                    ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
                 }
                 else
                 {
@@ -1788,7 +1788,7 @@ static void app_startup_orchestrator_task(void *param)
             {
                 if (s_is_muted)
                 {
-                    ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+                    ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
                 }
                 else
                 {
