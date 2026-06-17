@@ -11,9 +11,10 @@
 #include "freertos/timers.h"
 #include "mute_handler.h"
 #include "webrtc.h"
+#include "app_events.h"
 
 #define TAG "MUTE_HANDLER"
-#define IDLE_TIMEOUT_MS (10 * 60 * 1000)
+#define IDLE_TIMEOUT_MS (2 * 60 * 1000)
 #define MUTE_BUTTON_GPIO GPIO_NUM_1
 
 typedef enum
@@ -78,34 +79,18 @@ static void mute_evt_task(void *arg)
             if (mic_muted != new_state)
             {
                 mic_muted = new_state;
-                if (!media_sys_is_ready())
+                
+                if (mic_muted)
                 {
-                    ESP_LOGW(TAG, "Mute event ignored because media system is not ready");
-                    continue;
-                }
-
-                if (media_sys_mic_mute(mic_muted))
-                {
-                    ESP_LOGI(TAG, "Mic %s", mic_muted ? "MUTEADO" : "ACTIVADO");
-                    // Mostrar o limpiar mensaje "Muted"
-                    if (mic_muted)
-                    {
-                        ui_simi_set_state(SIMI_STATE_MUTED);
-                        ui_show_status_message("Muted(2x to unmute)", COLOR_RED_BGR565);
-                        vTaskDelay(pdMS_TO_TICKS(100)); // Brief delay to ensure visibility
-                        mute_handler_start_idle_timer();
-                    }
-                    else
-                    {
-                        ui_simi_set_state(SIMI_STATE_LISTENING);
-                        ui_clear_status_message();
-                        mute_handler_stop_idle_timer();
-                    }
+                    ESP_LOGI(TAG, "Physical mute button pressed (MUTED)");
                 }
                 else
                 {
-                    ESP_LOGE(TAG, "Fallo al %s mic", mic_muted ? "mutear" : "activar");
+                    ESP_LOGI(TAG, "Physical mute button pressed (UNMUTED)");
                 }
+
+                // Delegate media control and UI to the central orchestrator
+                orchestrator_post_mute_state(mic_muted);
             }
         }
     }

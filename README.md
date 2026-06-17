@@ -142,8 +142,8 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 ## 🔧 Implementation Highlights
 
-- **Mute/unmute handling**: When the hardware mutes the microphone, the pipeline is safely shut down. When unmuting, the capture pipeline is restarted.
-- **Toggle Button**: The physical push button acts as a toggle. The handler debounces and coordinates hardware, codec state, and WebRTC restart if needed.
+- **Mute/unmute handling**: The central orchestrator manages the global mute state, safely shutting down the pipeline when muting and seamlessly restarting it upon unmuting, while keeping the WebRTC session informed.
+- **Toggle Button**: The physical push button acts as a toggle. The handler debounces and coordinates hardware and codec state, delegating UI and WebRTC restart synchronization to the orchestrator.
 - **Call IDs & Function Calls**: When function-like operations occur, the device stores a `call_id` and attaches it to the `conversation.item.create` events.
 - **UI sanitization**: The LCD font set is a limited 8×8 bitmap. The firmware sanitizes UTF-8 text from the model, mapping characters the display can't render.
 - **Safe Media Initialization & Resource Teardown**: To prevent memory corruption and heap exhaustion, NimBLE is explicitly shut down in a dedicated state (`STATE_RELEASING_BLE`) before igniting the WebRTC and audio runtimes. The firmware also guards all audio interactions with strict `media_sys_is_ready()` checks to avoid crashing during race conditions.

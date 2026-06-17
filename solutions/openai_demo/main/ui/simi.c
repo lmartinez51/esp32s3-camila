@@ -212,6 +212,17 @@ static void simi_apply_animation(simi_state_t visual_state,
             f->eye_open = blink_eye_frames[idx];
         }
         break;
+    case SIMI_STATE_SLEEP:
+    case SIMI_STATE_MUTED:
+    {
+        // Lightweight triangle wave over 16 frames for slow breathing
+        uint32_t phase = frame % 16;
+        int breath_val = (phase < 8) ? phase : (15 - phase); // 0 up to 7, then back to 0
+        
+        f->head_dy += (breath_val / 3);    // Gentle head bob (0 to 2 pixels)
+        f->mouth_open += (breath_val / 2); // Subtle mouth expansion (0 to 3 pixels)
+        break;
+    }
     default:
         break;
     }
@@ -320,6 +331,20 @@ static void simi_anim_task(void *arg)
         bool render = state_changed;
         bool blocking_blit = true;
 
+        static simi_face_t current_f = {0};
+        static bool current_f_init = false;
+        simi_face_t target_f;
+        simi_face_for_state(visual_state, &target_f);
+        
+        if (!current_f_init) {
+            current_f = target_f;
+            current_f_init = true;
+        }
+
+        bool needs_interp = (current_f.eye_open != target_f.eye_open) ||
+                            (current_f.mouth_curve != target_f.mouth_curve) ||
+                            (current_f.mouth_open != target_f.mouth_open);
+
         wait_ms = SIMI_IDLE_WAKE_MS;
 
         if (visual_state == SIMI_STATE_TALKING)
@@ -336,6 +361,11 @@ static void simi_anim_task(void *arg)
         {
             render = true;
             wait_ms = 333;
+        }
+        else if (visual_state == SIMI_STATE_SLEEP || visual_state == SIMI_STATE_MUTED)
+        {
+            render = true;
+            wait_ms = 150;
         }
         else if (visual_state == SIMI_STATE_LISTENING ||
                  visual_state == SIMI_STATE_IDLE ||
@@ -359,12 +389,46 @@ static void simi_anim_task(void *arg)
             }
         }
 
+        if (needs_interp) {
+            render = true;
+            wait_ms = 50; // Fast loop during interpolation
+        }
+
         if (render)
         {
             last_render_ms = simi_now_ms();
             
-            simi_face_t f;
-            simi_face_for_state(visual_state, &f);
+            int step = 25;
+            if (current_f.eye_open < target_f.eye_open) {
+                current_f.eye_open += step;
+                if (current_f.eye_open > target_f.eye_open) current_f.eye_open = target_f.eye_open;
+            } else if (current_f.eye_open > target_f.eye_open) {
+                current_f.eye_open -= step;
+                if (current_f.eye_open < target_f.eye_open) current_f.eye_open = target_f.eye_open;
+            }
+            
+            if (current_f.mouth_curve < target_f.mouth_curve) {
+                current_f.mouth_curve += step;
+                if (current_f.mouth_curve > target_f.mouth_curve) current_f.mouth_curve = target_f.mouth_curve;
+            } else if (current_f.mouth_curve > target_f.mouth_curve) {
+                current_f.mouth_curve -= step;
+                if (current_f.mouth_curve < target_f.mouth_curve) current_f.mouth_curve = target_f.mouth_curve;
+            }
+
+            if (current_f.mouth_open < target_f.mouth_open) {
+                current_f.mouth_open += step;
+                if (current_f.mouth_open > target_f.mouth_open) current_f.mouth_open = target_f.mouth_open;
+            } else if (current_f.mouth_open > target_f.mouth_open) {
+                current_f.mouth_open -= step;
+                if (current_f.mouth_open < target_f.mouth_open) current_f.mouth_open = target_f.mouth_open;
+            }
+
+            current_f.brow_angle = target_f.brow_angle;
+            current_f.eyes_up = target_f.eyes_up;
+            current_f.alert_border = target_f.alert_border;
+            current_f.bg = target_f.bg;
+            
+            simi_face_t f = current_f;
             simi_apply_animation(visual_state, frame, speaking, blink_active, blink_frame, &f);
 
             static simi_face_t last_f = {0};
@@ -841,8 +905,10 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
         f->mouth_open = 60;
         break;
     case SIMI_STATE_MUTED:
-        f->mouth_curve = 0; // boca recta (callado)
-        f->brow_angle = -15;
+    case SIMI_STATE_SLEEP:
+        f->eye_open = 0; // ojos cerrados
+        f->mouth_curve = 15;
+        f->mouth_open = 10;
         break;
     case SIMI_STATE_ALERT:
         f->mouth_curve = -85;  // boca severa hacia abajo
@@ -855,10 +921,6 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
         f->mouth_curve = -55;
         f->brow_angle = -70; // cejas tristes (internas arriba)
         f->eye_open = 70;
-        break;
-    case SIMI_STATE_SLEEP:
-        f->eye_open = 0; // ojos cerrados
-        f->mouth_curve = 15;
         break;
     default:
         break;

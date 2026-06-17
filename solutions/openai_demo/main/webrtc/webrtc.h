@@ -35,6 +35,7 @@ extern "C"
     {
         WEBRTC_ACTION_SEND_IDLE_PROMPT, // Enviar el prompt de inactividad
         WEBRTC_ACTION_PLAY_IDLE_ALERT,  // Reproducir alerta de inactividad
+        WEBRTC_ACTION_NOTIFY_UNMUTE,    // Notificar unmute físico a OpenAI
         // ... (aquí podríamos añadir más acciones en el futuro)
     } webrtc_action_t;
 

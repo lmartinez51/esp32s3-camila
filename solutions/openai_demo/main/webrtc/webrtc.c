@@ -1046,31 +1046,14 @@ static void webrtc_action_task(void *arg)
             case WEBRTC_ACTION_PLAY_IDLE_ALERT:
                 ESP_LOGW(TAG, "WEBRTC_ACTION_TASK: Iniciando secuencia de alerta de inactividad...");
 
-                // 1. Desmutear temporalmente para poder reproducir audio
-                ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Desmuteando temporalmente...");
-                if (media_sys_is_ready())
-                {
-                    media_sys_mic_mute(false);
-                }
-                else
-                {
-                    ESP_LOGW(TAG, "WEBRTC_ACTION_TASK: media system is not ready; skipping temporary unmute");
-                }
+                orchestrator_post_event(ORCH_EVENT_IDLE_ALERT_START);
 
-                // 2. Mostrar mensaje en pantalla
-                ui_clear_status_message(); // Limpiar el "Muted"
-                ui_show_status_message("You there?", COLOR_YELLOW_BGR565);
-
-                // 3. Esperar a que el sistema de audio se reinicie
-                vTaskDelay(pdMS_TO_TICKS(1500)); // 1.5 seg de gracia
-
-                // 4. Enviar el prompt creativo
+                // Enviar el prompt creativo
                 sendEvent("system.message.create", "The user has been inactive for a while and the microphone is still muted. "
                                                    "A timeout may occur on the OpenAI API server if inactivity continues.");
                 vTaskDelay(pdMS_TO_TICKS(200));
                 sendEvent("response.create",
-                          "IMPORTANT CONTEXT: The microphone was just unmuted TEMPORARILY by the system (not by the user) "
-                          "to deliver an alert message."
+                          "IMPORTANT CONTEXT: The microphone is STILL MUTED physically. "
                           "Your task: Play a short, cheerful audio message in Spanish to alert Lorenzo that a server timeout may occur. "
                           "You are Doctor Simi with a strong Mexican accent. "
                           "Say something like: '¡Hey compa! Sé que calladito me veo más bonito, pero solo quería decirte "
@@ -1078,33 +1061,22 @@ static void webrtc_action_task(void *arg)
                           "Mientras seguiré calladito hasta que presiones de nuevo el botón de mute, ¿sale?!' "
                           "Respond ONLY with audio in Spanish. Be warm, natural, and inject emotion.");
 
-                // 5. Esperar a que el audio se reproduzca
+                // Esperar a que el audio se reproduzca
                 ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Esperando 20 segundos para terminar la reproducción del audio...");
                 vTaskDelay(pdMS_TO_TICKS(20000)); // 20 seg para que hable
 
-                // 6. Volver a mutear
-                ESP_LOGW(TAG, "WEBRTC_ACTION_TASK: Secuencia terminada. Volviendo a mutear...");
-                if (media_sys_is_ready())
-                {
-                    media_sys_mic_mute(true);
-                }
-                else
-                {
-                    ESP_LOGW(TAG, "WEBRTC_ACTION_TASK: media system is not ready; skipping remute");
-                }
+                orchestrator_post_event(ORCH_EVENT_IDLE_ALERT_END);
 
-                // 7. Restaurar la pantalla
-                ui_clear_status_message(); // Limpiar el "¿Sigues ahí?"
-                simi_session_set_state(SIMI_STATE_MUTED, "idle_alert_remute");
-                ui_show_status_message("Muted(2x to unmute)", COLOR_RED_BGR565);
-                // ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
-
-                // 8. ¡Reiniciar el timer!
+                // ¡Reiniciar el timer!
                 if (g_idle_timer != NULL)
                 {
                     ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Reiniciando timer de inactividad por otros 14 min.");
                     xTimerReset(g_idle_timer, pdMS_TO_TICKS(100));
                 }
+                break;
+            case WEBRTC_ACTION_NOTIFY_UNMUTE:
+                ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Notificando a OpenAI sobre el unmute físico.");
+                sendEvent("system.message.create", "The user has physically unmuted the microphone. Resume normal conversation.");
                 break;
             default:
                 ESP_LOGW(TAG, "WEBRTC_ACTION_TASK: Acción desconocida: %d", action);
@@ -1358,7 +1330,7 @@ static class_t *build_activate_mute_class(void)
 
     activate_mute->type = "function";
     activate_mute->name = "activate_mute";
-    activate_mute->desc = "Silences the device's microphone. The user will need to use the physical button to unmute."; // Descripción en inglés
+    activate_mute->desc = "Silences the device's microphone. The user will need to use the physical button to unmute. Generate a very brief, cheerful confirmation (e.g., '¡Órale! Entendido, guardo silencio.') then call this tool."; // Descripción en inglés
     activate_mute->parameters = params;
     activate_mute->attr_list = properties;
     activate_mute->attr_num = 0;
@@ -1913,28 +1885,22 @@ void start_delete_credentials_task(void)
 static void activate_mute_task(void *arg)
 {
     ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Muting microphone...");
+    
+    int timeout_ms = 10000;
+    while ((g_response_in_progress || g_output_audio_active) && timeout_ms > 0)
+    {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        timeout_ms -= 100;
+    }
     vTaskDelay(pdMS_TO_TICKS(500)); // Delay to ensure chatbot's response is complete
-    simi_session_set_state(SIMI_STATE_MUTED, "activate_mute");
-    ui_show_status_message("Muted", COLOR_RED_BGR565);
-    vTaskDelay(pdMS_TO_TICKS(200)); // Brief delay to ensure visibility
-    ui_show_help_message_below_status("Press 2x to unmute", COLOR_YELLOW_BGR565);
-    mute_handler_start_idle_timer();
+    
+    // Delegate media control and UI to the central orchestrator
+    orchestrator_post_mute_state(true);
 
-    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Microphone muted.");
+    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Orchestrator notified. Hardware will remain muted until physical unmute.");
     // Notify OpenAI via WebRTC
-    sendEvent("conversation.item.create", "Microphone muted successfully.");
+    sendEvent("conversation.item.create", "Microphone muted successfully. I must wait for the user to physically unmute.");
     vTaskDelay(pdMS_TO_TICKS(200));
-    // sendEvent("response.create", "Inform Lorenzo that the microphone has been muted.");
-    sendEvent("response.create", "Confirm to Lorenzo in a brief, friendly way that the microphone is now muted and you'll be quiet.");
-    vTaskDelay(pdMS_TO_TICKS(200));
-    if (media_sys_is_ready())
-    {
-        media_sys_mic_mute(true);
-    }
-    else
-    {
-        ESP_LOGW(TAG, "ACTIVATE_MUTE_TASK: media system is not ready; skipping microphone mute");
-    }
 
     // Task complete.
     vTaskDelete(NULL);
@@ -2429,10 +2395,12 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         if (first_session_ready)
         {
             orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
-            schedule_simi_session_visual(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                             ? SIMI_STATE_ALERT
-                                             : SIMI_STATE_LISTENING,
-                                         "session_updated");
+            if (!orchestrator_get_mute_state()) {
+                schedule_simi_session_visual(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                                 ? SIMI_STATE_ALERT
+                                                 : SIMI_STATE_LISTENING,
+                                             "session_updated");
+            }
         }
         else
         {
@@ -2476,10 +2444,14 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         if (!g_output_audio_active)
         {
             simi_session_notify_speaking(false);
-            simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                       ? SIMI_STATE_ALERT
-                                       : SIMI_STATE_LISTENING,
-                                   "response_done");
+            if (orchestrator_get_mute_state()) {
+                simi_session_set_state(SIMI_STATE_MUTED, "response_done_muted");
+            } else {
+                simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                           ? SIMI_STATE_ALERT
+                                           : SIMI_STATE_LISTENING,
+                                       "response_done");
+            }
         }
     }
     else if (strcmp(event_type, "response.audio.done") == 0 ||
@@ -2500,10 +2472,14 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_last_output_audio_stopped_ms = app_millis();
         mark_realtime_activity();
         simi_session_notify_speaking(false);
-        simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                   ? SIMI_STATE_ALERT
-                                   : SIMI_STATE_LISTENING,
-                               "output_audio_done");
+        if (orchestrator_get_mute_state()) {
+            simi_session_set_state(SIMI_STATE_MUTED, "output_audio_done_muted");
+        } else {
+            simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                       ? SIMI_STATE_ALERT
+                                       : SIMI_STATE_LISTENING,
+                                   "output_audio_done");
+        }
     }
     else if (strcmp(event_type, "conversation.item.input_audio_transcription.completed") == 0 ||
              strcmp(event_type, "response.audio_transcript.done") == 0 ||

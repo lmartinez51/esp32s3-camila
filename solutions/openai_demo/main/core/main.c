@@ -144,6 +144,7 @@ static void poll_and_draw_temperature(void)
     ui_simi_set_temperature_text(temp_str);
 }
 QueueHandle_t s_orchestrator_event_queue = NULL;
+static bool s_is_muted = false;
 #define ORCHESTRATOR_QUEUE_DEPTH 8
 #define ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS 200
 #define IDENTITY_VALIDATION_TIMEOUT_MS BLE_DEVICE_SCAN_TIMEOUT_MS
@@ -515,6 +516,11 @@ static esp_err_t orchestrator_ensure_audio_runtime_ready(void)
  */
 static bool orchestrator_active_idle_expired(void)
 {
+    if (s_is_muted)
+    {
+        return false;
+    }
+
     uint32_t last_activity_ms = webrtc_get_last_activity_ms();
     if (last_activity_ms == 0 || webrtc_realtime_is_busy())
     {
@@ -717,6 +723,14 @@ static const char *orchestrator_event_name(orchestrator_event_t event)
         return "ORCH_EVENT_VIGILANTE_ROOM_VACATED";
     case ORCH_EVENT_VIGILANTE_TIMEOUT:
         return "ORCH_EVENT_VIGILANTE_TIMEOUT";
+    case ORCH_EVENT_MIC_MUTED:
+        return "ORCH_EVENT_MIC_MUTED";
+    case ORCH_EVENT_MIC_UNMUTED:
+        return "ORCH_EVENT_MIC_UNMUTED";
+    case ORCH_EVENT_IDLE_ALERT_START:
+        return "ORCH_EVENT_IDLE_ALERT_START";
+    case ORCH_EVENT_IDLE_ALERT_END:
+        return "ORCH_EVENT_IDLE_ALERT_END";
     default:
         return "ORCH_EVENT_UNKNOWN";
     }
@@ -748,6 +762,17 @@ void orchestrator_post_event(orchestrator_event_t event)
     {
         ESP_LOGW(TAG, "Orchestrator queue blocked; dropping %s", orchestrator_event_name(event));
     }
+}
+
+void orchestrator_post_mute_state(bool is_muted)
+{
+    orchestrator_event_t evt = is_muted ? ORCH_EVENT_MIC_MUTED : ORCH_EVENT_MIC_UNMUTED;
+    orchestrator_post_event(evt);
+}
+
+bool orchestrator_get_mute_state(void)
+{
+    return s_is_muted;
 }
 
 void orchestrator_post_motion_detected(uint32_t timestamp_ms, float corr_drop)
@@ -1389,6 +1414,13 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_ACTIVE:
         ESP_LOGI(TAG, "STATE_ACTIVE: WebRTC active; injecting arrival context.");
         orchestrator_cancel_sleep_csi_cooldown();
+        if (s_is_muted && media_sys_is_ready())
+        {
+            ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
+            media_sys_mic_mute(true);
+            ui_simi_set_state(SIMI_STATE_MUTED);
+            ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+        }
         if (orchestrator_is_vigilante_active())
         {
             ESP_LOGW(TAG, "STATE_ACTIVE: Vigilante Mode active; starting CSI threat monitor.");
@@ -1719,6 +1751,50 @@ static void app_startup_orchestrator_task(void *param)
             if (event == ORCH_EVENT_WIFI_DISCONNECTED)
             {
                 orchestrator_enter_state(&state, STATE_WAIT_WIFI);
+            }
+            else if (event == ORCH_EVENT_MIC_MUTED || event == ORCH_EVENT_MIC_UNMUTED)
+            {
+                bool want_mute = (event == ORCH_EVENT_MIC_MUTED);
+                if (s_is_muted != want_mute)
+                {
+                    s_is_muted = want_mute;
+                    if (media_sys_is_ready())
+                    {
+                        media_sys_mic_mute(s_is_muted);
+                    }
+                }
+                
+                // Synchronize UI Canvas State
+                if (event == ORCH_EVENT_MIC_MUTED)
+                {
+                    mute_handler_start_idle_timer();
+                    ui_simi_set_state(SIMI_STATE_MUTED);
+                    ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+                }
+                else
+                {
+                    mute_handler_stop_idle_timer();
+                    ui_simi_set_state(SIMI_STATE_LISTENING);
+                    ui_clear_status_message();
+                    webrtc_post_action(WEBRTC_ACTION_NOTIFY_UNMUTE);
+                }
+            }
+            else if (event == ORCH_EVENT_IDLE_ALERT_START)
+            {
+                ui_clear_status_message();
+                ui_show_status_message("You there?", COLOR_YELLOW_BGR565);
+            }
+            else if (event == ORCH_EVENT_IDLE_ALERT_END)
+            {
+                if (s_is_muted)
+                {
+                    ui_show_status_message("Muted - Sleeping", COLOR_RED_BGR565);
+                }
+                else
+                {
+                    ui_clear_status_message();
+                    ui_simi_set_state(SIMI_STATE_LISTENING);
+                }
             }
             else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
                      !orchestrator_is_vigilante_active())
