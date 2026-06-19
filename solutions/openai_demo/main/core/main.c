@@ -63,6 +63,7 @@
 #include "ei_inference.h"
 #include "alert_dispatcher.h"
 #include "aht30.h"
+#include "hardware/ir_sniffer.h"
 
 EventGroupHandle_t app_startup_event_group;
 static const char *TAG = "MAIN";
@@ -2030,6 +2031,14 @@ void app_main(void)
     xTaskCreate(app_startup_orchestrator_task, "startup_orch", 4096, NULL, 5, NULL);
 
     aht30_init_once();
+
+    if (s_aht30_present) {
+        ESP_LOGI(TAG, "Dock confirmed. Initializing IR Sniffer on GPIO 38.");
+        ir_sniffer_init();
+        //ir_sniffer_enter_pairing_mode(IR_ACTION_UNMUTE); // Temporal para aprender comando de mute
+    } else {
+        ESP_LOGW(TAG, "Dock not present. Bypassing IR Sniffer to prevent floating noise.");
+    }
 
     bool wifi_connected = false;
     if (boot_to_provisioning)

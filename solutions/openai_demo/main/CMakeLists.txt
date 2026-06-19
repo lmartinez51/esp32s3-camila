@@ -8,6 +8,8 @@ idf_component_register(
         "hardware/board.c"
         "hardware/aht30.c"
         "hardware/radar.c"
+        "hardware/ir_sniffer.c"
+        "hardware/ir_action_map.c"
 
         "audio/media_sys.c"
         "audio/mute_handler.c"
