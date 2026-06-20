@@ -19,7 +19,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
-- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado y una capa de desinfección (sanitization) para hardware con juego de caracteres limitado.
+- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para el Dr. Simi (ej. Doctor, Selección Nacional, Chapulín) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
 - 🌡️ **Sensores Ambientales** — monitoreo en tiempo real de temperatura y humedad por I2C (AHT30), mostrado directamente en la pantalla LCD.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
 

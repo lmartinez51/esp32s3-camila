@@ -67,7 +67,16 @@ static uint16_t *s_dirty_buf = NULL;
 #define C_ALERT SIMI_RGB(235, 30, 30)
 #define C_ALERT_BG SIMI_RGB(22, 0, 0)
 
+#define C_JERSEY_GREEN SIMI_RGB(20, 140, 60)
+#define C_JERSEY_SH SIMI_RGB(15, 110, 45)
+#define C_JERSEY_RED SIMI_RGB(200, 30, 40)
+#define C_CHAPULIN_RED SIMI_RGB(220, 40, 40)
+#define C_CHAPULIN_SH SIMI_RGB(180, 20, 20)
+#define C_CHAPULIN_YELLOW SIMI_RGB(240, 210, 40)
+
 static simi_canvas_t s_cv = {0};
+static uint16_t *s_static_bg_buf = NULL; // T1: Static Cache Buffer
+static volatile bool s_bg_rendered = false;       // T1: One-Time Render flag
 static bool s_simi_screen_cleared = false;
 static bool s_simi_backlight_ready = false;
 
@@ -80,7 +89,8 @@ static SemaphoreHandle_t s_anim_mutex = NULL;
 static TaskHandle_t s_anim_task = NULL;
 static bool s_anim_stop_requested = false;
 static simi_state_t s_anim_state = SIMI_STATE_IDLE;
-static bool s_anim_speaking = false;
+static volatile bool s_anim_speaking = false;
+static volatile simi_outfit_t s_active_outfit = OUTFIT_SELECCION_GREEN;
 
 static void simi_render(const simi_face_t *f);
 
@@ -124,14 +134,13 @@ static simi_state_t simi_effective_state(simi_state_t state, bool speaking)
 static void simi_anim_snapshot(simi_state_t *state, bool *speaking, bool *stop_requested)
 {
     simi_state_t local_state = SIMI_STATE_IDLE;
-    bool local_speaking = false;
+    bool local_speaking = s_anim_speaking;
     bool local_stop = (s_anim_mutex == NULL);
 
     if (s_anim_mutex != NULL &&
         xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(5)) == pdTRUE)
     {
         local_state = s_anim_state;
-        local_speaking = s_anim_speaking;
         local_stop = s_anim_stop_requested;
         xSemaphoreGive(s_anim_mutex);
     }
@@ -190,7 +199,7 @@ static void simi_apply_animation(simi_state_t visual_state,
     case SIMI_STATE_ALERT:
     {
         static const int16_t alert_mouth_frames[] = {18, 46, 24, 56};
-        f->alert_border = ((frame & 1) == 0);
+        // Option A: Stealth Alert. Do NOT toggle alert_border to preserve cache.
         f->head_dy = (frame & 1) ? -1 : 0;
         if (speaking)
         {
@@ -270,6 +279,7 @@ static bool simi_blit_dirty_rect(int x0, int y0, int x1, int y1, bool blocking)
                                    s_dirty_buf, SIMI_ANIM_TRY_LOCK_MS);
         }
         if (!ok) break;
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     if (ok && !s_simi_backlight_ready)
@@ -439,61 +449,45 @@ static void simi_anim_task(void *arg)
             static simi_face_t last_f = {0};
             static char last_overlay_text[32] = {0};
             static char last_temperature_text[16] = {0};
-            bool text_changed = strncmp(s_simi_overlay_text, last_overlay_text, sizeof(last_overlay_text)) != 0;
-            if (text_changed) strncpy(last_overlay_text, s_simi_overlay_text, sizeof(last_overlay_text));
+            static simi_outfit_t last_outfit = OUTFIT_MAX;
             
-            bool temp_changed = strncmp(s_simi_temperature_text, last_temperature_text, sizeof(last_temperature_text)) != 0;
-            if (temp_changed) strncpy(last_temperature_text, s_simi_temperature_text, sizeof(last_temperature_text));
+            bool text_changed = false;
+            bool temp_changed = false;
+            bool outfit_changed = false;
 
-            bool full_redraw = (visual_state != last_visual_state) || (last_visual_state == SIMI_STATE_MAX);
+            if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
+            {
+                text_changed = strncmp(s_simi_overlay_text, last_overlay_text, sizeof(last_overlay_text)) != 0;
+                if (text_changed) strncpy(last_overlay_text, s_simi_overlay_text, sizeof(last_overlay_text));
+                
+                temp_changed = strncmp(s_simi_temperature_text, last_temperature_text, sizeof(last_temperature_text)) != 0;
+                if (temp_changed) strncpy(last_temperature_text, s_simi_temperature_text, sizeof(last_temperature_text));
+
+                outfit_changed = (s_active_outfit != last_outfit);
+                if (outfit_changed) last_outfit = s_active_outfit;
+                
+                xSemaphoreGive(s_anim_mutex);
+            }
+
+            bool full_redraw = (visual_state != last_visual_state) || 
+                               (last_visual_state == SIMI_STATE_MAX) || 
+                               outfit_changed || 
+                               text_changed || 
+                               temp_changed || 
+                               f.alert_border;
 
             if (full_redraw)
             {
                 s_cv.clip_x0 = 0; s_cv.clip_y0 = 0; s_cv.clip_x1 = s_cv.w - 1; s_cv.clip_y1 = s_cv.h - 1;
                 simi_render(&f);
-                simi_blit_dirty_rect(0, 0, s_cv.w - 1, s_cv.h - 1, blocking_blit);
+                simi_blit_dirty_rect(0, 0, 319, 239, blocking_blit);
             }
             else
             {
-                bool head_moved = (f.head_dy != last_f.head_dy) || (f.bubble_radius != last_f.bubble_radius);
-                bool eyes_changed = (f.eye_open != last_f.eye_open) || (f.eyes_up != last_f.eyes_up) || (f.brow_angle != last_f.brow_angle);
-                bool mouth_changed = (f.mouth_open != last_f.mouth_open) || (f.mouth_curve != last_f.mouth_curve);
-
-                if (head_moved)
-                {
-                    s_cv.clip_x0 = 40; s_cv.clip_y0 = 60; s_cv.clip_x1 = 280; s_cv.clip_y1 = 180;
-                    simi_render(&f);
-                    simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
-                }
-                else
-                {
-                    if (eyes_changed)
-                    {
-                        s_cv.clip_x0 = 80; s_cv.clip_y0 = 70; s_cv.clip_x1 = 240; s_cv.clip_y1 = 120;
-                        simi_render(&f);
-                        simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
-                    }
-                    if (mouth_changed)
-                    {
-                        s_cv.clip_x0 = 100; s_cv.clip_y0 = 120; s_cv.clip_x1 = 220; s_cv.clip_y1 = 180;
-                        simi_render(&f);
-                        simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
-                    }
-                }
-
-                if (text_changed)
-                {
-                    s_cv.clip_x0 = 0; s_cv.clip_y0 = s_cv.h - 40; s_cv.clip_x1 = s_cv.w - 1; s_cv.clip_y1 = s_cv.h - 1;
-                    simi_render(&f);
-                    simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
-                }
-
-                if (temp_changed)
-                {
-                    s_cv.clip_x0 = 0; s_cv.clip_y0 = 0; s_cv.clip_x1 = 120; s_cv.clip_y1 = 40;
-                    simi_render(&f);
-                    simi_blit_dirty_rect(s_cv.clip_x0, s_cv.clip_y0, s_cv.clip_x1, s_cv.clip_y1, blocking_blit);
-                }
+                // Normal speech and blinking animation uses the strict facial dirty rect
+                s_cv.clip_x0 = 60; s_cv.clip_y0 = 30; s_cv.clip_x1 = 260; s_cv.clip_y1 = 170;
+                simi_render(&f);
+                simi_blit_dirty_rect(60, 30, 260, 170, blocking_blit);
             }
 
             last_f = f;
@@ -512,6 +506,9 @@ static void simi_anim_task(void *arg)
                 }
             }
         }
+
+        // Strict framerate cap to unblock PSRAM SPI bus for WebRTC/JSON tasks
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     if (s_anim_mutex != NULL &&
@@ -551,18 +548,21 @@ esp_err_t ui_simi_init(void)
     // que SPIRAM|DMA es insatisfacible y caería a RAM interna. El blit por SPI desde
     // PSRAM funciona en el S3 (igual que los buffers malloc del texto existente).
     s_cv.buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
-    if (s_cv.buf)
+    s_static_bg_buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM); // T1: Allocate static layer buffer
+    
+    if (s_cv.buf && s_static_bg_buf)
     {
-        ESP_LOGI(TAG, "Canvas %dx%d (%u B) en PSRAM", SIMI_CANVAS_W, SIMI_CANVAS_H, (unsigned)bytes);
+        ESP_LOGI(TAG, "Canvas y Static BG %dx%d (%u B c/u) en PSRAM", SIMI_CANVAS_W, SIMI_CANVAS_H, (unsigned)bytes);
     }
     else
     {
-        s_cv.buf = NULL;
+        if (s_cv.buf) { heap_caps_free(s_cv.buf); s_cv.buf = NULL; }
+        if (s_static_bg_buf) { heap_caps_free(s_static_bg_buf); s_static_bg_buf = NULL; }
     }
 
-    if (!s_cv.buf)
+    if (!s_cv.buf || !s_static_bg_buf)
     {
-        ESP_LOGE(TAG, "Fallo al asignar el canvas de Dr. Simi en PSRAM (%u B)", (unsigned)bytes);
+        ESP_LOGE(TAG, "Fallo al asignar buffers de Dr. Simi en PSRAM (%u B)", (unsigned)bytes);
         return ESP_ERR_NO_MEM;
     }
 
@@ -735,27 +735,27 @@ void ui_simi_set_state(simi_state_t state)
     }
 }
 
-void ui_simi_notify_speaking(bool active)
+void ui_simi_set_outfit(simi_outfit_t outfit)
 {
-    if (simi_anim_ensure_mutex() != ESP_OK)
+    if (outfit >= OUTFIT_MAX)
     {
         return;
     }
 
-    TaskHandle_t task = NULL;
-    bool changed = false;
-    if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    if (s_active_outfit != outfit)
     {
-        changed = (s_anim_speaking != active);
-        s_anim_speaking = active;
-        task = s_anim_task;
-        xSemaphoreGive(s_anim_mutex);
+        s_bg_rendered = false;
+        s_active_outfit = outfit;
+        if (s_anim_task != NULL)
+        {
+            xTaskNotifyGive(s_anim_task);
+        }
     }
+}
 
-    if (changed && task != NULL)
-    {
-        xTaskNotifyGive(task);
-    }
+void ui_simi_notify_speaking(bool active)
+{
+    s_anim_speaking = active;
 }
 
 void ui_simi_set_overlay_text(const char *text, uint16_t color)
@@ -941,38 +941,97 @@ static void draw_body(simi_canvas_t *cv)
 {
     int by = 15;
 
-    // --- Sombras traseras ---
-    canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_COAT_SH);
-    canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, C_COAT_SH);
-    
-    // Sombra del cuello
-    canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, C_COAT_SH);
-    canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, C_COAT_SH);
-    canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, C_COAT_SH);
+    switch (s_active_outfit)
+    {
+    case OUTFIT_DOCTOR_WHITE:
+    default:
+        // --- Sombras traseras ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_COAT_SH);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, C_COAT_SH);
+        
+        // Sombra del cuello
+        canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, C_COAT_SH);
+        canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, C_COAT_SH);
+        canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, C_COAT_SH);
 
-    // --- Cuerpo Principal (Abrigo Blanco) ---
-    // 1. Cuerpo inferior (curva amplia hacia abajo)
-    canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, C_COAT);
-    
-    // 2. Hombros medios (curva más estrecha para transición)
-    canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, C_COAT);
+        // --- Cuerpo Principal (Abrigo Blanco) ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, C_COAT);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, C_COAT);
+        canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, C_COAT);
+        canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, C_COAT);
+        canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, C_COAT);
 
-    // 3. Pequeño cuello (diagonal recta)
-    canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, C_COAT);
-    canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, C_COAT);
-    canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, C_COAT);
+        // --- Ropa Interior ---
+        canvas_fill_triangle(cv, SIMI_CX, 196 + by, SIMI_CX - 32, 146 + by, SIMI_CX + 32, 146 + by, C_SHIRT);
+        canvas_fill_triangle(cv, SIMI_CX, 182 + by, SIMI_CX - 12, 156 + by, SIMI_CX + 12, 156 + by, C_TIE);
+        canvas_fill_triangle(cv, SIMI_CX - 10, 178 + by, SIMI_CX + 10, 178 + by, SIMI_CX, 210 + by, C_TIE);
 
-    // --- Ropa Interior ---
-    // Camisa en V
-    canvas_fill_triangle(cv, SIMI_CX, 196 + by, SIMI_CX - 32, 146 + by, SIMI_CX + 32, 146 + by, C_SHIRT);
+        // Cruz médica roja
+        canvas_fill_rect(cv, (SIMI_CX - 68) - 2, 184 + by - 7, 4, 16, C_CROSS);
+        canvas_fill_rect(cv, (SIMI_CX - 68) - 7, 184 + by - 2, 16, 4, C_CROSS);
+        break;
 
-    // Corbata
-    canvas_fill_triangle(cv, SIMI_CX, 182 + by, SIMI_CX - 12, 156 + by, SIMI_CX + 12, 156 + by, C_TIE);
-    canvas_fill_triangle(cv, SIMI_CX - 10, 178 + by, SIMI_CX + 10, 178 + by, SIMI_CX, 210 + by, C_TIE);
+    case OUTFIT_CHAPULIN_RED:
+        // --- Sombras traseras ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_CHAPULIN_SH);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, C_CHAPULIN_SH);
+        canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, C_CHAPULIN_SH);
+        canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, C_CHAPULIN_SH);
+        canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, C_CHAPULIN_SH);
 
-    // Cruz médica roja
-    canvas_fill_rect(cv, (SIMI_CX - 68) - 2, 184 + by - 7, 4, 16, C_CROSS);
-    canvas_fill_rect(cv, (SIMI_CX - 68) - 7, 184 + by - 2, 16, 4, C_CROSS);
+        // --- Cuerpo Principal (Traje Rojo) ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, C_CHAPULIN_RED);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, C_CHAPULIN_RED);
+        canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, C_CHAPULIN_RED);
+        canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, C_CHAPULIN_RED);
+        canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, C_CHAPULIN_RED);
+
+        // --- Emblema Corazón Amarillo ---
+        canvas_fill_circle(cv, SIMI_CX - 30, 205 + by, 35, C_CHAPULIN_YELLOW);
+        canvas_fill_circle(cv, SIMI_CX + 30, 205 + by, 35, C_CHAPULIN_YELLOW);
+        canvas_fill_triangle(cv, SIMI_CX - 62, 217 + by, SIMI_CX + 62, 217 + by, SIMI_CX, 295 + by, C_CHAPULIN_YELLOW);
+
+        // --- Letras "CH" en Rojo (Subidas +10px respecto al centro del corazón) ---
+        int ch_y = 210 + by; 
+        // Letra C 
+        canvas_fill_rect(cv, SIMI_CX - 20, ch_y - 10, 18, 4, C_CHAPULIN_RED); // top
+        canvas_fill_rect(cv, SIMI_CX - 20, ch_y - 10, 4, 20, C_CHAPULIN_RED); // left
+        canvas_fill_rect(cv, SIMI_CX - 20, ch_y + 6, 18, 4, C_CHAPULIN_RED);  // bottom
+
+        // Letra H 
+        canvas_fill_rect(cv, SIMI_CX + 2, ch_y - 10, 4, 20, C_CHAPULIN_RED);  // left
+        canvas_fill_rect(cv, SIMI_CX + 16, ch_y - 10, 4, 20, C_CHAPULIN_RED); // right
+        canvas_fill_rect(cv, SIMI_CX + 2, ch_y - 2, 18, 4, C_CHAPULIN_RED);   // mid
+        break;
+
+    case OUTFIT_SELECCION_GREEN:
+        // --- Sombras traseras ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_JERSEY_SH);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, C_JERSEY_SH);
+        canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, C_JERSEY_SH);
+        canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, C_JERSEY_SH);
+        canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, C_JERSEY_SH);
+
+        // --- Cuerpo Principal (Jersey Verde) ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, C_JERSEY_GREEN);
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, C_JERSEY_GREEN);
+        canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, C_JERSEY_GREEN);
+        canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, C_JERSEY_GREEN);
+        canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, C_JERSEY_GREEN);
+
+        // --- Cuello V-Neck Tricolor ---
+        canvas_fill_triangle(cv, SIMI_CX, 225 + by, SIMI_CX - 45, 151 + by, SIMI_CX + 45, 151 + by, SIMI_RGB(255, 255, 255)); 
+        canvas_fill_triangle(cv, SIMI_CX, 215 + by, SIMI_CX - 35, 151 + by, SIMI_CX + 35, 151 + by, C_JERSEY_RED); 
+        canvas_fill_triangle(cv, SIMI_CX, 205 + by, SIMI_CX - 25, 151 + by, SIMI_CX + 25, 151 + by, C_SKIN); 
+
+        // --- Escudo Nacional (Pecho Izquierdo, derecha en la pantalla) ---
+        canvas_fill_rect(cv, SIMI_CX + 45, 187 + by, 8, 14, SIMI_RGB(0, 100, 30)); // Verde oscuro
+        canvas_fill_rect(cv, SIMI_CX + 53, 187 + by, 8, 14, SIMI_RGB(255, 255, 255)); // Blanco
+        canvas_fill_rect(cv, SIMI_CX + 61, 187 + by, 8, 14, C_JERSEY_RED); // Rojo
+        // El Águila y el Nopal (Detalle café oscuro al centro de la franja blanca)
+        canvas_fill_rect(cv, SIMI_CX + 55, 192 + by, 4, 4, SIMI_RGB(139, 69, 19)); 
+        break;
+    }
 }
 
 static void draw_eye(simi_canvas_t *cv, int ex, int ey, const simi_face_t *f)
@@ -1107,41 +1166,72 @@ static void simi_render(const simi_face_t *f)
     const int dy = f->head_dy + 15;
     const bool alert_face = f->alert_border && f->brow_angle >= 80;
 
-    canvas_clear(cv, f->bg);
+    if (!s_bg_rendered)
+    {
+        canvas_clear(cv, f->bg);
 
-    // Cuerpo primero (queda detrás del mentón)
-    draw_body(cv);
+        // Cuerpo primero (queda detrás del mentón)
+        draw_body(cv);
 
-    // ── Cabeza (Forma de domo ancho) ──
-    // Para lograrlo, usamos dos elipses superpuestas: una más achatada y ancha arriba, y las mejillas abajo
-    canvas_fill_ellipse(cv, SIMI_CX, 78 + dy, 70, 48, C_SKIN); // Frente/Cráneo (más ancho y achatado)
-    canvas_fill_ellipse(cv, SIMI_CX, 110 + dy, 78, 58, C_SKIN); // Mejillas/Mandíbula (ligeramente más anchas)
-    
-    // Orejas (bajadas ligeramente para coincidir con la parte ancha)
-    canvas_fill_circle(cv, SIMI_CX - 76, 108 + dy, 14, C_SKIN);
-    canvas_fill_circle(cv, SIMI_CX + 76, 108 + dy, 14, C_SKIN);
+        // ── Cabeza (Forma de domo ancho) ──
+        // Para lograrlo, usamos dos elipses superpuestas: una más achatada y ancha arriba, y las mejillas abajo
+        canvas_fill_ellipse(cv, SIMI_CX, 78 + dy, 70, 48, C_SKIN); // Frente/Cráneo (más ancho y achatado)
+        canvas_fill_ellipse(cv, SIMI_CX, 110 + dy, 78, 58, C_SKIN); // Mejillas/Mandíbula (ligeramente más anchas)
+        
+        // Orejas (bajadas ligeramente para coincidir con la parte ancha)
+        canvas_fill_circle(cv, SIMI_CX - 76, 108 + dy, 14, C_SKIN);
+        canvas_fill_circle(cv, SIMI_CX + 76, 108 + dy, 14, C_SKIN);
 
-    // ── Los 3 cabellos a cada lado (más gruesos, blancos y como patitas de araña) ──
-    // Movidos ligeramente hacia afuera para coincidir con la nueva cabeza ancha
-    // Izquierda (salen hacia arriba/afuera y luego caen)
-    canvas_thick_line(cv, SIMI_CX - 66, 66 + dy, SIMI_CX - 80, 60 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 80, 60 + dy, SIMI_CX - 92, 68 + dy, 4, C_HAIR);
+        // ── Los 3 cabellos a cada lado (más gruesos, blancos y como patitas de araña) ──
+        // Movidos ligeramente hacia afuera para coincidir con la nueva cabeza ancha
+        // Izquierda (salen hacia arriba/afuera y luego caen)
+        canvas_thick_line(cv, SIMI_CX - 66, 66 + dy, SIMI_CX - 80, 60 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX - 80, 60 + dy, SIMI_CX - 92, 68 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX - 68, 80 + dy, SIMI_CX - 82, 76 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 82, 76 + dy, SIMI_CX - 94, 84 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX - 68, 80 + dy, SIMI_CX - 82, 76 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX - 82, 76 + dy, SIMI_CX - 94, 84 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX - 72, 94 + dy, SIMI_CX - 84, 92 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX - 84, 92 + dy, SIMI_CX - 94, 102 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX - 72, 94 + dy, SIMI_CX - 84, 92 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX - 84, 92 + dy, SIMI_CX - 94, 102 + dy, 4, C_HAIR);
 
-    // Derecha (salen hacia arriba/afuera y luego caen)
-    canvas_thick_line(cv, SIMI_CX + 66, 66 + dy, SIMI_CX + 80, 60 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 80, 60 + dy, SIMI_CX + 92, 68 + dy, 4, C_HAIR);
+        // Derecha (salen hacia arriba/afuera y luego caen)
+        canvas_thick_line(cv, SIMI_CX + 66, 66 + dy, SIMI_CX + 80, 60 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX + 80, 60 + dy, SIMI_CX + 92, 68 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX + 68, 80 + dy, SIMI_CX + 82, 76 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 82, 76 + dy, SIMI_CX + 94, 84 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX + 68, 80 + dy, SIMI_CX + 82, 76 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX + 82, 76 + dy, SIMI_CX + 94, 84 + dy, 4, C_HAIR);
 
-    canvas_thick_line(cv, SIMI_CX + 72, 94 + dy, SIMI_CX + 84, 92 + dy, 4, C_HAIR);
-    canvas_thick_line(cv, SIMI_CX + 84, 92 + dy, SIMI_CX + 94, 102 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX + 72, 94 + dy, SIMI_CX + 84, 92 + dy, 4, C_HAIR);
+        canvas_thick_line(cv, SIMI_CX + 84, 92 + dy, SIMI_CX + 94, 102 + dy, 4, C_HAIR);
+
+        if (s_static_bg_buf != NULL)
+        {
+            memcpy(s_static_bg_buf, cv->buf, SIMI_CANVAS_W * SIMI_CANVAS_H * sizeof(uint16_t));
+        }
+        s_bg_rendered = true;
+    }
+    else if (s_static_bg_buf != NULL)
+    {
+        // T3: Dynamic Dirty Rect Restore (The Eraser)
+        bool full_redraw_bypass = f->alert_border || 
+            (cv->clip_x0 == 0 && cv->clip_y0 == 0 && cv->clip_x1 == cv->w - 1 && cv->clip_y1 == cv->h - 1);
+            
+        if (full_redraw_bypass)
+        {
+            // Risk 2 Mitigation: Full memcpy for global overlays or full refresh
+            memcpy(cv->buf, s_static_bg_buf, SIMI_CANVAS_W * SIMI_CANVAS_H * sizeof(uint16_t));
+        }
+        else
+        {
+            // Targeted row-by-row copy for facial dirty rect (X=60, Y=30, W=200, H=140)
+            int start_x = 60, start_y = 30, w = 200, h = 140;
+            for (int r = start_y; r < start_y + h; r++) {
+                memcpy(&cv->buf[r * cv->w + start_x], 
+                       &s_static_bg_buf[r * cv->w + start_x], 
+                       w * sizeof(uint16_t));
+            }
+        }
+    }
 
     // ── Cejas (blancas y arqueadas para dar expresión de felicidad) ──
     int browY = 66 + dy;
@@ -1190,7 +1280,7 @@ static void simi_render(const simi_face_t *f)
     }
     
     // Lengua (elipse rosa/roja en la parte inferior)
-    if (!alert_face && mo > 6) {
+    if (!alert_face && s_anim_speaking && f->mouth_open > 10) {
         canvas_fill_ellipse(cv, SIMI_CX, mouthY + mo - 4, 12, 6, C_TONGUE);
     }
 

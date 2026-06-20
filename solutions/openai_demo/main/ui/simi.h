@@ -39,6 +39,16 @@ typedef enum
 } simi_state_t;
 
 /**
+ * @brief Outfits available for the procedural character body.
+ */
+typedef enum {
+    OUTFIT_DOCTOR_WHITE = 0,
+    OUTFIT_SELECCION_GREEN,
+    OUTFIT_CHAPULIN_RED,
+    OUTFIT_MAX
+} simi_outfit_t;
+
+/**
  * @brief Parametric description of Dr. Simi's face for one frame.
  *        Expressions and animation are just changes to these fields.
  */
@@ -96,6 +106,11 @@ void ui_simi_stop(void);
  * @brief Updates the target visual state. Last state wins; no event backlog is kept.
  */
 void ui_simi_set_state(simi_state_t state);
+
+/**
+ * @brief Thread-safe setter to change Dr. Simi's procedural outfit.
+ */
+void ui_simi_set_outfit(simi_outfit_t outfit);
 
 /**
  * @brief Tells the runtime whether assistant output audio is actively playing.

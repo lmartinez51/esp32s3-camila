@@ -194,8 +194,8 @@ static int build_player_system()
     esp_codec_dev_set_out_vol(i2s_cfg.play_handle, DEFAULT_PLAYBACK_VOL);
     av_render_cfg_t render_cfg = {
         .audio_render = player_sys.audio_render,
-        .audio_raw_fifo_size = 8 * 4096,
-        .audio_render_fifo_size = 100 * 1024,
+        .audio_raw_fifo_size = 16 * 4096,
+        .audio_render_fifo_size = 200 * 1024,
         .allow_drop_data = false,
     };
     player_sys.player = av_render_open(&render_cfg);

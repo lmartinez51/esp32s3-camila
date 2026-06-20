@@ -25,7 +25,10 @@ static const char* get_action_key(ir_action_t action) {
         case IR_ACTION_WAKE:         return "act_wake";
         case IR_ACTION_SLEEP:        return "act_slp";
         case IR_ACTION_TOGGLE_SLEEP: return "act_tg_slp";
-        default: return NULL;
+        case IR_ACTION_OUTFIT_RED:   return "act_outf_red";
+        case IR_ACTION_OUTFIT_GREEN: return "act_outf_grn";
+        case IR_ACTION_OUTFIT_WHITE: return "act_outf_wht";
+        default:                     return NULL;
     }
 }
 

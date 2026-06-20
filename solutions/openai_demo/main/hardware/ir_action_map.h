@@ -21,6 +21,9 @@ typedef enum {
     IR_ACTION_WAKE,
     IR_ACTION_SLEEP,
     IR_ACTION_TOGGLE_SLEEP,
+    IR_ACTION_OUTFIT_RED,
+    IR_ACTION_OUTFIT_GREEN,
+    IR_ACTION_OUTFIT_WHITE,
     IR_ACTION_MAX // Must remain the last element
 } ir_action_t;
 

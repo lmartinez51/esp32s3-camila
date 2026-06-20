@@ -13,6 +13,7 @@
 #include "freertos/timers.h"
 #include "ir_action_map.h"
 #include "app_events.h"
+#include "ui/simi.h"
 
 static const char *TAG = "IR_SNIFFER";
 
@@ -92,8 +93,16 @@ static void ir_rx_task(void *arg) {
                         } else {
                             ESP_LOGE(TAG, "❌ Pairing Failed! NVS/Cache Error: %s", esp_err_to_name(pair_err));
                         }
-                        s_is_pairing = false;
-                        s_pairing_target = IR_ACTION_NONE;
+                        
+                        if (s_pairing_target < IR_ACTION_MAX - 1) {
+                            s_pairing_target++;
+                            xTimerReset(s_pairing_timer, 0);
+                            ESP_LOGW(TAG, "Proceeding to next target: %d. Waiting for IR signal...", s_pairing_target);
+                        } else {
+                            s_is_pairing = false;
+                            s_pairing_target = IR_ACTION_NONE;
+                            ESP_LOGW(TAG, "Pairing sequence completed.");
+                        }
                     } else {
                         ir_action_t action = ir_map_lookup(scan_code);
                         if (action != IR_ACTION_NONE) {
@@ -110,6 +119,12 @@ static void ir_rx_task(void *arg) {
                                 } else if (action == IR_ACTION_TOGGLE_SLEEP || action == IR_ACTION_TOGGLE_MUTE) {
                                     bool is_muted = orchestrator_get_mute_state();
                                     orchestrator_post_event(is_muted ? ORCH_EVENT_MIC_UNMUTED : ORCH_EVENT_MIC_MUTED);
+                                } else if (action == IR_ACTION_OUTFIT_RED) {
+                                    ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
+                                } else if (action == IR_ACTION_OUTFIT_GREEN) {
+                                    ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
+                                } else if (action == IR_ACTION_OUTFIT_WHITE) {
+                                    ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
                                 }
                             }
                         }

@@ -2035,7 +2035,7 @@ void app_main(void)
     if (s_aht30_present) {
         ESP_LOGI(TAG, "Dock confirmed. Initializing IR Sniffer on GPIO 38.");
         ir_sniffer_init();
-        //ir_sniffer_enter_pairing_mode(IR_ACTION_UNMUTE); // Temporal para aprender comando de mute
+        //ir_sniffer_enter_pairing_mode(IR_ACTION_OUTFIT_RED);
     } else {
         ESP_LOGW(TAG, "Dock not present. Bypassing IR Sniffer to prevent floating noise.");
     }
