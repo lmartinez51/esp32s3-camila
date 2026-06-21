@@ -111,6 +111,10 @@ You can control various device features simply by talking to Dr. Simi. Here are 
 - **Product Information Lookup**:
   - *"¿Cuánto cuesta el paracetamol?"* (Context: "How much does Tylenol usually go for?")
   - **Action**: Triggers `lookup_product_info`.
+- **Change Outfit**:
+  - *"Doctor, póngase su traje de superhéroe."* (Context: "Doc, put on your superhero suit.")
+  - *"Doctor, póngase la playera de la selección."* (Context: "Doc, put on the national team jersey.")
+  - **Action**: Triggers `change_simi_outfit`.
 
 ---
 

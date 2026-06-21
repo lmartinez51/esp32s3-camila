@@ -547,8 +547,8 @@ esp_err_t ui_simi_init(void)
     // OJO: NO usar MALLOC_CAP_DMA — la PSRAM no está marcada como DMA-capable, así
     // que SPIRAM|DMA es insatisfacible y caería a RAM interna. El blit por SPI desde
     // PSRAM funciona en el S3 (igual que los buffers malloc del texto existente).
-    s_cv.buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
-    s_static_bg_buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM); // T1: Allocate static layer buffer
+    s_cv.buf = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM);
+    s_static_bg_buf = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM); // T1: Allocate static layer buffer
     
     if (s_cv.buf && s_static_bg_buf)
     {
@@ -855,11 +855,17 @@ void ui_simi_deinit(void)
         heap_caps_free(s_cv.buf);
         s_cv.buf = NULL;
     }
+    if (s_static_bg_buf)
+    {
+        heap_caps_free(s_static_bg_buf);
+        s_static_bg_buf = NULL;
+    }
     if (s_dirty_buf)
     {
         heap_caps_free(s_dirty_buf);
         s_dirty_buf = NULL;
     }
+    s_bg_rendered = false;
     s_simi_screen_cleared = false;
     s_simi_backlight_ready = false;
     s_cv.w = s_cv.h = 0;

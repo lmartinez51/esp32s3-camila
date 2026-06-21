@@ -1066,13 +1066,6 @@ static void webrtc_action_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(20000)); // 20 seg para que hable
 
                 orchestrator_post_event(ORCH_EVENT_IDLE_ALERT_END);
-
-                // ¡Reiniciar el timer!
-                if (g_idle_timer != NULL)
-                {
-                    ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Reiniciando timer de inactividad por otros 14 min.");
-                    xTimerReset(g_idle_timer, pdMS_TO_TICKS(100));
-                }
                 break;
             case WEBRTC_ACTION_NOTIFY_UNMUTE:
                 ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Notificando a OpenAI sobre el unmute físico.");
@@ -1125,6 +1118,40 @@ void webrtc_post_action(webrtc_action_t action)
     }
 }
 
+
+static class_t *build_change_simi_outfit_class(void)
+{
+    class_t *change_outfit = calloc(1, sizeof(class_t));
+    if (change_outfit == NULL) return NULL;
+
+    static attribute_t outfit_properties[] = {
+        {
+            .name = "outfit_id",
+            .desc = "Use 'default' for his normal white doctor coat, 'superhero' for the red Chapulin suit, and 'soccer' for the green Mexican National Team jersey.",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+    };
+
+    static char *required_attributes[] = {"outfit_id"};
+
+    parameters_t params = {
+        .type = "object",
+        .properties = outfit_properties,
+        .properties_num = ELEMS(outfit_properties),
+        .required = required_attributes,
+        .required_num = ELEMS(required_attributes),
+    };
+
+    change_outfit->type = "function";
+    change_outfit->name = "change_simi_outfit";
+    change_outfit->desc = "Changes Dr. Simi's outfit based on the conversation context.";
+    change_outfit->parameters = params;
+    change_outfit->attr_list = outfit_properties;
+    change_outfit->attr_num = ELEMS(outfit_properties);
+
+    return change_outfit;
+}
 
 static class_t *build_lookup_product_info_class(void)
 {
@@ -1406,6 +1433,7 @@ static int build_classes(void)
     {
         return 0;
     }
+    add_class(build_change_simi_outfit_class());
     add_class(build_lookup_product_info_class());
     add_class(build_websearch_class());
     add_class(build_config_mode_class());
@@ -2260,6 +2288,23 @@ static int process_json(const char *json_data, int json_size)
             ESP_LOGI(TAG, "Function call detected! Activating microphone mute...");
             start_activate_mute_task(); // <-- CALL NEW LAUNCHER
             break;                      // Processed
+        }
+        else if (strcmp(iter->name, "change_simi_outfit") == 0)
+        {
+            cJSON *outfit_item = cJSON_GetObjectItemCaseSensitive(args_root, "outfit_id");
+            if (cJSON_IsString(outfit_item) && outfit_item->valuestring) {
+                if (strcmp(outfit_item->valuestring, "superhero") == 0) {
+                    ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
+                } else if (strcmp(outfit_item->valuestring, "soccer") == 0) {
+                    ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
+                } else {
+                    ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
+                }
+                send_function_output(call_id, "Outfit changed successfully.");
+            } else {
+                send_function_output(call_id, "Error: Missing or invalid outfit_id.");
+            }
+            break;
         }
         // --- MANEJO DE FUNCIONES CON PARÁMETROS ---
         // Si llegamos aquí, la función SÍ espera parámetros.

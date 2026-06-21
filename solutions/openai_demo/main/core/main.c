@@ -150,7 +150,7 @@ static bool s_is_muted = false;
 #define ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS 200
 #define IDENTITY_VALIDATION_TIMEOUT_MS BLE_DEVICE_SCAN_TIMEOUT_MS
 #define BLE_RELEASE_TIMEOUT_MS 5000
-#define AUTO_SLEEP_TIMEOUT_MS (5 * 60 * 1000)
+#define AUTO_SLEEP_TIMEOUT_MS (3 * 60 * 1000)
 #define AUTO_SLEEP_POLL_MS 1000
 #define VIGILANTE_REINFORCEMENT_DELAY_MS 30000
 #define VIGILANTE_VACATED_CONFIRM_MS 10000
@@ -1541,7 +1541,8 @@ static void app_startup_orchestrator_task(void *param)
                      !orchestrator_is_vigilante_active() &&
                      orchestrator_active_idle_expired())
             {
-                event_msg.type = ORCH_EVENT_AUTO_SLEEP_TIMEOUT;
+                ESP_LOGI(TAG, "Inactividad de 3 minutos detectada. Ejecutando Auto-Mute en lugar de Auto-Sleep.");
+                event_msg.type = ORCH_EVENT_MIC_MUTED;
             }
             else
             {

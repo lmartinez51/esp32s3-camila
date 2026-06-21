@@ -30,6 +30,7 @@ typedef struct
 
 static QueueHandle_t mute_evt_queue = NULL;
 static volatile bool mic_muted = false;
+static bool s_idle_warning_sent = false;
 TimerHandle_t g_idle_timer = NULL;
 static void vIdleTimerCallback(TimerHandle_t xTimer);
 
@@ -143,21 +144,25 @@ void mute_handler_init(void)
     }
 }
 
-/**
- * @brief Callback del timer de inactividad.
- * Se ejecuta después de 14 minutos de estar muteado.
- */
 static void vIdleTimerCallback(TimerHandle_t xTimer)
 {
-    ESP_LOGW(TAG, "¡Timer de inactividad expiró después de 14 minutos de mute!");
+    if (!s_idle_warning_sent)
+    {
+        ESP_LOGW(TAG, "¡Timer de inactividad expiró después de 14 minutos de mute! Avisando al usuario...");
+        s_idle_warning_sent = true;
 
-    // Enviar el prompt al sistema de IA para resetear el timer de OpenAI
-    // Esta es la línea que usarías en tu webrtc_action_task:
-    webrtc_post_action(WEBRTC_ACTION_PLAY_IDLE_ALERT);
+        // Enviar el prompt al sistema de IA para resetear el timer de OpenAI
+        webrtc_post_action(WEBRTC_ACTION_PLAY_IDLE_ALERT);
 
-    // NOTA: El timer de OpenAI se resetea. Si el usuario sigue sin contestar,
-    // este callback se volverá a ejecutar en otros 14 minutos (si lo reiniciamos).
-    // Por ahora, lo dejamos como "one-shot".
+        // Cambiar el periodo del timer a 2 minutos para la etapa de gracia
+        xTimerChangePeriod(g_idle_timer, pdMS_TO_TICKS(2 * 60 * 1000), 100);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "¡Pasaron 2 minutos desde el aviso y no hubo respuesta! A dormir...");
+        // Disparar el evento de auto-sleep forzado
+        orchestrator_post_event(ORCH_EVENT_AUTO_SLEEP_TIMEOUT);
+    }
 }
 
 /**
@@ -168,9 +173,9 @@ void mute_handler_start_idle_timer(void)
 {
     if (g_idle_timer != NULL)
     {
-        // ESP_LOGI(TAG, "Iniciando/reseteando timer de inactividad de 14 min.");
-        //  xTimerReset reinicia el timer. Si no estaba corriendo, lo inicia.
-        xTimerReset(g_idle_timer, pdMS_TO_TICKS(100));
+        s_idle_warning_sent = false;
+        // Reiniciar el timer con su duración original de 14 minutos
+        xTimerChangePeriod(g_idle_timer, pdMS_TO_TICKS(IDLE_TIMEOUT_MS), 100);
     }
 }
 
