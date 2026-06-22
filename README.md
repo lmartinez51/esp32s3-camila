@@ -114,6 +114,7 @@ You can control various device features simply by talking to Dr. Simi. Here are 
 - **Change Outfit**:
   - *"Doctor, póngase su traje de superhéroe."* (Context: "Doc, put on your superhero suit.")
   - *"Doctor, póngase la playera de la selección."* (Context: "Doc, put on the national team jersey.")
+  - *"Doctor, ponte la camisa del Barça."* (Context: "Doc, put on the FC Barcelona jersey.")
   - **Action**: Triggers `change_simi_outfit`.
 
 ---

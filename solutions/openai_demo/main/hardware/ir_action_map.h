@@ -24,6 +24,7 @@ typedef enum {
     IR_ACTION_OUTFIT_RED,
     IR_ACTION_OUTFIT_GREEN,
     IR_ACTION_OUTFIT_WHITE,
+    IR_ACTION_OUTFIT_BARCA,
     IR_ACTION_MAX // Must remain the last element
 } ir_action_t;
 

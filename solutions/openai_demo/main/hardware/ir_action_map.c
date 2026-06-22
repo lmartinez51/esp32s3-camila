@@ -28,6 +28,7 @@ static const char* get_action_key(ir_action_t action) {
         case IR_ACTION_OUTFIT_RED:   return "act_outf_red";
         case IR_ACTION_OUTFIT_GREEN: return "act_outf_grn";
         case IR_ACTION_OUTFIT_WHITE: return "act_outf_wht";
+        case IR_ACTION_OUTFIT_BARCA: return "act_outf_blu";
         default:                     return NULL;
     }
 }

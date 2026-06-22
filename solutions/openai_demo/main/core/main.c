@@ -1258,6 +1258,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         reset_alert_context();
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
+        s_is_muted = false;
         radar_hal_disable();
         csi_handler_stop();
         ui_simi_stop();
@@ -1278,6 +1279,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         reset_alert_context();
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
+        s_is_muted = false;
         s_webrtc_stop_started_ms = 0;
         radar_hal_disable();
         csi_handler_stop();
@@ -2036,7 +2038,7 @@ void app_main(void)
     if (s_aht30_present) {
         ESP_LOGI(TAG, "Dock confirmed. Initializing IR Sniffer on GPIO 38.");
         ir_sniffer_init();
-        //ir_sniffer_enter_pairing_mode(IR_ACTION_OUTFIT_RED);
+        // ir_sniffer_enter_pairing_mode(IR_ACTION_OUTFIT_BARCA);
     } else {
         ESP_LOGW(TAG, "Dock not present. Bypassing IR Sniffer to prevent floating noise.");
     }

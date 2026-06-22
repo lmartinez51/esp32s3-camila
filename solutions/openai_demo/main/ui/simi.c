@@ -26,6 +26,7 @@
 #include "freertos/task.h"
 
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "SIMI";
 
@@ -90,7 +91,7 @@ static TaskHandle_t s_anim_task = NULL;
 static bool s_anim_stop_requested = false;
 static simi_state_t s_anim_state = SIMI_STATE_IDLE;
 static volatile bool s_anim_speaking = false;
-static volatile simi_outfit_t s_active_outfit = OUTFIT_SELECCION_GREEN;
+static volatile simi_outfit_t s_active_outfit = OUTFIT_DOCTOR_WHITE;
 
 static void simi_render(const simi_face_t *f);
 
@@ -744,8 +745,8 @@ void ui_simi_set_outfit(simi_outfit_t outfit)
 
     if (s_active_outfit != outfit)
     {
-        s_bg_rendered = false;
         s_active_outfit = outfit;
+        s_bg_rendered = false;
         if (s_anim_task != NULL)
         {
             xTaskNotifyGive(s_anim_task);
@@ -943,12 +944,174 @@ void simi_face_for_state(simi_state_t state, simi_face_t *f)
 /*  Face renderer                                                             */
 /* ──────────────────────────────────────────────────────────────────────── */
 
+/**
+ * @brief Calcula el semi-ancho real del torso (silueta) en una fila Y absoluta.
+ *
+ *        El cuerpo se construye como la UNION de 5 primitivas (rect + 2 triángulos
+ *        de hombro + 2 elipses de pecho/vientre). Esta función replica esa misma
+ *        unión en forma de fórmula, para poder recortar elementos verticales
+ *        (como las franjas del Barça) a la curva real del cuerpo en vez de usar
+ *        rectángulos rectos que sobresalen del contorno redondeado.
+ */
+static int simi_torso_half_width(int y_abs, int by)
+{
+    int yrel = y_abs - by;
+    float w_taper = 0.0f, w1 = 0.0f, w2 = 0.0f;
+
+    if (yrel >= 135 && yrel <= 160)
+    {
+        w_taper = 30.0f + (float)(yrel - 135) * (50.0f - 30.0f) / (160.0f - 135.0f);
+    }
+    if (yrel >= 140 && yrel <= 240)
+    {
+        float dy = (float)(yrel - 190);
+        float t = 1.0f - (dy * dy) / (50.0f * 50.0f);
+        if (t > 0.0f) w2 = 80.0f * sqrtf(t);
+    }
+    if (yrel >= 160 && yrel <= 300)
+    {
+        float dy = (float)(yrel - 230);
+        float t = 1.0f - (dy * dy) / (70.0f * 70.0f);
+        if (t > 0.0f) w1 = 120.0f * sqrtf(t);
+    }
+
+    float w = w_taper;
+    if (w1 > w) w = w1;
+    if (w2 > w) w = w2;
+    return (int)w;
+}
+
 static void draw_body(simi_canvas_t *cv)
 {
     int by = 15;
 
     switch (s_active_outfit)
     {
+    case OUTFIT_FC_BARCELONA:
+        // --- Sombras traseras ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, SIMI_RGB(0, 50, 100));
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 84, 54, SIMI_RGB(0, 50, 100));
+        canvas_fill_rect(cv, SIMI_CX - 34, 135 + by, 68, 25, SIMI_RGB(0, 50, 100));
+        canvas_fill_triangle(cv, SIMI_CX - 34, 135 + by, SIMI_CX - 54, 160 + by, SIMI_CX - 34, 160 + by, SIMI_RGB(0, 50, 100));
+        canvas_fill_triangle(cv, SIMI_CX + 34, 135 + by, SIMI_CX + 54, 160 + by, SIMI_CX + 34, 160 + by, SIMI_RGB(0, 50, 100));
+
+        // --- Capa 1: Base Geometry (Cuerpo Azul) ---
+        canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 120, 70, SIMI_RGB(0, 77, 152));
+        canvas_fill_ellipse(cv, SIMI_CX, 190 + by, 80, 50, SIMI_RGB(0, 77, 152));
+        canvas_fill_rect(cv, SIMI_CX - 30, 135 + by, 60, 25, SIMI_RGB(0, 77, 152));
+        canvas_fill_triangle(cv, SIMI_CX - 30, 135 + by, SIMI_CX - 50, 160 + by, SIMI_CX - 30, 160 + by, SIMI_RGB(0, 77, 152));
+        canvas_fill_triangle(cv, SIMI_CX + 30, 135 + by, SIMI_CX + 50, 160 + by, SIMI_CX + 30, 160 + by, SIMI_RGB(0, 77, 152));
+
+        // --- Capa 1: Franjas Granates (Más anchas: 44px) ---
+        for (int yy = 135 + by; yy < cv->h; yy++)
+        {
+            int hw = simi_torso_half_width(yy, by);
+            if (hw <= 0) continue;
+
+            // Franja Izquierda (-62 a -18) -> Centro exacto en -40
+            int clx0 = SIMI_CX - 62;
+            int clx1 = SIMI_CX - 18;
+            if (clx0 < SIMI_CX - hw) clx0 = SIMI_CX - hw; // Evita el bleed en hombros
+            if (clx1 > clx0) {
+                canvas_fill_rect(cv, clx0, yy, clx1 - clx0, 1, SIMI_RGB(165, 0, 68));
+            }
+
+            // Franja Derecha (+18 a +62) -> Centro exacto en +40
+            int crx0 = SIMI_CX + 18;
+            int crx1 = SIMI_CX + 62;
+            if (crx1 > SIMI_CX + hw) crx1 = SIMI_CX + hw; // Evita el bleed en hombros
+            if (crx1 > crx0) {
+                canvas_fill_rect(cv, crx0, yy, crx1 - crx0, 1, SIMI_RGB(165, 0, 68));
+            }
+        }
+
+        // --- NUEVA Capa: Costuras de Hombro (Diagonal hacia adentro \  / ) ---
+        // Iniciamos AFUERA en el hombro (X = ±90) y bajamos HACIA ADENTRO (X = ±65).
+        // Las franjas rojas están en ±62, así que dejamos 3 píxeles de seguridad para no tocarlas.
+        canvas_thick_line(cv, SIMI_CX - 82, 170 + by, SIMI_CX - 72, 220 + by, 1, SIMI_RGB(0, 0, 0)); // Costura Izquierda (\)
+        canvas_thick_line(cv, SIMI_CX + 82, 170 + by, SIMI_CX + 72, 220 + by, 1, SIMI_RGB(0, 0, 0)); // Costura Derecha (/)
+
+        // --- Capa 2: Etiqueta Senyera y Paréntesis del Cuello ---
+        
+        // 1. El Paréntesis de la camiseta (Ajuste de ancho y altura)
+        // Establecemos el grosor de la linea curva en 4px
+        canvas_smile(cv, SIMI_CX, 150 + by, 58, 20, 4, SIMI_RGB(0, 77, 152));
+        // Costura negra del cuello (debajo del azul)
+        canvas_smile(cv, SIMI_CX, 152 + by, 58, 20, 1, SIMI_RGB(0, 0, 0));
+        // 2. Etiqueta Senyera (Subimos a 164+by para que se ancle bien detrás de la barbilla)
+        canvas_fill_rect(cv, SIMI_CX - 6, 170 + by, 12, 12, SIMI_RGB(237, 187, 0));
+        canvas_fill_rect(cv, SIMI_CX - 4, 170 + by, 2, 12, SIMI_RGB(165, 0, 68));
+        canvas_fill_rect(cv, SIMI_CX,     170 + by, 2, 12, SIMI_RGB(165, 0, 68));
+        canvas_fill_rect(cv, SIMI_CX + 4, 170 + by, 2, 12, SIMI_RGB(165, 0, 68));
+        // --- Escudo Procedural DETALLADO (Centrado en +40) ---
+        {
+            int ex = SIMI_CX + 28; // Anclado para que el centro del escudo quede en +40
+            int ey = 188 + by;     
+
+            // Base dorada (Senyera)
+            canvas_fill_rect(cv, ex, ey, 24, 28, SIMI_RGB(255, 204, 0));
+
+            // Cuadrante Superior Izquierdo (Cruz de San Jorge)
+            canvas_fill_rect(cv, ex, ey, 12, 12, SIMI_RGB(255, 255, 255));
+            canvas_fill_rect(cv, ex + 4, ey, 4, 12, SIMI_RGB(200, 30, 40)); 
+            canvas_fill_rect(cv, ex, ey + 4, 12, 4, SIMI_RGB(200, 30, 40)); 
+
+            // Cuadrante Superior Derecho (Senyera)
+            canvas_fill_rect(cv, ex + 14, ey, 2, 12, SIMI_RGB(200, 30, 40));
+            canvas_fill_rect(cv, ex + 18, ey, 2, 12, SIMI_RGB(200, 30, 40));
+            canvas_fill_rect(cv, ex + 22, ey, 2, 12, SIMI_RGB(200, 30, 40));
+
+            // Mitad Inferior (Blaugrana)
+            canvas_fill_rect(cv, ex, ey + 12, 24, 16, SIMI_RGB(0, 77, 152));
+            canvas_fill_rect(cv, ex + 4, ey + 12, 4, 16, SIMI_RGB(165, 0, 68));
+            canvas_fill_rect(cv, ex + 12, ey + 12, 4, 16, SIMI_RGB(165, 0, 68));
+            canvas_fill_rect(cv, ex + 20, ey + 12, 4, 16, SIMI_RGB(165, 0, 68));
+
+            // Balón procedural al centro 
+            canvas_fill_circle(cv, ex + 12, ey + 18, 4, SIMI_RGB(255, 204, 0));
+        }
+
+        // --- Texto "BARÇA" (Centrado en -40) ---
+        {
+            // Con 38px de ancho total, para centrarlo en -40 debe empezar en -59
+            int startX = SIMI_CX - 59; 
+            int by_t = 192 + by;
+            // B (offset 0)
+            canvas_fill_rect(cv, startX, by_t, 2, 10, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 2, by_t, 3, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 2, by_t + 4, 3, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 2, by_t + 8, 3, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 4, by_t + 2, 2, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 4, by_t + 6, 2, 2, SIMI_RGB(255, 204, 0));
+
+            // A (offset +8)
+            canvas_fill_rect(cv, startX + 8, by_t + 2, 2, 8, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 12, by_t + 2, 2, 8, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 10, by_t, 2, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 10, by_t + 4, 2, 2, SIMI_RGB(255, 204, 0));
+
+            // R (offset +16)
+            canvas_fill_rect(cv, startX + 16, by_t, 2, 10, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 18, by_t, 3, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 18, by_t + 4, 3, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 20, by_t + 2, 2, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 20, by_t + 6, 2, 4, SIMI_RGB(255, 204, 0));
+
+            // Ç (offset +24)
+            canvas_fill_rect(cv, startX + 24, by_t + 2, 2, 6, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 26, by_t, 4, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 26, by_t + 8, 4, 2, SIMI_RGB(255, 204, 0));
+            // Cedilla
+            canvas_fill_rect(cv, startX + 26, by_t + 10, 2, 2, SIMI_RGB(255, 204, 0));
+
+            // A (offset +32)
+            canvas_fill_rect(cv, startX + 32, by_t + 2, 2, 8, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 36, by_t + 2, 2, 8, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 34, by_t, 2, 2, SIMI_RGB(255, 204, 0));
+            canvas_fill_rect(cv, startX + 34, by_t + 4, 2, 2, SIMI_RGB(255, 204, 0));
+        }
+        break;
+
     case OUTFIT_DOCTOR_WHITE:
     default:
         // --- Sombras traseras ---
@@ -972,11 +1135,71 @@ static void draw_body(simi_canvas_t *cv)
         canvas_fill_triangle(cv, SIMI_CX, 182 + by, SIMI_CX - 12, 156 + by, SIMI_CX + 12, 156 + by, C_TIE);
         canvas_fill_triangle(cv, SIMI_CX - 10, 178 + by, SIMI_CX + 10, 178 + by, SIMI_CX, 210 + by, C_TIE);
 
-        // Cruz médica roja
-        canvas_fill_rect(cv, (SIMI_CX - 68) - 2, 184 + by - 7, 4, 16, C_CROSS);
-        canvas_fill_rect(cv, (SIMI_CX - 68) - 7, 184 + by - 2, 16, 4, C_CROSS);
-        break;
+        // --- Capa 3: Logotipo de Pecho Izquierdo Apilado (RE-POSICIONADO INWARD) ---
+        // Stacking text above existing cross, using C_TIE color for text as requested.
+        // All elements are stacked and center-aligned on X=SIMI_CX+52 (prev was +68).
+        
+        uint16_t logo_color = C_TIE; // Tie color used for text
+        int text_startY = 176 + by; // Just below barbilla occlusion limit.
 
+        // --- Linea 1: "Dr." --- (Centrado en X=SIMI_CX+52)
+        {
+            int drX = SIMI_CX + 44; // D stem starts at ~44 relative (centers logo approx at +52)
+            int by_t = text_startY;
+            
+            // D (caps pixel block - consistent with wide grid/KISS logic)
+            canvas_fill_rect(cv, drX, by_t, 2, 10, logo_color); // vertical stem
+            canvas_fill_rect(cv, drX + 2, by_t, 3, 2, logo_color); // top
+            canvas_fill_rect(cv, drX + 2, by_t + 8, 3, 2, logo_color); // bottom
+            canvas_fill_rect(cv, drX + 5, by_t + 2, 2, 6, logo_color); // curve/right-stem
+            
+            // lowercase 'r' (compact procedural)
+            canvas_fill_rect(cv, drX + 8, by_t + 4, 2, 6, logo_color); // stem
+            canvas_fill_rect(cv, drX + 10, by_t + 4, 2, 2, logo_color); // serif top-right
+
+            // dot '.'
+            canvas_fill_rect(cv, drX + 13, by_t + 8, 2, 2, logo_color); // dot
+        }
+
+        // --- Linea 2: "Simi" --- (Centrado en X=SIMI_CX+52)
+        {
+            int simiX = SIMI_CX + 41; // S starts at ~41 relative (centers logo approx at +52)
+            int by_t = text_startY + 12; // Standard 2px vertical spacing below Dr. (Dr. ends at tY+10)
+
+            // S (caps pixel block)
+            canvas_fill_rect(cv, simiX, by_t, 5, 2, logo_color); // top
+            canvas_fill_rect(cv, simiX, by_t, 2, 4, logo_color); // top-left stem (overlapping top)
+            canvas_fill_rect(cv, simiX, by_t + 4, 5, 2, logo_color); // middle
+            canvas_fill_rect(cv, simiX + 3, by_t + 4, 2, 4, logo_color); // bottom-right stem (overlapping middle)
+            canvas_fill_rect(cv, simiX, by_t + 8, 5, 2, logo_color); // bottom
+            
+            // lowercase 'i'
+            canvas_fill_rect(cv, simiX + 6, by_t, 2, 2, logo_color); // dot
+            canvas_fill_rect(cv, simiX + 6, by_t + 4, 2, 6, logo_color); // stem
+            
+            // lowercase 'm' (simplified pixel font 'm' adapted previously for Barça wide grid logic)
+            canvas_fill_rect(cv, simiX + 9, by_t + 4, 2, 6, logo_color); // left stem
+            canvas_fill_rect(cv, simiX + 13, by_t + 4, 2, 6, logo_color); // middle stem
+            canvas_fill_rect(cv, simiX + 17, by_t + 4, 2, 6, logo_color); // right stem
+            canvas_fill_rect(cv, simiX + 10, by_t + 2, 3, 2, logo_color); // top-left arc
+            canvas_fill_rect(cv, simiX + 14, by_t + 2, 3, 2, logo_color); // top-right arc
+            
+            // lowercase 'i' (repeat)
+            canvas_fill_rect(cv, simiX + 20, by_t, 2, 2, logo_color); // dot
+            canvas_fill_rect(cv, simiX + 20, by_t + 4, 2, 6, logo_color); // stem
+        }
+
+        // --- Linea 3: Cruz medica roja (Moved lower and stacked, centered in logic) ---
+        // Stacking text above standard cross placement (original: 184), moving cross down for clear logo look.
+        // Also center-aligning this to CX+52.
+        int cy_cross = 212 + by; // Standard size cross moved lower than original to prevent clipping.
+        int cx_cross = SIMI_CX + 52; // new precision X anchor area to stack.
+        
+        canvas_fill_rect(cv, cx_cross - 2, cy_cross - 7, 4, 16, C_CROSS); // vertical bar (size 4x16 standard).
+        canvas_fill_rect(cv, cx_cross - 7, cy_cross - 2, 16, 4, C_CROSS); // horizontal bar (size 16x4 standard).
+        
+        break;
+    
     case OUTFIT_CHAPULIN_RED:
         // --- Sombras traseras ---
         canvas_fill_ellipse(cv, SIMI_CX, 230 + by, 126, 76, C_CHAPULIN_SH);

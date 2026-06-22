@@ -1127,7 +1127,7 @@ static class_t *build_change_simi_outfit_class(void)
     static attribute_t outfit_properties[] = {
         {
             .name = "outfit_id",
-            .desc = "Use 'default' for his normal white doctor coat, 'superhero' for the red Chapulin suit, and 'soccer' for the green Mexican National Team jersey.",
+            .desc = "Use 'default' for his normal white doctor coat, 'superhero' for the red Chapulin suit, 'soccer' for the green Mexican National Team jersey, and 'barca' for Culé, Blaugrana, Mejor equipo del mundo, or Bárcelonista.",
             .type = ATTRIBUTE_TYPE_STRING,
             .required = true,
         },
@@ -2297,6 +2297,8 @@ static int process_json(const char *json_data, int json_size)
                     ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
                 } else if (strcmp(outfit_item->valuestring, "soccer") == 0) {
                     ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
+                } else if (strcmp(outfit_item->valuestring, "barca") == 0) {
+                    ui_simi_set_outfit(OUTFIT_FC_BARCELONA);
                 } else {
                     ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
                 }

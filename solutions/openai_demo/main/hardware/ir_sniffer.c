@@ -125,6 +125,8 @@ static void ir_rx_task(void *arg) {
                                     ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
                                 } else if (action == IR_ACTION_OUTFIT_WHITE) {
                                     ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
+                                } else if (action == IR_ACTION_OUTFIT_BARCA) {
+                                    ui_simi_set_outfit(OUTFIT_FC_BARCELONA);
                                 }
                             }
                         }

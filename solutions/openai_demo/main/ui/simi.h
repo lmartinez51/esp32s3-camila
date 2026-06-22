@@ -45,6 +45,7 @@ typedef enum {
     OUTFIT_DOCTOR_WHITE = 0,
     OUTFIT_SELECCION_GREEN,
     OUTFIT_CHAPULIN_RED,
+    OUTFIT_FC_BARCELONA,
     OUTFIT_MAX
 } simi_outfit_t;
 
