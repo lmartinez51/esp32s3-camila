@@ -106,6 +106,11 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
 - **Búsqueda de Información de Productos**:
   - *"¿Cuánto cuesta el paracetamol?"*
   - **Acción**: Ejecuta `lookup_product_info`.
+- **Cambiar Atuendo**:
+  - *"Doctor, póngase su traje de superhéroe."*
+  - *"Doctor, póngase la playera de la selección."*
+  - *"Doctor, ponte la camisa del Barça."*
+  - **Acción**: Ejecuta `change_simi_outfit`.
 
 ---
 
