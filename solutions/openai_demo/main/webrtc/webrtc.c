@@ -32,7 +32,7 @@
 #include "nvs_flash.h"
 #include "mute_handler.h"
 #include "prompts.h"
-
+#include "hardware/ir_sniffer.h"
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
 #define TAG "OPENAI_APP"
 #define ENABLE_REALTIME_INPUT_TRANSCRIPTION 1
@@ -183,7 +183,7 @@ static bool webrtc_generation_is_current(uint32_t generation)
     return current;
 }
 
-static void mark_realtime_activity(void)
+void webrtc_mark_activity(void)
 {
     g_last_realtime_activity_ms = app_millis();
 }
@@ -1409,6 +1409,71 @@ static class_t *build_control_display_class(void)
     return display_control;
 }
 
+static uint32_t lookup_ir_code(const char* device, const char* action) {
+    if (strcmp(device, "tv") == 0) {
+        if (strcmp(action, "power") == 0) return 0xFD020707;
+        if (strcmp(action, "vol_up") == 0) return 0xF8070707;
+        if (strcmp(action, "vol_down") == 0) return 0xF40B0707;
+        if (strcmp(action, "ch_up") == 0) return 0xED120707;
+        if (strcmp(action, "ch_down") == 0) return 0xEF100707;
+        if (strcmp(action, "mute") == 0) return 0xF00F0707;
+        if (strcmp(action, "num_1") == 0) return 0xFB040707;
+        if (strcmp(action, "num_2") == 0) return 0xFA050707;
+        if (strcmp(action, "num_3") == 0) return 0xF9060707;
+        if (strcmp(action, "num_4") == 0) return 0xF7080707;
+        if (strcmp(action, "num_5") == 0) return 0xF6090707;
+        if (strcmp(action, "num_6") == 0) return 0xF50A0707;
+        if (strcmp(action, "num_7") == 0) return 0xF30C0707;
+        if (strcmp(action, "num_8") == 0) return 0xF20D0707;
+        if (strcmp(action, "num_9") == 0) return 0xF10E0707;
+        if (strcmp(action, "num_0") == 0) return 0xEE110707;
+    }
+    return 0; // Not found
+}
+
+static class_t *build_emit_ir_command_class(void)
+{
+    class_t *emit_ir = calloc(1, sizeof(class_t));
+    if (!emit_ir) return NULL;
+
+    static attribute_t properties[] = {
+        {
+            .name = "device",
+            .desc = "The target device (e.g., 'tv', 'ac', 'soundbar').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+        {
+            .name = "action",
+            .desc = "The action to perform (e.g., 'power', 'vol_up', 'ch_down', 'mute').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+    };
+
+    static const char *required[] = {"device", "action"};
+
+    const size_t properties_num = sizeof(properties) / sizeof(properties[0]);
+    const size_t required_num = sizeof(required) / sizeof(required[0]);
+
+    parameters_t params = {
+        .type = "object",
+        .properties = properties,
+        .properties_num = properties_num,
+        .required = (char **)required,
+        .required_num = required_num,
+    };
+
+    emit_ir->type = "function";
+    emit_ir->name = "emit_ir_command";
+    emit_ir->desc = "Emits an infrared (IR) command to control electronic devices.";
+    emit_ir->parameters = params;
+    emit_ir->attr_list = properties;
+    emit_ir->attr_num = properties_num;
+
+    return emit_ir;
+}
+
 static void add_class(class_t *cls)
 {
     if (classes == NULL)
@@ -1441,6 +1506,7 @@ static int build_classes(void)
     add_class(build_delete_credentials_class());
     add_class(build_activate_mute_class());
     add_class(build_control_display_class());
+    add_class(build_emit_ir_command_class());
     build_once = true;
     return 0;
 }
@@ -2193,7 +2259,7 @@ int webrtc_inject_arrival_context(void)
     }
 
     vTaskDelay(pdMS_TO_TICKS(150));
-    mark_realtime_activity();
+    webrtc_mark_activity();
 
     if (webrtc_realtime_is_busy())
     {
@@ -2363,6 +2429,36 @@ static int process_json(const char *json_data, int json_size)
             }
             break; // Procesada (o falló el argumento)
         }
+        else if (strcmp(iter->name, "emit_ir_command") == 0)
+        {
+            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
+            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
+            
+            if (cJSON_IsString(dev_item) && dev_item->valuestring && 
+                cJSON_IsString(act_item) && act_item->valuestring)
+            {
+                uint32_t hex_code = lookup_ir_code(dev_item->valuestring, act_item->valuestring);
+                
+                if (hex_code != 0) {
+                    ESP_LOGI(TAG, "IR Dispatch: %s %s -> 0x%08lX", dev_item->valuestring, act_item->valuestring, (unsigned long)hex_code);
+                    esp_err_t err = ir_transmitter_send_raw(hex_code);
+                    if (err == ESP_OK) {
+                        send_function_output(call_id, "IR command emitted successfully.");
+                    } else {
+                        send_function_output(call_id, "Error: Hardware failed to emit IR command.");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "IR Dispatch: Unpaired device or action (%s, %s)", dev_item->valuestring, act_item->valuestring);
+                    send_function_output(call_id, "Error: Device or action not paired yet.");
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Argumentos inválidos o faltantes para emit_ir_command.");
+                send_function_output(call_id, "Error: Missing or invalid 'device' or 'action' argument.");
+            }
+            break; // Procesada (o falló el argumento)
+        }
         else
         {
             // Si encontramos una clase pero no coincide con ninguna de las anteriores
@@ -2425,7 +2521,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         {
             ESP_LOGW(TAG, "Realtime reports an active response; preserving response busy state");
             g_response_in_progress = true;
-            mark_realtime_activity();
+            webrtc_mark_activity();
         }
         else
         {
@@ -2438,7 +2534,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         const bool first_session_ready = !g_realtime_session_ready;
         ESP_LOGI(TAG, "Realtime session updated; respuestas automaticas por VAD habilitadas");
         g_realtime_session_ready = true;
-        mark_realtime_activity();
+        webrtc_mark_activity();
         if (first_session_ready)
         {
             orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
@@ -2458,22 +2554,22 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     {
         g_input_speech_active = true;
         g_last_input_speech_ms = app_millis();
-        mark_realtime_activity();
+        webrtc_mark_activity();
     }
     else if (strcmp(event_type, "input_audio_buffer.speech_stopped") == 0)
     {
         g_input_speech_active = false;
         g_last_input_speech_ms = app_millis();
-        mark_realtime_activity();
+        webrtc_mark_activity();
     }
     else if (strcmp(event_type, "input_audio_buffer.committed") == 0)
     {
-        mark_realtime_activity();
+        webrtc_mark_activity();
     }
     else if (strcmp(event_type, "response.created") == 0)
     {
         g_response_in_progress = true;
-        mark_realtime_activity();
+        webrtc_mark_activity();
         reset_data_channel_response_stats();
         track_data_channel_event(event_type, size);
         if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
@@ -2486,7 +2582,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         log_response_done(root);
         log_data_channel_snapshot("response-done");
         g_response_in_progress = false;
-        mark_realtime_activity();
+        webrtc_mark_activity();
         schedule_post_response_capture_recovery();
         if (!g_output_audio_active)
         {
@@ -2504,12 +2600,12 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     else if (strcmp(event_type, "response.audio.done") == 0 ||
              strcmp(event_type, "response.output_audio.done") == 0)
     {
-        mark_realtime_activity();
+        webrtc_mark_activity();
     }
     else if (strcmp(event_type, "output_audio_buffer.started") == 0)
     {
         g_output_audio_active = true;
-        mark_realtime_activity();
+        webrtc_mark_activity();
         simi_session_notify_speaking(true);
     }
     else if (strcmp(event_type, "output_audio_buffer.stopped") == 0 ||
@@ -2517,7 +2613,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     {
         g_output_audio_active = false;
         g_last_output_audio_stopped_ms = app_millis();
-        mark_realtime_activity();
+        webrtc_mark_activity();
         simi_session_notify_speaking(false);
         if (orchestrator_get_mute_state()) {
             simi_session_set_state(SIMI_STATE_MUTED, "output_audio_done_muted");

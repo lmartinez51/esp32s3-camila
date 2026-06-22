@@ -93,6 +93,10 @@ static i2c_master_bus_handle_t sensor_board_i2c_init(void)
 }
 
 bool g_hardware_radar_present = false;
+
+bool hardware_is_sensor_dock_connected(void) {
+    return g_hardware_radar_present;
+}
 static bool s_aht30_present = false;
 static aht30_dev_handle_t s_aht30_handle = NULL;
 static uint32_t s_last_aht30_poll_ms = 0;
@@ -1768,6 +1772,9 @@ static void app_startup_orchestrator_task(void *param)
                     }
                 }
                 
+                // Actualizar timestamp de actividad por interacción física con el botón
+                webrtc_mark_activity();
+
                 // Synchronize UI Canvas State
                 if (event == ORCH_EVENT_MIC_MUTED)
                 {
@@ -2089,6 +2096,13 @@ void app_main(void)
     xTaskCreatePinnedToCoreWithCaps(sys_telemetry_task, "telemetry_task", 3072, NULL,
                                     tskIDLE_PRIORITY + 1, NULL, 1,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    // --- TEMPORARY IR TX TEST ---
+    ESP_LOGW(TAG, "Waiting 5 seconds before emitting IR test code...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    ESP_LOGW(TAG, "Emitting IR TX Test Frame (TV Power)!");
+    ir_transmitter_send_raw(TV_CMD_POWER); 
+    // ----------------------------
 
     // 7) Loop principal - monitorea el estado de WebRTC continuamente
     while (1)

@@ -55,6 +55,7 @@ extern "C"
     void webrtc_send_system_prompt(const char *text);
     int webrtc_inject_arrival_context(void);
     uint32_t webrtc_get_last_activity_ms(void);
+    void webrtc_mark_activity(void);
     bool webrtc_realtime_is_busy(void);
 
     /**
