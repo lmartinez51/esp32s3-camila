@@ -160,6 +160,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 1. **Hardware Prerequisites**:
    - **Main Device**: An ESP32-S3-BOX-3 (recommended) for AI and audio processing.
+   - **Dock Accessory**: An `ESP32-S3-BOX-3-SENSOR` dock. While not strictly required for the core voice assistant, this dock is necessary if you want to use the environmental temperature/humidity sensors (AHT30), the infrared (IR) sniffer/emitter, and the hardware presence radar.
    - **CSI Beacon**: A second ESP32-S3 (any variant) used exclusively to collect and broadcast Wi-Fi radar data.
    - **Digital Key**: An Android smartphone running the custom "Nexus" background app for BLE validation.
 2. **Software Prerequisites**: ESP-IDF v5.4.3.

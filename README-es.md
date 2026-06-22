@@ -155,6 +155,7 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 
 1. **Requisitos de Hardware**:
    - **Dispositivo Principal**: Un ESP32-S3-BOX-3 (recomendado) para la IA y procesamiento de audio.
+   - **Accesorio Dock**: Un dock `ESP32-S3-BOX-3-SENSOR`. Aunque no es estrictamente necesario para el funcionamiento básico del asistente de voz, este dock es indispensable si deseas utilizar los sensores ambientales de temperatura y humedad (AHT30), el emisor/receptor infrarrojo (IR), y el radar de presencia por hardware.
    - **Baliza CSI (Beacon)**: Un segundo ESP32-S3 (cualquier modelo) utilizado exclusivamente para recopilar los datos del radar Wi-Fi.
    - **Llave Digital**: Un smartphone Android ejecutando la aplicación personalizada "Nexus" en segundo plano para la validación BLE.
 2. **Requisitos de Software**: ESP-IDF v5.4.3.
