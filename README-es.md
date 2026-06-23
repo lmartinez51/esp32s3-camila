@@ -111,6 +111,10 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
   - *"Doctor, póngase la playera de la selección."*
   - *"Doctor, ponte la camisa del Barça."*
   - **Acción**: Ejecuta `change_simi_outfit`.
+- **Controlar Dispositivos Electrónicos**:
+  - *"Doctor, enciende la tele."*
+  - *"Doctor, sube el volumen."*
+  - **Acción**: Ejecuta `emit_ir_command`.
 
 ---
 

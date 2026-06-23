@@ -33,6 +33,7 @@ static QueueHandle_t receive_queue = NULL;
 
 static rmt_channel_handle_t tx_chan = NULL;
 static rmt_encoder_handle_t copy_encoder = NULL;
+static QueueHandle_t s_ir_tx_queue = NULL;
 
 static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_data)
 {
@@ -137,17 +138,65 @@ static void ir_rx_task(void *arg) {
     }
 }
 
-void ir_transmitter_send_raw(uint32_t hex_code) {
-    if (!tx_chan || !copy_encoder) return;
+#define NEC_HEADER_HIGH_US 9000
+#define NEC_HEADER_LOW_US  4500
+#define NEC_BIT_MARK_US    562
+#define NEC_SPACE_ZERO_US  562
+#define NEC_SPACE_ONE_US   1687
+#define NEC_STOP_SPACE_US  10000 // 10ms trailing gap
+
+static void simi_ir_tx_task(void *arg) {
+    uint32_t hex_code;
+    while (1) {
+        if (xQueueReceive(s_ir_tx_queue, &hex_code, portMAX_DELAY) == pdTRUE) {
+            rmt_symbol_word_t symbols[34];
+            memset(symbols, 0, sizeof(symbols));
+            
+            // Header
+            symbols[0].duration0 = NEC_HEADER_HIGH_US;
+            symbols[0].level0 = 1;
+            symbols[0].duration1 = NEC_HEADER_LOW_US;
+            symbols[0].level1 = 0;
+            
+            // 32 Data bits (LSB first)
+            for (int i = 0; i < 32; i++) {
+                symbols[i + 1].duration0 = NEC_BIT_MARK_US;
+                symbols[i + 1].level0 = 1;
+                symbols[i + 1].level1 = 0;
+                
+                if ((hex_code >> i) & 1) {
+                    symbols[i + 1].duration1 = NEC_SPACE_ONE_US;
+                } else {
+                    symbols[i + 1].duration1 = NEC_SPACE_ZERO_US;
+                }
+            }
+            
+            // Stop bit
+            symbols[33].duration0 = NEC_BIT_MARK_US;
+            symbols[33].level0 = 1;
+            symbols[33].duration1 = NEC_STOP_SPACE_US;
+            symbols[33].level1 = 0;
+            
+            rmt_transmit_config_t tx_config = { .loop_count = 0 };
+            esp_err_t err = rmt_transmit(tx_chan, copy_encoder, symbols, sizeof(symbols), &tx_config);
+            if (err == ESP_OK) {
+                rmt_tx_wait_all_done(tx_chan, -1);
+            } else {
+                ESP_LOGE(TAG, "RMT Transmit failed: %s", esp_err_to_name(err));
+            }
+        }
+    }
+}
+
+esp_err_t ir_transmitter_send_raw(uint32_t hex_code) {
+    if (!s_ir_tx_queue) return ESP_ERR_INVALID_STATE;
     
-    // Future integration can assemble proper 68-symbol NEC frames from hex_code.
-    // For now, emit a generic 1ms burst to verify TX functionality.
-    rmt_symbol_word_t burst[1];
-    memset(burst, 0, sizeof(burst));
-    burst[0].duration0 = 1000; burst[0].level0 = 1; burst[0].duration1 = 1000; burst[0].level1 = 0;
-    
-    rmt_transmit_config_t tx_config = { .loop_count = 0 };
-    rmt_transmit(tx_chan, copy_encoder, burst, sizeof(burst), &tx_config);
+    if (xQueueSend(s_ir_tx_queue, &hex_code, 0) == pdTRUE) {
+        return ESP_OK;
+    } else {
+        ESP_LOGW(TAG, "IR TX Queue full! Command dropped.");
+        return ESP_ERR_TIMEOUT;
+    }
 }
 
 static void ir_pairing_timeout_cb(TimerHandle_t xTimer) {
@@ -245,6 +294,13 @@ esp_err_t ir_sniffer_init(void) {
     // Create the diagnostic background sniffer task with increased stack to prevent overflows.
     if (xTaskCreate(ir_rx_task, "ir_rx_task", 4096, NULL, tskIDLE_PRIORITY + 2, NULL) != pdPASS) {
         return ESP_FAIL;
+    }
+
+    s_ir_tx_queue = xQueueCreate(5, sizeof(uint32_t));
+    if (s_ir_tx_queue) {
+        if (xTaskCreate(simi_ir_tx_task, "ir_tx_task", 3072, NULL, tskIDLE_PRIORITY + 2, NULL) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create IR TX Task");
+        }
     }
 
     return ESP_OK;
