@@ -975,8 +975,8 @@ static void legacy_online_status_disabled(uint16_t color)
  */
 void display_wifi_creds(void)
 {
-    ui_clear_status_message();
-    ui_clear_help_message_below_status();
+    clear_screen();
+    draw_screen_border(COLOR_YELLOW_BGR565, 2);
 
     // Primera línea: "Enter WiFi"
     int char_map_l1[] = {15, 12, 16, 14, 17, 4, 18, 8, 19, 8};
@@ -1003,10 +1003,7 @@ void display_wifi_creds(void)
     int y_l1 = text_y_center + char_h + 12;
     int y_l2 = y_l1 + char_h + line_spacing;
 
-    // Limpiar área antes de mostrar el mensaje
-    int total_height = (char_h * 2) + line_spacing;
-    int max_width = (width_l1 > width_l2) ? width_l1 : width_l2;
-    draw_filled_rect((BSP_LCD_H_RES - max_width) / 2 - 4, y_l1 - 4, max_width + 8, total_height + 8, 0x0000);
+    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
 
     // Mostrar ambas líneas en amarillo
     display_text(x_l1, y_l1, char_map_l1, num_chars_l1, COLOR_YELLOW_BGR565, scale);
@@ -1022,8 +1019,8 @@ void display_wifi_creds(void)
  */
 void display_error_message(void)
 {
-    ui_clear_status_message();
-    ui_clear_help_message_below_status();
+    clear_screen();
+    draw_screen_border(COLOR_RED_BGR565, 2);
 
     // Mapeo de caracteres para "Error!"
     int char_map[] = {15, 17, 17, 11, 17, 13};
@@ -1039,10 +1036,7 @@ void display_error_message(void)
     int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
     int y = text_y_center + char_h + 12;
 
-    // Limpiar el área de mensajes anteriores
-    int clear_width = 220;
-    int clear_height = (char_h * 2) + 12;
-    draw_filled_rect((BSP_LCD_H_RES - clear_width) / 2, y - 4, clear_width, clear_height, 0x0000);
+    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
 
     // Mostrar el mensaje de error en rojo
     display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
@@ -1109,8 +1103,8 @@ void display_resetting_message(void)
  */
 void display_disconnected_message(void)
 {
-    ui_clear_status_message();
-    ui_clear_help_message_below_status();
+    clear_screen();
+    draw_screen_border(COLOR_RED_BGR565, 2);
 
     // Mapeo de caracteres para "Disconnected!"
     // D-i-s-c-o-n-n-e-c-t-e-d-!
@@ -1127,10 +1121,7 @@ void display_disconnected_message(void)
     int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
     int y = text_y_center + char_h + 8;
 
-    // Limpiar el área de mensajes anteriores
-    int clear_width = 220; // Más ancho para "Disconnected!"
-    int clear_height = (char_h * 2) + 12;
-    draw_filled_rect((BSP_LCD_H_RES - clear_width) / 2, y - 4, clear_width, clear_height, 0x0000);
+    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
 
     // Mostrar el mensaje de desconexión en rojo
     display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
