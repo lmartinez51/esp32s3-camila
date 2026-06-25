@@ -219,12 +219,7 @@ void ir_sniffer_enter_pairing_mode(ir_action_t target_action) {
 }
 
 esp_err_t ir_sniffer_init(void) {
-    // Initialize the IR Action Map RAM cache and NVS persistence
-    esp_err_t map_err = ir_action_map_init();
-    if (map_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize IR Action Map: %s", esp_err_to_name(map_err));
-        return map_err;
-    }
+
 
     // Power on the IR Receiver module (P-Channel MOSFET on GPIO 44, Active LOW)
     gpio_config_t pwr_conf = {

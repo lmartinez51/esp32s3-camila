@@ -1,20 +1,22 @@
 #include "esp_claw_init.h"
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/queue.h"
 #include <string.h>
+#include "hardware/ir_sniffer.h"
 
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
 #include "lua_ir_bindings.h"
 
-static const char *TAG = "ESP_CLAW";
-static QueueHandle_t s_lua_script_queue = NULL;
+static const char *TAG = "ESP_CLAW_ISO";
+static QueueHandle_t s_test_queue = NULL;
 
-static void* lua_alloc_spiram(void *ud, void *ptr, size_t osize, size_t nsize) {
+static void* claw_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     (void)ud;  (void)osize;
     if (nsize == 0) {
         heap_caps_free(ptr);
@@ -24,90 +26,104 @@ static void* lua_alloc_spiram(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
 }
 
-#include "app_events.h"
-
 static void lua_worker_task(void *arg) {
-    // Wait for the explicit True Idle signal from the Orchestrator to prevent PSRAM/SPI collisions
-    extern EventGroupHandle_t app_startup_event_group;
-    if (app_startup_event_group != NULL) {
-        xEventGroupWaitBits(app_startup_event_group, LUA_SAFE_TO_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-    }
-
-    lua_State *L = lua_newstate(lua_alloc_spiram, NULL, 0);
+    ESP_LOGI(TAG, "Starting Lua Isolation Test Worker");
+    
+    lua_State *L = lua_newstate(claw_lua_alloc, NULL, 0);
     if (!L) {
-        ESP_LOGE(TAG, "Failed to create Lua state");
+        ESP_LOGE(TAG, "lua_newstate failed.");
         vTaskDelete(NULL);
         return;
     }
 
-    // Manual chunked loading to prevent RTOS starvation and heap mutex contention
-    static const luaL_Reg loadedlibs[] = {
-        {LUA_GNAME, luaopen_base},
-        {LUA_LOADLIBNAME, luaopen_package},
-        {LUA_COLIBNAME, luaopen_coroutine},
-        {LUA_TABLIBNAME, luaopen_table},
-        {LUA_IOLIBNAME, luaopen_io},
-        {LUA_OSLIBNAME, luaopen_os},
-        {LUA_STRLIBNAME, luaopen_string},
-        {LUA_MATHLIBNAME, luaopen_math},
-        {LUA_UTF8LIBNAME, luaopen_utf8},
-        {LUA_DBLIBNAME, luaopen_debug},
-        {NULL, NULL}
-    };
+    ESP_LOGI(TAG, "Loading standard libraries (PSRAM)");
+    luaL_openlibs(L);
 
-    for (const luaL_Reg *lib = loadedlibs; lib->func; lib++) {
-        luaL_requiref(L, lib->name, lib->func, 1);
-        lua_pop(L, 1);
-        // Breathe! Yield CPU and release global heap mutex to let Hardware Radar and Orchestrator run
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-
+    ESP_LOGI(TAG, "Registering IR bindings safely");
+    ESP_LOGI("ESP_CLAW_ISO", "HighWater BEFORE=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     luaL_requiref(L, "ir", luaopen_ir, 1);
     lua_pop(L, 1);
-    vTaskDelay(pdMS_TO_TICKS(20)); // Final yield
+    ESP_LOGI("ESP_CLAW_ISO", "IR bindings registered successfully");
 
-    char* script;
-    while(1) {
-        if (xQueueReceive(s_lua_script_queue, &script, portMAX_DELAY) == pdTRUE) {
-            int ret = luaL_dostring(L, script);
-            if (ret != LUA_OK) {
-                ESP_LOGE(TAG, "Lua Error: %s", lua_tostring(L, -1));
-                lua_pop(L, 1);
-            } else {
-                ESP_LOGI(TAG, "Lua Script executed successfully");
+    const char* lua_core_logic = 
+        "function process_command(device, action)\n"
+        "    print('Lua routing: ' .. device .. ' -> ' .. action)\n"
+        "    local map = {\n"
+        "        tv = {\n"
+        "            power = 0xFD020707,\n"
+        "            vol_up = 0xF8070707,\n"
+        "            vol_down = 0xF40B0707,\n"
+        "            ch_up = 0xED120707,\n"
+        "            ch_down = 0xEF100707,\n"
+        "            mute = 0xF00F0707,\n"
+        "            num_1 = 0xFB040707,\n"
+        "            num_2 = 0xFA050707,\n"
+        "            num_3 = 0xF9060707,\n"
+        "            num_4 = 0xF7080707,\n"
+        "            num_5 = 0xF6090707,\n"
+        "            num_6 = 0xF50A0707,\n"
+        "            num_7 = 0xF30C0707,\n"
+        "            num_8 = 0xF20D0707,\n"
+        "            num_9 = 0xF10E0707,\n"
+        "            num_0 = 0xEE110707,\n"
+        "            dash = 0xDC230707\n"
+        "        }\n"
+        "    }\n"
+        "    local dev_map = map[device]\n"
+        "    if dev_map and dev_map[action] then\n"
+        "        ir.send(dev_map[action])\n"
+        "        print('IR executed correctly by Lua')\n"
+        "    else\n"
+        "        print('Error: Device or action not found in Lua map')\n"
+        "    end\n"
+        "end";
+
+    if (luaL_dostring(L, lua_core_logic) != LUA_OK) {
+        ESP_LOGE("ESP_CLAW", "Failed to load core logic: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+
+    ESP_LOGI(TAG, "Entering isolated infinite IPC loop");
+    esp_claw_msg_t msg;
+    while (1) {
+        if (xQueueReceive(s_test_queue, &msg, portMAX_DELAY) == pdTRUE) {
+            lua_getglobal(L, "process_command");
+            lua_pushstring(L, msg.device);
+            lua_pushstring(L, msg.action);
+
+            // Call function with 2 arguments and 0 returns
+            if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+                ESP_LOGE("ESP_CLAW", "Lua Execution Error: %s", lua_tostring(L, -1));
+                lua_pop(L, 1); // Clean error message from stack
             }
-            free(script);
         }
     }
 }
 
 esp_err_t esp_claw_init(void) {
-    s_lua_script_queue = xQueueCreate(10, sizeof(char*));
-    if (!s_lua_script_queue) {
+    ESP_LOGI(TAG, "Creating IPC test queue");
+    s_test_queue = xQueueCreate(5, sizeof(esp_claw_msg_t));
+    if (!s_test_queue) {
+        ESP_LOGE(TAG, "Failed to create s_test_queue");
         return ESP_ERR_NO_MEM;
     }
 
-    // Increased stack size to 32KB to prevent silent stack overflow freezes during Lua initialization,
-    // pinned to Core 1, and explicitly downgraded to tskIDLE_PRIORITY (Priority 0)
-    // so it ONLY runs when Wi-Fi, Orchestrator, and hardware sensors are idle.
-    if (xTaskCreatePinnedToCore(lua_worker_task, "lua_worker", 32768, NULL, tskIDLE_PRIORITY, NULL, 1) != pdPASS) {
+    ESP_LOGI(TAG, "Spawning isolated Lua worker task");
+    if (xTaskCreatePinnedToCore(lua_worker_task, "lua_worker", 16384, NULL, 3, NULL, 1) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "ESP-Claw Lua Engine Initialized.");
     return ESP_OK;
 }
 
-esp_err_t esp_claw_execute_script(const char* script) {
-    if (!s_lua_script_queue || !script) return ESP_ERR_INVALID_STATE;
-    
-    char* script_copy = strdup(script);
-    if (!script_copy) return ESP_ERR_NO_MEM;
-    
-    if (xQueueSend(s_lua_script_queue, &script_copy, 0) != pdTRUE) {
-        free(script_copy); // Prevent memory leak on queue full
-        ESP_LOGW(TAG, "Lua script queue full, dropped.");
-        return ESP_ERR_TIMEOUT;
+esp_err_t esp_claw_send_command(const char* device, const char* action) {
+    if (s_test_queue == NULL) return ESP_ERR_INVALID_STATE;
+    esp_claw_msg_t msg = {0};
+    strlcpy(msg.device, device, sizeof(msg.device));
+    strlcpy(msg.action, action, sizeof(msg.action));
+    // Use a 0 timeout to prevent WebRTC starvation if queue is full
+    if (xQueueSend(s_test_queue, &msg, 0) != pdTRUE) {
+        return ESP_FAIL;
     }
     return ESP_OK;
 }

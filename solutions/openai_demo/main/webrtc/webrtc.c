@@ -33,6 +33,8 @@
 #include "mute_handler.h"
 #include "prompts.h"
 #include "hardware/ir_sniffer.h"
+#include "esp_claw_init.h"
+
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
 #define TAG "OPENAI_APP"
 #define ENABLE_REALTIME_INPUT_TRANSCRIPTION 1
@@ -1409,28 +1411,6 @@ static class_t *build_control_display_class(void)
     return display_control;
 }
 
-static uint32_t lookup_ir_code(const char* device, const char* action) {
-    if (strcmp(device, "tv") == 0) {
-        if (strcmp(action, "power") == 0) return 0xFD020707;
-        if (strcmp(action, "vol_up") == 0) return 0xF8070707;
-        if (strcmp(action, "vol_down") == 0) return 0xF40B0707;
-        if (strcmp(action, "ch_up") == 0) return 0xED120707;
-        if (strcmp(action, "ch_down") == 0) return 0xEF100707;
-        if (strcmp(action, "mute") == 0) return 0xF00F0707;
-        if (strcmp(action, "num_1") == 0) return 0xFB040707;
-        if (strcmp(action, "num_2") == 0) return 0xFA050707;
-        if (strcmp(action, "num_3") == 0) return 0xF9060707;
-        if (strcmp(action, "num_4") == 0) return 0xF7080707;
-        if (strcmp(action, "num_5") == 0) return 0xF6090707;
-        if (strcmp(action, "num_6") == 0) return 0xF50A0707;
-        if (strcmp(action, "num_7") == 0) return 0xF30C0707;
-        if (strcmp(action, "num_8") == 0) return 0xF20D0707;
-        if (strcmp(action, "num_9") == 0) return 0xF10E0707;
-        if (strcmp(action, "num_0") == 0) return 0xEE110707;
-    }
-    return 0; // Not found
-}
-
 static class_t *build_emit_ir_command_class(void)
 {
     class_t *emit_ir = calloc(1, sizeof(class_t));
@@ -2433,31 +2413,20 @@ static int process_json(const char *json_data, int json_size)
         {
             cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
             cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
-            
+
             if (cJSON_IsString(dev_item) && dev_item->valuestring && 
                 cJSON_IsString(act_item) && act_item->valuestring)
             {
-                uint32_t hex_code = lookup_ir_code(dev_item->valuestring, act_item->valuestring);
-                
-                if (hex_code != 0) {
-                    ESP_LOGI(TAG, "IR Dispatch: %s %s -> 0x%08lX", dev_item->valuestring, act_item->valuestring, (unsigned long)hex_code);
-                    esp_err_t err = ir_transmitter_send_raw(hex_code);
-                    if (err == ESP_OK) {
-                        send_function_output(call_id, "IR command emitted successfully.");
-                    } else {
-                        send_function_output(call_id, "Error: Hardware failed to emit IR command.");
-                    }
-                } else {
-                    ESP_LOGW(TAG, "IR Dispatch: Unpaired device or action (%s, %s)", dev_item->valuestring, act_item->valuestring);
-                    send_function_output(call_id, "Error: Device or action not paired yet.");
-                }
+                ESP_LOGI(TAG, "Delegating to ESP-Claw: %s -> %s", dev_item->valuestring, act_item->valuestring);
+                esp_claw_send_command(dev_item->valuestring, act_item->valuestring);
             }
             else
             {
-                ESP_LOGW(TAG, "Argumentos inválidos o faltantes para emit_ir_command.");
-                send_function_output(call_id, "Error: Missing or invalid 'device' or 'action' argument.");
+                ESP_LOGE(TAG, "Invalid IR arguments in JSON");
             }
-            break; // Procesada (o falló el argumento)
+            // Acknowledge to OpenAI immediately (do not wait for Lua)
+            send_function_output(call_id, "{\"status\":\"success\"}");
+            break; // Procesada
         }
         else
         {

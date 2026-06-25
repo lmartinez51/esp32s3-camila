@@ -12,3 +12,4 @@ dependencies:
   render_impl:
     path: ../../../components/av_render/render_impl
   # espressif/button: ^2.5.0
+  espressif/lua: "^5.4"

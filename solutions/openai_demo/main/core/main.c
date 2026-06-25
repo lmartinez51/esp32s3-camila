@@ -43,6 +43,8 @@
 // Includes del proyecto
 #include "hardware/radar.h"
 #include "common.h"
+#include "lua_benchmark.h"
+#include "esp_claw_init.h"
 #include "ble_config.h"
 #include "ble_common.h"
 #include "codec_init.h"
@@ -1742,6 +1744,9 @@ static void app_startup_orchestrator_task(void *param)
             else if (event == ORCH_EVENT_WEBRTC_CONNECTED)
             {
                 orchestrator_enter_state(&state, STATE_ACTIVE);
+                if (app_startup_event_group != NULL) {
+
+                }
             }
             else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
                      event == ORCH_EVENT_WEBRTC_API_ERROR)
@@ -2045,6 +2050,7 @@ void app_main(void)
     if (s_aht30_present) {
         ESP_LOGI(TAG, "Dock confirmed. Initializing IR Sniffer on GPIO 38.");
         ir_sniffer_init();
+        // esp_claw_init();
         // ir_sniffer_enter_pairing_mode(IR_ACTION_OUTFIT_BARCA);
     } else {
         ESP_LOGW(TAG, "Dock not present. Bypassing IR Sniffer to prevent floating noise.");
@@ -2061,6 +2067,11 @@ void app_main(void)
     {
         // Flujo normal: intentar conectar a WiFi.
         ESP_LOGI(TAG, "Inicializando WiFi. WebRTC queda bajo demanda.");
+        
+        if (esp_claw_init() == ESP_OK) {
+            ESP_LOGI(TAG, "Isolated Lua VM spawned successfully.");
+        }
+
         display_startup_screen();
         if (s_aht30_present) {
             poll_and_draw_temperature();
@@ -2097,12 +2108,7 @@ void app_main(void)
                                     tskIDLE_PRIORITY + 1, NULL, 1,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    // --- TEMPORARY IR TX TEST ---
-    ESP_LOGW(TAG, "Waiting 5 seconds before emitting IR test code...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    ESP_LOGW(TAG, "Emitting IR TX Test Frame (TV Power)!");
-    ir_transmitter_send_raw(TV_CMD_POWER); 
-    // ----------------------------
+
 
     // 7) Loop principal - monitorea el estado de WebRTC continuamente
     while (1)

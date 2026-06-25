@@ -26,6 +26,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
 - 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Dr. Simi (e.g. Doctor, National Team, Chapulin), and hardware-accelerated rendering optimizations (dirty rect restore).
 - 🌡️ **Environmental Sensing** — real-time temperature and humidity monitoring via I2C (AHT30), rendered directly on the LCD UI.
+- 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping, and hardware-accelerated IR processing (`lua_ir_bindings`) without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
 
 ### 🧠 AI Autonomy & Background Tasks

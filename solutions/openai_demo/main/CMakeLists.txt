@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "core/main.c"
+        "core/lua_benchmark.c"
+        "core/esp_claw_init.c"
 
         "config/config_manager.c"
         "config/nvs_setup.c"
@@ -27,6 +29,7 @@ idf_component_register(
 
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"
+        "webrtc/lua_ir_bindings.c"
 
         "openai/http_client.c"
         "openai/web_search.c"
