@@ -32,7 +32,7 @@
 #include "nvs_flash.h"
 #include "mute_handler.h"
 #include "prompts.h"
-#include "hardware/ir_sniffer.h"
+
 #include "esp_claw_init.h"
 
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
@@ -1661,6 +1661,100 @@ static int send_session_update(void)
         }
         iter = iter->next;
     }
+
+    // Inject the declarative rule engine tool definition natively via JSON Parsing
+    const char* rule_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"create_automation_rule\","
+        "  \"description\": \"Use this tool whenever the user defines an automation, a background rule, a macro sequence, or an event-driven behavior. The model must abstract the user's conceptual requests into explicit triggers, state-based conditions, and ordered actions. The runtime evaluates these rules locally outside the cloud.\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {"
+        "      \"trigger\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"A dynamic string representing the event. This is NOT a strict enum. If the user specifies a custom trigger name (e.g., 'ver_ovnis', 'noche_de_peli'), you MUST use that exact custom string. Examples: 'on_motion_detected', 'on_time_schedule', 'on_hardware_boot'.\""
+        "      },"
+        "      \"conditions\": {"
+        "        \"type\": \"array\","
+        "        \"maxItems\": 8,"
+        "        \"items\": {"
+        "          \"type\": \"object\","
+        "          \"properties\": {"
+        "            \"sensor\": {"
+        "              \"type\": \"string\","
+        "              \"description\": \"State source. Examples: 'temperature', 'humidity', 'radar_presence', 'time_24h', 'system_ram'.\""
+        "            },"
+        "            \"op\": {"
+        "              \"type\": \"string\","
+        "              \"description\": \"Operator.\","
+        "              \"enum\": [\">\", \"<\", \"==\", \"!=\", \">=\", \"<=\"]"
+        "            },"
+        "            \"val\": {"
+        "              \"description\": \"A dynamic type supporting number, string, or boolean, matching the current environment value to test against.\""
+        "            }"
+        "          },"
+        "          \"required\": [\"sensor\", \"op\", \"val\"]"
+        "        }"
+        "      },"
+        "      \"actions\": {"
+        "        \"type\": \"array\","
+        "        \"description\": \"Ordered array of strings representing execution endpoints using explicit dot-notation. You can now pass parameters using a colon (:). Syntax: 'device.action:parameter'. Examples: 'ac.set_temp:22', 'hue.light:red'. To introduce pauses between hardware commands, use 'sys.delay:milliseconds'. CRITICAL HARDWARE TIMING: If the sequence starts with powering on a complex device (e.g., 'tv.power'), you MUST insert a long boot delay (e.g., 'sys.delay:4000') immediately after. For sequential button presses (like navigating menus or entering multi-digit channels like 3.3), you MUST use a short delay (e.g., 'sys.delay:500') between each digit to prevent IR command overlapping or UI timeouts. Example: ['tv.num_3', 'sys.delay:500', 'tv.dash', 'sys.delay:500', 'tv.num_3'].\","
+        "        \"maxItems\": 16,"
+        "        \"items\": {"
+        "          \"type\": \"string\""
+        "        }"
+        "      }"
+        "    },"
+        "    \"required\": [\"trigger\", \"conditions\", \"actions\"]"
+        "  }"
+        "}";
+        
+    cJSON *rule_tool_cjson = cJSON_Parse(rule_tool_json);
+    if (rule_tool_cjson) {
+        cJSON_AddItemToArray(tools, rule_tool_cjson);
+    } else {
+        ESP_LOGE(TAG, "Failed to parse rule_tool_json");
+    }
+
+    const char* list_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"list_automation_rules\","
+        "  \"description\": \"Use this tool when the user asks to see what automation rules are currently active. It returns a comma-separated list of all active triggers.\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {}"
+        "  }"
+        "}";
+        
+    cJSON *list_tool_cjson = cJSON_Parse(list_tool_json);
+    if (list_tool_cjson) {
+        cJSON_AddItemToArray(tools, list_tool_cjson);
+    }
+    
+    const char* delete_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"delete_automation_rule\","
+        "  \"description\": \"Use this tool to delete an existing automation rule. You must provide the exact trigger string obtained from list_automation_rules.\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {"
+        "      \"trigger\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"The exact string of the trigger to delete. Example: 'on_motion_detected'\""
+        "      }"
+        "    },"
+        "    \"required\": [\"trigger\"]"
+        "  }"
+        "}";
+        
+    cJSON *delete_tool_cjson = cJSON_Parse(delete_tool_json);
+    if (delete_tool_cjson) {
+        cJSON_AddItemToArray(tools, delete_tool_cjson);
+    }
+
     // Convertir a JSON sin formato (más eficiente)
     char *json_string = cJSON_PrintUnformatted(root);
     int ret = -1;
@@ -2300,142 +2394,248 @@ static int process_json(const char *json_data, int json_size)
 
     bool class_found = false;
 
-    for (class_t *iter = classes; iter; iter = iter->next)
-    {
-        if (strcmp(iter->name, name->valuestring) != 0)
+        if (strcmp(name->valuestring, "create_automation_rule") == 0)
         {
-            continue; // No es esta clase, sigue buscando
-        }
-
-        class_found = true;
-        ESP_LOGI(TAG, "Procesando función: %s", iter->name);
-
-        // --- MANEJO DE FUNCIONES SIN PARÁMETROS ESPECÍFICOS ---
-        if (strcmp(iter->name, "enter_config_mode") == 0)
-        {
-            ESP_LOGW(TAG, "Llamada a función detectada! Activando modo de configuración...");
-            start_config_mode_task();
-            break; // Procesada
-        }
-        else if (strcmp(iter->name, "delete_api_key") == 0)
-        {
-            ESP_LOGI(TAG, "Llamada a función detectada! Borrando API Key...");
-            start_delete_api_key_task();
-            break; // Procesada
-        }
-        else if (strcmp(iter->name, "delete_credentials") == 0)
-        { // <-- NUEVA FUNCIÓN
-            ESP_LOGW(TAG, "Llamada a función detectada! Borrando TODAS las credenciales WiFi...");
-            start_delete_credentials_task(); // <-- LLAMAR AL NUEVO LANZADOR
-            break;                           // Procesada
-        }
-        else if (strcmp(iter->name, "activate_mute") == 0)
-        { // <-- NEW FUNCTION
-            ESP_LOGI(TAG, "Function call detected! Activating microphone mute...");
-            start_activate_mute_task(); // <-- CALL NEW LAUNCHER
-            break;                      // Processed
-        }
-        else if (strcmp(iter->name, "change_simi_outfit") == 0)
-        {
-            cJSON *outfit_item = cJSON_GetObjectItemCaseSensitive(args_root, "outfit_id");
-            if (cJSON_IsString(outfit_item) && outfit_item->valuestring) {
-                if (strcmp(outfit_item->valuestring, "superhero") == 0) {
-                    ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
-                } else if (strcmp(outfit_item->valuestring, "soccer") == 0) {
-                    ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
-                } else if (strcmp(outfit_item->valuestring, "barca") == 0) {
-                    ui_simi_set_outfit(OUTFIT_FC_BARCELONA);
-                } else {
-                    ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
+            class_found = true;
+            ESP_LOGI(TAG, "Function call detected! Creating automation rule...");
+            
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            cJSON *conditions_array = cJSON_GetObjectItemCaseSensitive(args_root, "conditions");
+            cJSON *actions_array = cJSON_GetObjectItemCaseSensitive(args_root, "actions");
+            
+            if (cJSON_IsString(trigger_item) && cJSON_IsArray(conditions_array) && cJSON_IsArray(actions_array)) {
+                
+                // Allocate from SPIRAM if possible, fallback to standard malloc
+                esp_claw_rule_t *new_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!new_rule) {
+                    new_rule = malloc(sizeof(esp_claw_rule_t));
                 }
-                send_function_output(call_id, "Outfit changed successfully.");
+                
+                if (new_rule) {
+                    memset(new_rule, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(new_rule->trigger, trigger_item->valuestring, sizeof(new_rule->trigger));
+                    
+                    // Parse conditions
+                    int num_conditions = cJSON_GetArraySize(conditions_array);
+                    if (num_conditions > MAX_CONDITIONS) num_conditions = MAX_CONDITIONS;
+                    new_rule->num_conditions = num_conditions;
+                    
+                    for (int i = 0; i < num_conditions; i++) {
+                        cJSON *cond = cJSON_GetArrayItem(conditions_array, i);
+                        cJSON *sensor = cJSON_GetObjectItemCaseSensitive(cond, "sensor");
+                        cJSON *op = cJSON_GetObjectItemCaseSensitive(cond, "op");
+                        cJSON *val = cJSON_GetObjectItemCaseSensitive(cond, "val");
+                        
+                        if (cJSON_IsString(sensor)) {
+                            strlcpy(new_rule->conditions[i].sensor, sensor->valuestring, sizeof(new_rule->conditions[i].sensor));
+                        }
+                        if (cJSON_IsString(op)) {
+                            strlcpy(new_rule->conditions[i].op, op->valuestring, sizeof(new_rule->conditions[i].op));
+                        }
+                        
+                        if (cJSON_IsNumber(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_NUMBER;
+                            new_rule->conditions[i].f_val = (float)val->valuedouble;
+                        } else if (cJSON_IsBool(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_BOOL;
+                            new_rule->conditions[i].b_val = (bool)cJSON_IsTrue(val);
+                        } else if (cJSON_IsString(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_STRING;
+                            strlcpy(new_rule->conditions[i].s_val, val->valuestring, sizeof(new_rule->conditions[i].s_val));
+                        }
+                    }
+                    
+                    // Parse actions
+                    int num_actions = cJSON_GetArraySize(actions_array);
+                    if (num_actions > MAX_ACTIONS) num_actions = MAX_ACTIONS;
+                    new_rule->num_actions = num_actions;
+                    
+                    for (int i = 0; i < num_actions; i++) {
+                        cJSON *action = cJSON_GetArrayItem(actions_array, i);
+                        if (cJSON_IsString(action)) {
+                            strlcpy(new_rule->actions[i].target, action->valuestring, sizeof(new_rule->actions[i].target));
+                            new_rule->actions[i].target[255] = '\0';
+                        }
+                    }
+                    
+                    // Dispatch to queue
+                    if (esp_claw_send_rule(new_rule) != ESP_OK) {
+                        ESP_LOGW(TAG, "Rule queue full, dropping rule");
+                        free(new_rule);
+                    } else {
+                        ESP_LOGI(TAG, "Rule successfully queued");
+                    }
+                    send_function_output(call_id, "Automation rule created successfully.");
+                    sendEvent("response.create", NULL);
+                } else {
+                    ESP_LOGE(TAG, "Failed to allocate memory for rule");
+                    send_function_output(call_id, "Error: out of memory.");
+                    sendEvent("response.create", NULL);
+                }
             } else {
-                send_function_output(call_id, "Error: Missing or invalid outfit_id.");
+                ESP_LOGW(TAG, "Invalid arguments for create_automation_rule");
+                send_function_output(call_id, "Error: missing or invalid trigger, conditions, or actions.");
+                sendEvent("response.create", NULL);
             }
-            break;
-        }
-        // --- MANEJO DE FUNCIONES CON PARÁMETROS ---
-        // Si llegamos aquí, la función SÍ espera parámetros.
-
-        else if (strcmp(iter->name, "lookup_product_info") == 0)
-        {
-            cJSON *query_item = cJSON_GetObjectItemCaseSensitive(args_root, "query");
-            if (cJSON_IsString(query_item) && query_item->valuestring && strlen(query_item->valuestring) > 0)
-            {
-                ESP_LOGI(TAG, "Function call detected! Performing product lookup...");
-                start_lookup_product_task(query_item->valuestring, call_id);
+        } else if (strcmp(name->valuestring, "list_automation_rules") == 0) {
+            class_found = true;
+            char buffer[512];
+            esp_claw_request_list(buffer, sizeof(buffer));
+            send_function_output(call_id, buffer);
+            sendEvent("response.create", NULL);
+        } else if (strcmp(name->valuestring, "delete_automation_rule") == 0) {
+            class_found = true;
+            char buffer[512];
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            if (cJSON_IsString(trigger_item)) {
+                esp_claw_request_delete(trigger_item->valuestring, buffer, sizeof(buffer));
+            } else {
+                strlcpy(buffer, "Error: Missing or invalid trigger parameter.", sizeof(buffer));
             }
-            else
-            {
-                ESP_LOGW(TAG, "Invalid 'query' argument for lookup_product_info");
-                sendEvent("conversation.item.create", "Missing or invalid 'query' argument for lookup_product_info.");
-                vTaskDelay(pdMS_TO_TICKS(200));
-                sendEvent("response.create", "Lo siento, no pude realizar la consulta porque el nombre del producto es inválido.");
-                send_function_output(call_id, "Missing or invalid 'query' argument.");
-            }
-            break;
-        }
-        else if (strcmp(iter->name, "web_search") == 0)
-        {
-            cJSON *request_item = cJSON_GetObjectItemCaseSensitive(args_root, "request");
-            if (cJSON_IsString(request_item) && request_item->valuestring && strlen(request_item->valuestring) > 0)
-            {
-                ESP_LOGI(TAG, "Llamada a función detectada! Realizando búsqueda web...");
-                start_web_search_task("Lorenzo", request_item->valuestring, call_id, webrtc);
-            }
-            else
-            {
-                ESP_LOGW(TAG, "Argumento 'request' inválido para web_search");
-                sendEvent("conversation.item.create", "Missing or invalid 'request' argument for web_search.");
-                vTaskDelay(pdMS_TO_TICKS(200));
-                sendEvent("response.create", "Lo siento, no pude realizar la búsqueda web porque el dato proporcionado es inválido.");
-            }
-            break; // Procesada (o falló el argumento)
-        }
-        else if (strcmp(iter->name, "control_display") == 0)
-        {
-            cJSON *state_item = cJSON_GetObjectItemCaseSensitive(args_root, "state");
-            if (cJSON_IsString(state_item) && state_item->valuestring &&
-                (strcmp(state_item->valuestring, "on") == 0 || strcmp(state_item->valuestring, "off") == 0))
-            {
-                ESP_LOGI(TAG, "Function call detected! Control display: '%s'", state_item->valuestring);
-                start_control_display_task(state_item->valuestring);
-            }
-            else
-            {
-                ESP_LOGW(TAG, "Argumento 'state' inválido o faltante para control_display. Debe ser 'on' o 'off'.");
-                // --- TEXTO SIMPLE ---
-                sendEvent("conversation.item.create", "Missing or invalid 'state' argument. Must be 'on' or 'off'.");
-            }
-            break; // Procesada (o falló el argumento)
-        }
-        else if (strcmp(iter->name, "emit_ir_command") == 0)
-        {
-            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
-            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
-
-            if (cJSON_IsString(dev_item) && dev_item->valuestring && 
-                cJSON_IsString(act_item) && act_item->valuestring)
-            {
-                ESP_LOGI(TAG, "Delegating to ESP-Claw: %s -> %s", dev_item->valuestring, act_item->valuestring);
-                esp_claw_send_command(dev_item->valuestring, act_item->valuestring);
-            }
-            else
-            {
-                ESP_LOGE(TAG, "Invalid IR arguments in JSON");
-            }
-            // Acknowledge to OpenAI immediately (do not wait for Lua)
-            send_function_output(call_id, "{\"status\":\"success\"}");
-            break; // Procesada
-        }
-        else
-        {
-            // Si encontramos una clase pero no coincide con ninguna de las anteriores
-            ESP_LOGW(TAG, "Clase '%s' encontrada pero sin lógica de manejo implementada.", iter->name);
-            break; // Salimos porque ya encontramos la clase
+            send_function_output(call_id, buffer);
+            sendEvent("response.create", NULL);
         }
 
-    } // Fin del for loop
+    if (!class_found)
+    {
+        for (class_t *iter = classes; iter; iter = iter->next)
+        {
+            if (strcmp(iter->name, name->valuestring) != 0)
+            {
+                continue; // No es esta clase, sigue buscando
+            }
+    
+            class_found = true;
+            ESP_LOGI(TAG, "Procesando función: %s", iter->name);
+    
+            // --- MANEJO DE FUNCIONES SIN PARÁMETROS ESPECÍFICOS ---
+            if (strcmp(iter->name, "enter_config_mode") == 0)
+            {
+                ESP_LOGW(TAG, "Llamada a función detectada! Activando modo de configuración...");
+                start_config_mode_task();
+                break; // Procesada
+            }
+            else if (strcmp(iter->name, "delete_api_key") == 0)
+            {
+                ESP_LOGI(TAG, "Llamada a función detectada! Borrando API Key...");
+                start_delete_api_key_task();
+                break; // Procesada
+            }
+            else if (strcmp(iter->name, "delete_credentials") == 0)
+            { // <-- NUEVA FUNCIÓN
+                ESP_LOGW(TAG, "Llamada a función detectada! Borrando TODAS las credenciales WiFi...");
+                start_delete_credentials_task(); // <-- LLAMAR AL NUEVO LANZADOR
+                break;                           // Procesada
+            }
+            else if (strcmp(iter->name, "activate_mute") == 0)
+            { // <-- NEW FUNCTION
+                ESP_LOGI(TAG, "Function call detected! Activating microphone mute...");
+                start_activate_mute_task(); // <-- CALL NEW LAUNCHER
+                break;                      // Processed
+            }
+            else if (strcmp(iter->name, "change_simi_outfit") == 0)
+            {
+                cJSON *outfit_item = cJSON_GetObjectItemCaseSensitive(args_root, "outfit_id");
+                if (cJSON_IsString(outfit_item) && outfit_item->valuestring) {
+                    if (strcmp(outfit_item->valuestring, "superhero") == 0) {
+                        ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
+                    } else if (strcmp(outfit_item->valuestring, "soccer") == 0) {
+                        ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
+                    } else if (strcmp(outfit_item->valuestring, "barca") == 0) {
+                        ui_simi_set_outfit(OUTFIT_FC_BARCELONA);
+                    } else {
+                        ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
+                    }
+                    send_function_output(call_id, "Outfit changed successfully.");
+                } else {
+                    send_function_output(call_id, "Error: Missing or invalid outfit_id.");
+                }
+                break;
+            }
+            // --- MANEJO DE FUNCIONES CON PARÁMETROS ---
+            // Si llegamos aquí, la función SÍ espera parámetros.
+    
+            else if (strcmp(iter->name, "lookup_product_info") == 0)
+            {
+                cJSON *query_item = cJSON_GetObjectItemCaseSensitive(args_root, "query");
+                if (cJSON_IsString(query_item) && query_item->valuestring && strlen(query_item->valuestring) > 0)
+                {
+                    ESP_LOGI(TAG, "Function call detected! Performing product lookup...");
+                    start_lookup_product_task(query_item->valuestring, call_id);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Invalid 'query' argument for lookup_product_info");
+                    sendEvent("conversation.item.create", "Missing or invalid 'query' argument for lookup_product_info.");
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    sendEvent("response.create", "Lo siento, no pude realizar la consulta porque el nombre del producto es inválido.");
+                    send_function_output(call_id, "Missing or invalid 'query' argument.");
+                }
+                break;
+            }
+            else if (strcmp(iter->name, "web_search") == 0)
+            {
+                cJSON *request_item = cJSON_GetObjectItemCaseSensitive(args_root, "request");
+                if (cJSON_IsString(request_item) && request_item->valuestring && strlen(request_item->valuestring) > 0)
+                {
+                    ESP_LOGI(TAG, "Llamada a función detectada! Realizando búsqueda web...");
+                    start_web_search_task("Lorenzo", request_item->valuestring, call_id, webrtc);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Argumento 'request' inválido para web_search");
+                    sendEvent("conversation.item.create", "Missing or invalid 'request' argument for web_search.");
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    sendEvent("response.create", "Lo siento, no pude realizar la búsqueda web porque el dato proporcionado es inválido.");
+                }
+                break; // Procesada (o falló el argumento)
+            }
+            else if (strcmp(iter->name, "control_display") == 0)
+            {
+                cJSON *state_item = cJSON_GetObjectItemCaseSensitive(args_root, "state");
+                if (cJSON_IsString(state_item) && state_item->valuestring &&
+                    (strcmp(state_item->valuestring, "on") == 0 || strcmp(state_item->valuestring, "off") == 0))
+                {
+                    ESP_LOGI(TAG, "Function call detected! Control display: '%s'", state_item->valuestring);
+                    start_control_display_task(state_item->valuestring);
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Argumento 'state' inválido o faltante para control_display. Debe ser 'on' o 'off'.");
+                    // --- TEXTO SIMPLE ---
+                    sendEvent("conversation.item.create", "Missing or invalid 'state' argument. Must be 'on' or 'off'.");
+                }
+                break; // Procesada (o falló el argumento)
+            }
+            else if (strcmp(iter->name, "emit_ir_command") == 0)
+            {
+                cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
+                cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
+    
+                if (cJSON_IsString(dev_item) && dev_item->valuestring && 
+                    cJSON_IsString(act_item) && act_item->valuestring)
+                {
+                    ESP_LOGI(TAG, "Delegating to ESP-Claw: %s -> %s", dev_item->valuestring, act_item->valuestring);
+                    esp_claw_send_command(dev_item->valuestring, act_item->valuestring);
+                }
+                else
+                {
+                    ESP_LOGE(TAG, "Invalid IR arguments in JSON");
+                }
+                // Acknowledge to OpenAI immediately (do not wait for Lua)
+                send_function_output(call_id, "{\"status\":\"success\"}");
+                break; // Procesada
+            }
+            else
+            {
+                // Si encontramos una clase pero no coincide con ninguna de las anteriores
+                ESP_LOGW(TAG, "Clase '%s' encontrada pero sin lógica de manejo implementada.", iter->name);
+                break; // Salimos porque ya encontramos la clase
+            }
+    
+        } // Fin del for loop
+    }
+
 
     if (!class_found)
     {

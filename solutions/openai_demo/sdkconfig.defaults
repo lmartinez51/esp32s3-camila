@@ -24,8 +24,9 @@ CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 # Enable experimental features
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 
-# Use customer partition table
+# Use custom partition table
 CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 CONFIG_ESP_WIFI_CSI_ENABLED=y
 

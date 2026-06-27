@@ -23,7 +23,9 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <string.h>
+#include <stdio.h>
 #include <nvs_flash.h>
+#include "esp_littlefs.h"
 // Includes de ESP-IDF
 #include <esp_wifi.h>
 #include <esp_event.h>
@@ -2041,6 +2043,153 @@ void app_main(void)
     // 5) BLE se inicializa bajo demanda para no competir con el primer intento WiFi.
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
     ESP_LOGI(TAG, "BLE Central permanece deshabilitado por defecto.");
+
+    // --- INITIALIZE LittleFS ---
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/littlefs",
+        .partition_label = "littlefs",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find LittleFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
+        }
+    } else {
+        size_t total = 0, used = 0;
+        ret = esp_littlefs_info(conf.partition_label, &total, &used);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to get LittleFS partition information (%s)", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "LittleFS partition size: total: %d, used: %d, free: %d", total, used, total - used);
+        }
+
+        // --- ADDED FALLBACK LOGIC ---
+        FILE *f = fopen("/littlefs/init.lua", "r");
+        if (f == NULL) {
+            ESP_LOGW("MAIN", "init.lua not found. Auto-generating default script...");
+            f = fopen("/littlefs/init.lua", "w");
+            if (f != NULL) {
+                const char* default_lua = 
+                    "function process_command(device, action)\n"
+                    "    print('Lua routing from LittleFS: ' .. device .. ' -> ' .. action)\n"
+                    "    local map = {\n"
+                    "        tv = {\n"
+                    "            power = 0xFD020707,\n"
+                    "            vol_up = 0xF8070707,\n"
+                    "            vol_down = 0xF40B0707,\n"
+                    "            ch_up = 0xED120707,\n"
+                    "            ch_down = 0xEF100707,\n"
+                    "            mute = 0xF00F0707,\n"
+                    "            num_1 = 0xFB040707,\n"
+                    "            num_2 = 0xFA050707,\n"
+                    "            num_3 = 0xF9060707,\n"
+                    "            num_4 = 0xF7080707,\n"
+                    "            num_5 = 0xF6090707,\n"
+                    "            num_6 = 0xF50A0707,\n"
+                    "            num_7 = 0xF30C0707,\n"
+                    "            num_8 = 0xF20D0707,\n"
+                    "            num_9 = 0xF10E0707,\n"
+                    "            num_0 = 0xEE110707,\n"
+                    "            dash = 0xDC230707\n"
+                    "        }\n"
+                    "    }\n"
+                    "    local dev_map = map[device]\n"
+                    "    if dev_map and dev_map[action] then\n"
+                    "        ir.send(dev_map[action])\n"
+                    "        print('IR executed correctly by Lua')\n"
+                    "    else\n"
+                    "        print('Error: Device or action not found in Lua map')\n"
+                    "    end\n"
+                    "end\n"
+                    "rules_db = {}\n"
+                    "function register_rule(rule)\n"
+                    "    if rule.trigger == 'SYS_CMD:LIST' then\n"
+                    "        local result = ''\n"
+                    "        for k, _ in pairs(rules_db) do\n"
+                    "            result = result .. k .. ','\n"
+                    "        end\n"
+                    "        if result == '' then\n"
+                    "            c_send_response('No active rules.')\n"
+                    "        else\n"
+                    "            c_send_response(result)\n"
+                    "        end\n"
+                    "        return\n"
+                    "    end\n"
+                    "    if rule.trigger == 'SYS_CMD:DELETE' then\n"
+                    "        local target = rule.actions[1]\n"
+                    "        if target then\n"
+                    "            rules_db[target] = nil\n"
+                    "            c_save_rules()\n"
+                    "            c_send_response('Rule deleted successfully.')\n"
+                    "        else\n"
+                    "            c_send_response('Error: Target rule not specified.')\n"
+                    "        end\n"
+                    "        return\n"
+                    "    end\n"
+                    "    rules_db[rule.trigger] = rule\n"
+                    "    c_save_rules()\n"
+                    "    print('Rule registered: ' .. rule.trigger)\n"
+                    "end\n"
+                    "operators = {\n"
+                    "    ['>'] = function(a, b) return a > b end,\n"
+                    "    ['<'] = function(a, b) return a < b end,\n"
+                    "    ['=='] = function(a, b) return a == b end\n"
+                    "}\n"
+                    "function evaluate_rules(trigger_event, sensor_data)\n"
+                    "    local rule = rules_db[trigger_event]\n"
+                    "    if rule then\n"
+                    "        local all_passed = true\n"
+                    "        for _, cond in ipairs(rule.conditions) do\n"
+                    "            local current_val = sensor_data[cond.sensor]\n"
+                    "            if current_val == nil then\n"
+                    "                all_passed = false\n"
+                    "                break\n"
+                    "            end\n"
+                    "            local op_func = operators[cond.op]\n"
+                    "            if op_func and not op_func(current_val, cond.val) then\n"
+                    "                all_passed = false\n"
+                    "                break\n"
+                    "            end\n"
+                    "        end\n"
+                    "        if all_passed then\n"
+                    "            for _, action in ipairs(rule.actions) do\n"
+                    "                local cmd, param = string.match(action, '([^:]+):?(.*)')\n"
+                    "                if not cmd then cmd = action end\n"
+                    "                if cmd == 'sys.delay' then\n"
+                    "                    local ms = tonumber(param) or 0\n"
+                    "                    c_sys_delay(ms)\n"
+                    "                else\n"
+                    "                    local device, act = string.match(cmd, '([^%.]+)%.([^%.]+)')\n"
+                    "                    if device and act then\n"
+                    "                        process_command(device, act)\n"
+                    "                    else\n"
+                    "                        print('Warning: Unsupported action syntax ' .. action)\n"
+                    "                    end\n"
+                    "                end\n"
+                    "            end\n"
+                    "        end\n"
+                    "    end\n"
+                    "end\n";
+                
+                fprintf(f, "%s", default_lua);
+                fclose(f);
+                ESP_LOGI("MAIN", "Default init.lua written to LittleFS successfully.");
+            } else {
+                ESP_LOGE("MAIN", "Failed to create init.lua in LittleFS!");
+            }
+        } else {
+            ESP_LOGI("MAIN", "init.lua found in LittleFS.");
+            fclose(f);
+        }
+    }
+    // ---------------------------
 
     // 6) Iniciar tarea orquestadora de arranque
     xTaskCreate(app_startup_orchestrator_task, "startup_orch", 4096, NULL, 5, NULL);

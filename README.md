@@ -86,6 +86,27 @@ flowchart TD
 
 ---
 
+## 🦎 ESP-Claw Automation Engine (Lua)
+
+A key feature of the Dr. SimiBot architecture is its embedded **ESP-Claw Lua 5.4 Virtual Machine**, operating in an isolated FreeRTOS task. It empowers the AI to not just execute hardcoded commands, but to program its own logic and store complex automation rules directly on the device's LittleFS partition.
+
+Through natural language, the AI translates your requests into JSON commands which the C orchestrator intercepts and delegates to the Lua VM. You can interact with this engine seamlessly:
+
+- **Create**: 
+  > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
+  (Dr. Simi generates the rule and confirms it instantly).
+- **Read**: 
+  > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
+  (The orchestrator pauses, Lua reads the dictionary, returns "ver_ovnis" to C, and Dr. Simi speaks it out loud).
+- **Delete**: 
+  > *"Excelente doctor, ahora por favor borra la regla de 'ver ovnis'."*
+  (Lua receives the `SYS_CMD:DELETE` command, destroys the dictionary key, and confirms the deletion).
+- **Verify**: 
+  > *"Doctor, ¿qué reglas te quedan activas?"*
+  (Dr. Simi will confirm the memory is empty).
+
+---
+
 ## 🗣️ Voice Commands & Usage Examples
 
 You can control various device features simply by talking to Dr. Simi. Here are some natural language examples in Mexican Spanish (with English context):

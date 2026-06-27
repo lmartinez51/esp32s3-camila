@@ -2,7 +2,7 @@
 dependencies:
   ## Required IDF version
   idf:
-    version: ">=5.0"
+    version: '>=5.0'
   capture_audio_src:
     path: ../../../components/esp_capture/src/impl/capture_audio_src
   capture_audio_enc:
@@ -12,4 +12,5 @@ dependencies:
   render_impl:
     path: ../../../components/av_render/render_impl
   # espressif/button: ^2.5.0
-  espressif/lua: "^5.4"
+  espressif/lua: ^5.4
+  joltwallet/littlefs: '*'

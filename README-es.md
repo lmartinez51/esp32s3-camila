@@ -81,6 +81,27 @@ flowchart TD
 
 ---
 
+## 🦎 Motor de Automatización ESP-Claw (Lua)
+
+Una característica clave de la arquitectura del Dr. SimiBot es su **Máquina Virtual ESP-Claw Lua 5.4** integrada, que opera en una tarea aislada de FreeRTOS. Esto permite a la IA no solo ejecutar comandos predefinidos, sino programar su propia lógica y almacenar reglas complejas de automatización directamente en la partición LittleFS del dispositivo.
+
+A través del lenguaje natural, la IA traduce tus peticiones en comandos JSON que el orquestador en C intercepta y delega a la VM de Lua. Puedes interactuar con este motor de forma natural:
+
+- **Crear (Create)**: 
+  > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
+  (El Simi crea la regla y la confirma al instante).
+- **Listar (Read)**: 
+  > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
+  (El orquestador atrapa el JSON, Lua lee el diccionario, devuelve "ver_ovnis" a C, y el Simi te lo dice en voz alta).
+- **Borrar (Delete)**: 
+  > *"Excelente doctor, ahora por favor borra la regla de 'ver ovnis'."*
+  (Lua recibe la orden falsa `SYS_CMD:DELETE`, aniquila la llave del diccionario, y el Simi confirma que la eliminó).
+- **Verificar (Verify)**: 
+  > *"Doctor, ¿qué reglas te quedan activas?"*
+  (El Simi confirmará que no hay reglas activas).
+
+---
+
 ## 🗣️ Comandos de Voz y Ejemplos de Uso
 
 Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr. Simi. A continuación, algunos ejemplos en lenguaje natural:
