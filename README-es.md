@@ -69,6 +69,9 @@ flowchart TD
         G -->|Comandos del Dispositivo| HC[Control del Dispositivo]
         HC -->|Borrar NVS| NVS[(Almacenamiento NVS)]
         HC -->|Entrar Modo Configuración| BLE[Módulo BLE]
+        G -->|Reglas de Automatización| LUA[Máquina Virtual Lua ESP-Claw]
+        LUA <-->|Lectura/Escritura de Reglas| LFS[(Almacenamiento LittleFS)]
+        LUA -->|Emitir IR| IR[Transmisor/Sniffer IR]
     end
 
     subgraph Conectividad y Aprovisionamiento

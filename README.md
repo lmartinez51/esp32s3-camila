@@ -74,6 +74,9 @@ flowchart TD
         G -->|Device Commands| HC[Device Control]
         HC -->|Erase NVS| NVS[(NVS Storage)]
         HC -->|Enter Config Mode| BLE[BLE Module]
+        G -->|Automation Rules| LUA[ESP-Claw Lua VM]
+        LUA <-->|Read/Write Rules| LFS[(LittleFS Storage)]
+        LUA -->|Emit IR| IR[IR Sniffer / TX]
     end
 
     subgraph Connectivity & Provisioning
