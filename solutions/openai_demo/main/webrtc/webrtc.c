@@ -1411,6 +1411,43 @@ static class_t *build_control_display_class(void)
     return display_control;
 }
 
+static class_t *build_execute_automation_trigger_class(void)
+{
+    class_t *execute_trigger = calloc(1, sizeof(class_t));
+    if (!execute_trigger) return NULL;
+
+    static attribute_t properties[] = {
+        {
+            .name = "trigger",
+            .desc = "The exact trigger name of the automation rule to execute.",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+    };
+
+    static const char *required[] = {"trigger"};
+
+    const size_t properties_num = sizeof(properties) / sizeof(properties[0]);
+    const size_t required_num = sizeof(required) / sizeof(required[0]);
+
+    parameters_t params = {
+        .type = "object",
+        .properties = properties,
+        .properties_num = properties_num,
+        .required = (char **)required,
+        .required_num = required_num,
+    };
+
+    execute_trigger->type = "function";
+    execute_trigger->name = "execute_automation_trigger";
+    execute_trigger->desc = "Executes an existing hardware automation rule by its trigger name.";
+    execute_trigger->parameters = params;
+    execute_trigger->attr_list = properties;
+    execute_trigger->attr_num = properties_num;
+
+    return execute_trigger;
+}
+
 static class_t *build_emit_ir_command_class(void)
 {
     class_t *emit_ir = calloc(1, sizeof(class_t));
@@ -1486,6 +1523,7 @@ static int build_classes(void)
     add_class(build_delete_credentials_class());
     add_class(build_activate_mute_class());
     add_class(build_control_display_class());
+    add_class(build_execute_automation_trigger_class());
     add_class(build_emit_ir_command_class());
     build_once = true;
     return 0;
@@ -2494,6 +2532,33 @@ static int process_json(const char *json_data, int json_size)
             }
             send_function_output(call_id, buffer);
             sendEvent("response.create", NULL);
+        } else if (strcmp(name->valuestring, "execute_automation_trigger") == 0) {
+            class_found = true;
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            if (cJSON_IsString(trigger_item)) {
+                esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
+                
+                if (dummy_rule) {
+                    memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(dummy_rule->trigger, "SYS_CMD:EXECUTE", sizeof(dummy_rule->trigger));
+                    dummy_rule->num_actions = 1;
+                    strlcpy(dummy_rule->actions[0].target, trigger_item->valuestring, sizeof(dummy_rule->actions[0].target));
+                    dummy_rule->actions[0].target[sizeof(dummy_rule->actions[0].target)-1] = '\0';
+                    
+                    if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
+                        free(dummy_rule);
+                        send_function_output(call_id, "{\"error\": \"Lua system busy\"}");
+                    } else {
+                        send_function_output(call_id, "{\"status\": \"queued\"}");
+                    }
+                } else {
+                    send_function_output(call_id, "{\"error\": \"out of memory\"}");
+                }
+            } else {
+                send_function_output(call_id, "{\"error\": \"Missing or invalid trigger parameter.\"}");
+            }
+            sendEvent("response.create", NULL);
         }
 
     if (!class_found)
@@ -2615,15 +2680,30 @@ static int process_json(const char *json_data, int json_size)
                 if (cJSON_IsString(dev_item) && dev_item->valuestring && 
                     cJSON_IsString(act_item) && act_item->valuestring)
                 {
-                    ESP_LOGI(TAG, "Delegating to ESP-Claw: %s -> %s", dev_item->valuestring, act_item->valuestring);
-                    esp_claw_send_command(dev_item->valuestring, act_item->valuestring);
+                    esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
+                    
+                    if (dummy_rule) {
+                        memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
+                        strlcpy(dummy_rule->trigger, "SYS_CMD:IR_DIRECT", sizeof(dummy_rule->trigger));
+                        dummy_rule->num_actions = 1;
+                        snprintf(dummy_rule->actions[0].target, sizeof(dummy_rule->actions[0].target), "%s:%s", dev_item->valuestring, act_item->valuestring);
+                        
+                        if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
+                            free(dummy_rule);
+                            send_function_output(call_id, "{\"error\": \"Lua system busy\"}");
+                        } else {
+                            send_function_output(call_id, "{\"status\": \"queued\"}");
+                        }
+                    } else {
+                        send_function_output(call_id, "{\"error\": \"out of memory\"}");
+                    }
                 }
                 else
                 {
                     ESP_LOGE(TAG, "Invalid IR arguments in JSON");
+                    send_function_output(call_id, "{\"error\": \"Invalid arguments\"}");
                 }
-                // Acknowledge to OpenAI immediately (do not wait for Lua)
-                send_function_output(call_id, "{\"status\":\"success\"}");
                 break; // Procesada
             }
             else

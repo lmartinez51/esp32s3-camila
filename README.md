@@ -98,6 +98,9 @@ Through natural language, the AI translates your requests into JSON commands whi
 - **Create**: 
   > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
   (Dr. Simi generates the rule and confirms it instantly).
+- **Execute**:
+  > *"Doctor, ejecuta la regla 'ver ovnis'."*
+  (The orchestrator queues the execution in Lua using coroutines to avoid blocking, emits the IR commands sequentially, and confirms success).
 - **Read**: 
   > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
   (The orchestrator pauses, Lua reads the dictionary, returns "ver_ovnis" to C, and Dr. Simi speaks it out loud).

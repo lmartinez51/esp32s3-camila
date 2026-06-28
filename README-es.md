@@ -93,6 +93,9 @@ A través del lenguaje natural, la IA traduce tus peticiones en comandos JSON qu
 - **Crear (Create)**: 
   > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
   (El Simi crea la regla y la confirma al instante).
+- **Ejecutar (Execute)**:
+  > *"Doctor, ejecuta la regla 'ver ovnis'."*
+  (El orquestador encola la ejecución en Lua usando corrutinas para no bloquear, emite los comandos IR secuencialmente y confirma el éxito).
 - **Listar (Read)**: 
   > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
   (El orquestador atrapa el JSON, Lua lee el diccionario, devuelve "ver_ovnis" a C, y el Simi te lo dice en voz alta).
