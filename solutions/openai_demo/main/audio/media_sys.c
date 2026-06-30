@@ -16,6 +16,32 @@
 #include "freertos/task.h"
 #include "audio_render.h"
 #include <stdlib.h>
+#include <stdatomic.h>
+
+static volatile atomic_bool s_vigilante_mic_muted = ATOMIC_VAR_INIT(false);
+static int (*s_original_read_frame)(esp_capture_audio_src_if_t*, esp_capture_stream_frame_t*) = NULL;
+
+void media_sys_set_vigilante_mute(bool muted) {
+    atomic_store(&s_vigilante_mic_muted, muted);
+}
+
+static int vigilante_aec_read_wrapper(esp_capture_audio_src_if_t *src, esp_capture_stream_frame_t *frame) {
+    if (s_original_read_frame == NULL) {
+        return -1;
+    }
+    
+    int ret = s_original_read_frame(src, frame);
+    if (ret == 0 && atomic_load(&s_vigilante_mic_muted)) {
+        int16_t *pcm = (int16_t *)frame->data;
+        size_t samples = frame->size / sizeof(int16_t);
+        int16_t val = 1;
+        for (size_t i = 0; i < samples; i++) {
+            pcm[i] = val;
+            val = -val;
+        }
+    }
+    return ret;
+}
 
 #define RET_ON_NULL(ptr, v)                                        \
     do                                                             \
@@ -114,6 +140,7 @@ void media_sys_teardown(void)
         player_sys.audio_render = NULL;
     }
 
+    s_original_read_frame = NULL;
     ESP_LOGI(TAG, "Media system teardown complete");
 }
 
@@ -131,6 +158,11 @@ static int build_capture_system(void)
     };
     capture_sys.aud_src = esp_capture_new_audio_aec_src(&codec_cfg);
     RET_ON_NULL(capture_sys.aud_src, -1);
+
+    if (capture_sys.aud_src != NULL && capture_sys.aud_src->read_frame != vigilante_aec_read_wrapper) {
+        s_original_read_frame = capture_sys.aud_src->read_frame;
+        capture_sys.aud_src->read_frame = vigilante_aec_read_wrapper;
+    }
 
     // --- INICIO DE LA MODIFICACIÓN ---
 
@@ -259,45 +291,6 @@ int media_sys_get_provider(esp_webrtc_media_provider_t *provide)
     return 0;
 }
 
-/**
- * @brief Turn on or off the microphone (mute/unmute).
- *
- * @param mute If `true`, mutes the microphone. If `false`, unmutes it.
- * @return int 0 if successful, -1 if there is an error.
- */
-bool media_sys_mic_mute(bool mute)
-{
-    if (capture_sys.capture_handle == NULL)
-    {
-        ESP_LOGE(TAG, "Capture handle inválido");
-        return false;
-    }
-
-    if (mute)
-    {
-        ESP_LOGI(TAG, "Silenciando micrófono (stop capture)...");
-        int ret = esp_capture_stop(capture_sys.capture_handle);
-        if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
-        {
-            ESP_LOGE(TAG, "Fallo esp_capture_stop: %d", ret);
-            return false;
-        }
-        capture_sys.mic_muted = true;
-    }
-    else
-    {
-        capture_sys.mic_muted = false;
-        ESP_LOGI(TAG, "Reactivando micrófono (start capture)...");
-        int ret = esp_capture_start(capture_sys.capture_handle);
-        if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
-        {
-            ESP_LOGE(TAG, "Fallo esp_capture_start: %d", ret);
-            return false;
-        }
-    }
-    return true;
-}
-
 bool media_sys_restart_capture(void)
 {
     if (capture_sys.capture_handle == NULL)
@@ -306,32 +299,15 @@ bool media_sys_restart_capture(void)
         return false;
     }
 
-    if (capture_sys.mic_muted)
-    {
-        ESP_LOGW(TAG, "Microfono muteado; se omite recovery de captura");
-        return false;
-    }
-
     ESP_LOGW(TAG, "Reiniciando captura/AEC para recuperar escucha...");
     int ret = esp_capture_stop(capture_sys.capture_handle);
-    if (ret == ESP_CAPTURE_ERR_INVALID_STATE)
-    {
-        ESP_LOGW(TAG, "La captura ya estaba detenida; se omite reinicio para respetar mute");
-        return false;
-    }
-    if (ret != ESP_CAPTURE_ERR_OK)
+    if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
     {
         ESP_LOGE(TAG, "Fallo esp_capture_stop durante recovery: %d", ret);
         return false;
     }
 
     vTaskDelay(pdMS_TO_TICKS(120));
-
-    if (capture_sys.mic_muted)
-    {
-        ESP_LOGW(TAG, "Microfono muteado durante recovery; no se reactivara captura");
-        return false;
-    }
 
     ret = esp_capture_start(capture_sys.capture_handle);
     if (ret != ESP_CAPTURE_ERR_OK)

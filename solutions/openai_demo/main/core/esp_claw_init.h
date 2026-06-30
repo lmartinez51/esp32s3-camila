@@ -39,6 +39,7 @@ typedef struct {
 } rule_action_t;
 
 typedef struct esp_claw_rule_t {
+    char call_id[128];
     char trigger[32];
     
     rule_condition_t conditions[MAX_CONDITIONS];
@@ -61,7 +62,8 @@ esp_err_t esp_claw_send_command(const char* device, const char* action);
 esp_err_t esp_claw_send_rule(esp_claw_rule_t* rule);
 esp_err_t esp_claw_request_list(char* out_buffer, size_t max_len);
 esp_err_t esp_claw_request_delete(const char* trigger, char* out_buffer, size_t max_len);
-
+void esp_claw_signal_safe_to_start(void);
+bool esp_claw_is_automation_ready(void);
 #ifdef __cplusplus
 }
 #endif

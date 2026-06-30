@@ -12,6 +12,7 @@ static const char *TAG = "CONFIG_MGR";
 // Guardan el estado actual de nuestro "llavero"
 static api_key_source_t s_current_key_source = KEY_SOURCE_UNINITIALIZED;
 static char s_nvs_api_key[256]; // Un buffer para guardar la llave que leamos de la NVS
+static char g_cached_api_key[256] = {0}; // T4 FIX: RAM Interna
 
 static bool has_hardcoded_api_key(void)
 {
@@ -23,7 +24,19 @@ void config_manager_init(void)
     // Si no hay llave de desarrollo compilada, arrancamos directamente desde NVS.
     s_current_key_source = has_hardcoded_api_key() ? KEY_SOURCE_HARDCODED : KEY_SOURCE_NVS;
     memset(s_nvs_api_key, 0, sizeof(s_nvs_api_key)); // Limpiamos el buffer
+    
+    // T4 FIX: Precargar la API Key para tareas en PSRAM
+    const char *initial_key = config_manager_get_current_api_key();
+    if (initial_key != NULL) {
+        strncpy(g_cached_api_key, initial_key, sizeof(g_cached_api_key) - 1);
+    }
+
     ESP_LOGI(TAG, "Llavero Inteligente inicializado. Fuente inicial: %d", s_current_key_source);
+}
+
+const char *config_manager_get_cached_api_key(void)
+{
+    return g_cached_api_key;
 }
 
 const char *config_manager_get_current_api_key(void)

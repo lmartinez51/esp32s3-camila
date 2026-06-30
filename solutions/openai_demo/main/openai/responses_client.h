@@ -5,13 +5,14 @@
 extern "C" {
 #endif
 
-typedef struct {
-    char *call_id;
-    char *query;
-} lookup_task_args_t;
+/**
+ * @brief Initializes the persistent PSRAM Queue Worker for HTTP queries.
+ * Must be called once during system boot, after NVS API Key fetch.
+ */
+void http_worker_init(void);
 
 /**
- * @brief Launches the FreeRTOS task to query the OpenAI Responses API.
+ * @brief Dispatches a query to the persistent Queue Worker.
  * 
  * @param query The exact product query string from the user.
  * @param call_id The WebRTC function call ID to respond to.

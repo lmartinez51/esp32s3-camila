@@ -13,11 +13,29 @@
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
+#include "esp_littlefs.h"
 #include "lua_ir_bindings.h"
+#include "lua_mic_bindings.h"
+#include "app_events.h"
 
 static const char *TAG = "ESP_CLAW_ISO";
 static QueueHandle_t s_test_queue = NULL;
 static QueueHandle_t s_lua_to_c_queue = NULL;
+static EventGroupHandle_t s_claw_event_group = NULL;
+
+#define LUA_SAFE_TO_START_BIT BIT0
+#define LUA_ENGINE_READY_BIT BIT1
+
+bool esp_claw_is_automation_ready(void) {
+    if (!s_claw_event_group) return false;
+    return (xEventGroupGetBits(s_claw_event_group) & LUA_ENGINE_READY_BIT) != 0;
+}
+
+void esp_claw_signal_safe_to_start(void) {
+    if (s_claw_event_group) {
+        xEventGroupSetBits(s_claw_event_group, LUA_SAFE_TO_START_BIT);
+    }
+}
 
 static void* claw_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     (void)ud;  (void)osize;
@@ -32,6 +50,10 @@ static void* claw_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 static void claw_push_rule_to_lua(lua_State *L, esp_claw_rule_t *rule) {
     // Create the main rule table
     lua_newtable(L);
+    
+    // Set call_id field
+    lua_pushstring(L, rule->call_id);
+    lua_setfield(L, -2, "call_id");
     
     // Set trigger field
     lua_pushstring(L, rule->trigger);
@@ -89,6 +111,21 @@ static int l_send_response(lua_State *L) {
             resp.success = true;
             strlcpy(resp.payload, msg, sizeof(resp.payload));
             xQueueSend(s_lua_to_c_queue, &resp, 0);
+        }
+    }
+    return 0;
+}
+
+extern int send_function_output(const char *call_id, const char *output);
+
+static int l_send_webrtc_response(lua_State *L) {
+    if (lua_gettop(L) >= 2) {
+        const char* call_id = lua_tostring(L, 1);
+        const char* payload = lua_tostring(L, 2);
+        if (call_id && payload) {
+            // Thread-Safety: send_function_output encapsulates webrtc_send_json
+            // which safely takes g_webrtc_mutex (Core 0/1 sync) before transmission.
+            send_function_output(call_id, payload);
         }
     }
     return 0;
@@ -157,18 +194,26 @@ static int l_save_rules_to_fs(lua_State *L) {
     }
     lua_pop(L, 1); // pop rules_db
 
-    char *json_str = cJSON_PrintUnformatted(root_array);
-    if (json_str) {
-        FILE *f = fopen("/littlefs/saved_rules.json.tmp", "w");
-        if (f) {
-            fputs(json_str, f);
-            fclose(f);
-            rename("/littlefs/saved_rules.json.tmp", "/littlefs/saved_rules.json");
-            ESP_LOGI(TAG, "Rules securely saved to LittleFS.");
+    char *psram_json_str = cJSON_PrintUnformatted(root_array);
+    if (psram_json_str) {
+        size_t len = strlen(psram_json_str);
+        char *internal_json_buffer = heap_caps_malloc(len + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (internal_json_buffer) {
+            strcpy(internal_json_buffer, psram_json_str);
+            FILE *f = fopen("/littlefs/rules.json.tmp", "w");
+            if (f) {
+                fputs(internal_json_buffer, f);
+                fclose(f);
+                rename("/littlefs/rules.json.tmp", "/littlefs/rules.json");
+                ESP_LOGI(TAG, "Rules securely saved to LittleFS via Internal SRAM.");
+            } else {
+                ESP_LOGE(TAG, "Failed to write rules to temporary file.");
+            }
+            heap_caps_free(internal_json_buffer);
         } else {
-            ESP_LOGE(TAG, "Failed to write rules to temporary file.");
+            ESP_LOGE(TAG, "Failed to allocate internal RAM for rule save.");
         }
-        cjson_spiram_free(json_str);
+        cjson_spiram_free(psram_json_str);
     }
     
     cJSON_Delete(root_array);
@@ -177,9 +222,9 @@ static int l_save_rules_to_fs(lua_State *L) {
 }
 
 static void esp_claw_load_rules_from_fs(lua_State *L) {
-    FILE *f = fopen("/littlefs/saved_rules.json", "r");
+    FILE *f = fopen("/littlefs/rules.json", "r");
     if (!f) {
-        ESP_LOGI(TAG, "No saved_rules.json found (first boot or wiped).");
+        ESP_LOGI(TAG, "No rules.json found (first boot or wiped).");
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -268,11 +313,11 @@ static void esp_claw_load_rules_from_fs(lua_State *L) {
         }
         lua_pop(L, 1); // pop rules_db
         ESP_LOGI(TAG, "Rules securely loaded from LittleFS and injected into Lua rules_db.");
-    } else {
-        ESP_LOGE(TAG, "Failed to parse saved_rules.json.");
     }
-
-    cJSON_Delete(root);
+    if (!root || !cJSON_IsArray(root)) {
+        ESP_LOGE(TAG, "Failed to parse rules.json.");
+        if (root) cJSON_Delete(root);
+    }
     cJSON_InitHooks(NULL);
 }
 
@@ -290,11 +335,17 @@ static void lua_worker_task(void *arg) {
         return;
     }
 
-    ESP_LOGI(TAG, "Loading standard libraries (PSRAM)");
-    luaL_openlibs(L);
+    ESP_LOGI(TAG, "Loading approved standard libraries (PSRAM)");
+    luaL_requiref(L, "_G", luaopen_base, 1);
+    lua_pop(L, 1);
+    luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1);
+    lua_pop(L, 1);
+    luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
+    lua_pop(L, 1);
     
     lua_register(L, "c_sys_delay", l_sys_delay);
     lua_register(L, "c_send_response", l_send_response);
+    lua_register(L, "c_send_webrtc_response", l_send_webrtc_response);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
 
     ESP_LOGI(TAG, "Registering IR bindings safely");
@@ -302,16 +353,35 @@ static void lua_worker_task(void *arg) {
     luaL_requiref(L, "ir", luaopen_ir, 1);
     lua_pop(L, 1);
     ESP_LOGI("ESP_CLAW_ISO", "IR bindings registered successfully");
+    ESP_LOGI(TAG, "Lua initialized. Waiting for LUA_SAFE_TO_START_BIT...");
+    xEventGroupWaitBits(s_claw_event_group, LUA_SAFE_TO_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    if (luaL_dofile(L, "/littlefs/init.lua") != LUA_OK) {
-        ESP_LOGE(TAG, "Failed to load init.lua: %s", lua_tostring(L, -1));
-        lua_pop(L, 1);
+    ESP_LOGI(TAG, "LUA_SAFE_TO_START_BIT received. Safe to access SPI Flash.");
+
+    // 1. Initialize LittleFS Partition dynamically
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/littlefs",
+        .partition_label = "littlefs",
+        .format_if_mount_failed = false,
+        .dont_mount = false,
+    };
+    if (esp_vfs_littlefs_register(&conf) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize LittleFS");
     } else {
-        ESP_LOGI(TAG, "init.lua loaded successfully from LittleFS");
+        // 2. Safely load the automation script from LittleFS
+        if (luaL_dofile(L, "/littlefs/init.lua") != LUA_OK) {
+            ESP_LOGE(TAG, "Failed to load init.lua: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        } else {
+            ESP_LOGI(TAG, "Successfully executed init.lua");
+            
+            // 3. Load stored dynamic rules
+            esp_claw_load_rules_from_fs(L);
+            
+            // 4. Notify C-System that Lua is online
+            xEventGroupSetBits(s_claw_event_group, LUA_ENGINE_READY_BIT);
+        }
     }
-
-    ESP_LOGI(TAG, "Bootstrapping Rules Database from LittleFS...");
-    esp_claw_load_rules_from_fs(L);
 
     ESP_LOGI(TAG, "Entering isolated infinite IPC loop");
     esp_claw_rule_t* msg_rule = NULL;
@@ -324,6 +394,8 @@ static void lua_worker_task(void *arg) {
                 while (current != NULL) {
                     esp_claw_rule_t* next = current->next;
                     
+                    // (Hardware Lockdown Interceptor Bypass removed for Phase 1 Rollback)
+
                     lua_getglobal(L, "register_rule");
                     
                     if (lua_isfunction(L, -1)) {
@@ -364,8 +436,14 @@ esp_err_t esp_claw_init(void) {
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal RAM - 12KB)");
-    if (xTaskCreatePinnedToCore(lua_worker_task, "lua_worker", 12288, NULL, 3, NULL, 1) != pdPASS) {
+    s_claw_event_group = xEventGroupCreate();
+    if (!s_claw_event_group) {
+        ESP_LOGE(TAG, "Failed to create s_claw_event_group");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 16KB)");
+    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 16384, NULL, 3, NULL, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }

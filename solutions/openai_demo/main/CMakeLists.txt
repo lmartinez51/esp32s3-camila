@@ -30,6 +30,7 @@ idf_component_register(
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"
         "webrtc/lua_ir_bindings.c"
+        "webrtc/lua_mic_bindings.c"
 
         "openai/http_client.c"
         "openai/web_search.c"

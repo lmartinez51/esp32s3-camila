@@ -845,10 +845,20 @@ void ui_simi_set_temperature_text(const char *text)
 void ui_simi_deinit(void)
 {
     ui_simi_stop();
+
     if (simi_anim_is_running())
     {
-        ESP_LOGW(TAG, "Canvas de Dr. Simi conservado porque la tarea de animacion sigue activa");
-        return;
+        uint32_t extra_wait_ms = 0;
+        const uint32_t MAX_EXTRA_WAIT = 1000;
+        while (simi_anim_is_running() && extra_wait_ms < MAX_EXTRA_WAIT) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            extra_wait_ms += 50;
+        }
+
+        if (simi_anim_is_running()) {
+            ESP_LOGE(TAG, "CRITICAL ERROR: simi_anim_task refuses to terminate! Skipping PSRAM free to prevent Use-After-Free.");
+            return;
+        }
     }
 
     if (s_cv.buf)
@@ -1438,6 +1448,13 @@ static void simi_render(const simi_face_t *f)
             memcpy(s_static_bg_buf, cv->buf, SIMI_CANVAS_W * SIMI_CANVAS_H * sizeof(uint16_t));
         }
         s_bg_rendered = true;
+
+        // T3 FIX: Prevent dynamic tongue/mouth from being permanently erased by static snapshot.
+        // Force the dirty-rect logic to register an open mouth so it gets properly layered.
+        if (s_anim_speaking)
+        {
+            ((simi_face_t *)f)->mouth_open = 100;
+        }
     }
     else if (s_static_bg_buf != NULL)
     {

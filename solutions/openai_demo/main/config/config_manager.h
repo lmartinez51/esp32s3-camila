@@ -50,6 +50,13 @@ extern "C"
      */
     bool config_manager_try_load_api_key(char *out_buffer, size_t buffer_size);
 
+    /**
+     * @brief Obtiene la API Key pre-cargada en la caché global (RAM Interna).
+     * Esto evita bloquear el bus SPI y previene deadlocks con la PSRAM.
+     * @return Puntero a la caché interna de la API Key.
+     */
+    const char *config_manager_get_cached_api_key(void);
+
 #ifdef __cplusplus
 }
 #endif

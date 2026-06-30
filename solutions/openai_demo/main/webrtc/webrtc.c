@@ -34,6 +34,7 @@
 #include "prompts.h"
 
 #include "esp_claw_init.h"
+#include "media_sys.h"
 
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
 #define TAG "OPENAI_APP"
@@ -2382,6 +2383,229 @@ int webrtc_inject_arrival_context(void)
     return sendEvent("response.create", NULL);
 }
 
+// --- AUTOMATION HANDLER TASK (Phase 3 Fix) ---
+typedef struct {
+    char call_id[128];
+    char function_name[64];
+    char *args_json;
+} automation_task_ctx_t;
+
+static void automation_handler_task(void *arg)
+{
+    automation_task_ctx_t *ctx = (automation_task_ctx_t *)arg;
+    if (!ctx) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (!esp_claw_is_automation_ready()) {
+        ESP_LOGW(TAG, "Automation offline task running for function %s", ctx->function_name);
+        const char* error_payload = "{\"error\": \"The automation system is currently offline or unavailable in this firmware version. Do not attempt further automation commands.\"}";
+        send_function_output(ctx->call_id, error_payload);
+    } else {
+        ESP_LOGI(TAG, "Automation native task running for function %s", ctx->function_name);
+        
+        cJSON *args_root = NULL;
+        if (ctx->args_json && strlen(ctx->args_json) > 0) {
+            args_root = cJSON_Parse(ctx->args_json);
+        }
+        
+        if (strcmp(ctx->function_name, "create_automation_rule") == 0) {
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            cJSON *conditions_array = cJSON_GetObjectItemCaseSensitive(args_root, "conditions");
+            cJSON *actions_array = cJSON_GetObjectItemCaseSensitive(args_root, "actions");
+            
+            if (cJSON_IsString(trigger_item) && cJSON_IsArray(conditions_array) && cJSON_IsArray(actions_array)) {
+                esp_claw_rule_t *new_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!new_rule) new_rule = malloc(sizeof(esp_claw_rule_t));
+                
+                if (new_rule) {
+                    memset(new_rule, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(new_rule->call_id, ctx->call_id, sizeof(new_rule->call_id));
+                    strlcpy(new_rule->trigger, trigger_item->valuestring, sizeof(new_rule->trigger));
+                    
+                    int num_conditions = cJSON_GetArraySize(conditions_array);
+                    if (num_conditions > MAX_CONDITIONS) num_conditions = MAX_CONDITIONS;
+                    new_rule->num_conditions = num_conditions;
+                    
+                    for (int i = 0; i < num_conditions; i++) {
+                        cJSON *cond = cJSON_GetArrayItem(conditions_array, i);
+                        cJSON *sensor = cJSON_GetObjectItemCaseSensitive(cond, "sensor");
+                        cJSON *op = cJSON_GetObjectItemCaseSensitive(cond, "op");
+                        cJSON *val = cJSON_GetObjectItemCaseSensitive(cond, "val");
+                        
+                        if (cJSON_IsString(sensor)) {
+                            strlcpy(new_rule->conditions[i].sensor, sensor->valuestring, sizeof(new_rule->conditions[i].sensor));
+                        }
+                        if (cJSON_IsString(op)) {
+                            strlcpy(new_rule->conditions[i].op, op->valuestring, sizeof(new_rule->conditions[i].op));
+                        }
+                        
+                        if (cJSON_IsNumber(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_NUMBER;
+                            new_rule->conditions[i].f_val = (float)val->valuedouble;
+                        } else if (cJSON_IsBool(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_BOOL;
+                            new_rule->conditions[i].b_val = (bool)cJSON_IsTrue(val);
+                        } else if (cJSON_IsString(val)) {
+                            new_rule->conditions[i].val_type = VAL_TYPE_STRING;
+                            strlcpy(new_rule->conditions[i].s_val, val->valuestring, sizeof(new_rule->conditions[i].s_val));
+                        }
+                    }
+                    
+                    int num_actions = cJSON_GetArraySize(actions_array);
+                    if (num_actions > MAX_ACTIONS) num_actions = MAX_ACTIONS;
+                    new_rule->num_actions = num_actions;
+                    
+                    for (int i = 0; i < num_actions; i++) {
+                        cJSON *action = cJSON_GetArrayItem(actions_array, i);
+                        if (cJSON_IsString(action)) {
+                            strlcpy(new_rule->actions[i].target, action->valuestring, sizeof(new_rule->actions[i].target));
+                            new_rule->actions[i].target[255] = '\0';
+                        }
+                    }
+                    
+                    if (esp_claw_send_rule(new_rule) != ESP_OK) {
+                        ESP_LOGW(TAG, "Rule queue full, dropping rule");
+                        free(new_rule);
+                        send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
+                    } else {
+                        ESP_LOGI(TAG, "Rule successfully queued for async execution");
+                    }
+                } else {
+                    send_function_output(ctx->call_id, "Error: out of memory.");
+                }
+            } else {
+                send_function_output(ctx->call_id, "Error: missing or invalid trigger, conditions, or actions.");
+            }
+        } else if (strcmp(ctx->function_name, "list_automation_rules") == 0) {
+            esp_claw_rule_t *list_req = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!list_req) list_req = malloc(sizeof(esp_claw_rule_t));
+            if (list_req) {
+                memset(list_req, 0, sizeof(esp_claw_rule_t));
+                strlcpy(list_req->call_id, ctx->call_id, sizeof(list_req->call_id));
+                strlcpy(list_req->trigger, "SYS_CMD:LIST", sizeof(list_req->trigger));
+                if (esp_claw_send_rule(list_req) != ESP_OK) {
+                    free(list_req);
+                    send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
+                }
+            } else {
+                send_function_output(ctx->call_id, "{\"error\": \"out of memory\"}");
+            }
+        } else if (strcmp(ctx->function_name, "delete_automation_rule") == 0) {
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            if (cJSON_IsString(trigger_item)) {
+                esp_claw_rule_t *del_req = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!del_req) del_req = malloc(sizeof(esp_claw_rule_t));
+                if (del_req) {
+                    memset(del_req, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(del_req->call_id, ctx->call_id, sizeof(del_req->call_id));
+                    strlcpy(del_req->trigger, "SYS_CMD:DELETE", sizeof(del_req->trigger));
+                    del_req->num_actions = 1;
+                    strlcpy(del_req->actions[0].target, trigger_item->valuestring, sizeof(del_req->actions[0].target));
+                    if (esp_claw_send_rule(del_req) != ESP_OK) {
+                        free(del_req);
+                        send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
+                    }
+                } else {
+                    send_function_output(ctx->call_id, "{\"error\": \"out of memory\"}");
+                }
+            } else {
+                send_function_output(ctx->call_id, "{\"error\": \"Missing or invalid trigger parameter.\"}");
+            }
+        } else if (strcmp(ctx->function_name, "execute_automation_trigger") == 0) {
+            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
+            if (cJSON_IsString(trigger_item)) {
+                esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
+                
+                if (dummy_rule) {
+                    memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(dummy_rule->call_id, ctx->call_id, sizeof(dummy_rule->call_id));
+                    strlcpy(dummy_rule->trigger, "SYS_CMD:EXECUTE", sizeof(dummy_rule->trigger));
+                    dummy_rule->num_actions = 1;
+                    strlcpy(dummy_rule->actions[0].target, trigger_item->valuestring, sizeof(dummy_rule->actions[0].target));
+                    dummy_rule->actions[0].target[sizeof(dummy_rule->actions[0].target)-1] = '\0';
+                    
+                    if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
+                        free(dummy_rule);
+                        send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
+                    }
+                } else {
+                    send_function_output(ctx->call_id, "{\"error\": \"out of memory\"}");
+                }
+            } else {
+                send_function_output(ctx->call_id, "{\"error\": \"Missing or invalid trigger parameter.\"}");
+            }
+        } else if (strcmp(ctx->function_name, "emit_ir_command") == 0) {
+            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
+            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
+            if (cJSON_IsString(dev_item) && dev_item->valuestring && 
+                cJSON_IsString(act_item) && act_item->valuestring) {
+                esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
+                
+                if (dummy_rule) {
+                    memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
+                    strlcpy(dummy_rule->call_id, ctx->call_id, sizeof(dummy_rule->call_id));
+                    strlcpy(dummy_rule->trigger, "SYS_CMD:IR_DIRECT", sizeof(dummy_rule->trigger));
+                    dummy_rule->num_actions = 1;
+                    snprintf(dummy_rule->actions[0].target, sizeof(dummy_rule->actions[0].target), "%s:%s", dev_item->valuestring, act_item->valuestring);
+                    
+                    if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
+                        free(dummy_rule);
+                        send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
+                    }
+                } else {
+                    send_function_output(ctx->call_id, "{\"error\": \"out of memory\"}");
+                }
+            } else {
+                ESP_LOGE(TAG, "Invalid IR arguments in JSON");
+                send_function_output(ctx->call_id, "{\"error\": \"Invalid arguments\"}");
+            }
+        }
+        
+        if (args_root) cJSON_Delete(args_root);
+    }
+    
+    // Allow time for JSON output to process and notify OpenAI
+    vTaskDelay(pdMS_TO_TICKS(150));
+    sendEvent("response.create", NULL);
+
+    if (ctx->args_json) free(ctx->args_json);
+    free(ctx);
+    vTaskDelete(NULL);
+}
+
+static void start_automation_task(const char* call_id, const char* function_name, const char* args_json)
+{
+    if (!call_id) return;
+    automation_task_ctx_t *ctx = malloc(sizeof(automation_task_ctx_t));
+    if (!ctx) return;
+    
+    strlcpy(ctx->call_id, call_id, sizeof(ctx->call_id));
+    if (function_name) {
+        strlcpy(ctx->function_name, function_name, sizeof(ctx->function_name));
+    } else {
+        ctx->function_name[0] = '\0';
+    }
+    
+    if (args_json) {
+        ctx->args_json = strdup(args_json);
+    } else {
+        ctx->args_json = NULL;
+    }
+
+    // Task Stack: 6144 bytes for native JSON parsing without IDLE starvation
+    if (xTaskCreatePinnedToCore(automation_handler_task, "auto_handler", 6144, ctx, 5, NULL, 1) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to create automation_handler_task");
+        if (ctx->args_json) free(ctx->args_json);
+        free(ctx);
+    }
+}
+// ---------------------------------------------
+
 /**
  * @brief Processes JSON data received via WebRTC.
  */
@@ -2431,135 +2655,6 @@ static int process_json(const char *json_data, int json_size)
     }
 
     bool class_found = false;
-
-        if (strcmp(name->valuestring, "create_automation_rule") == 0)
-        {
-            class_found = true;
-            ESP_LOGI(TAG, "Function call detected! Creating automation rule...");
-            
-            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
-            cJSON *conditions_array = cJSON_GetObjectItemCaseSensitive(args_root, "conditions");
-            cJSON *actions_array = cJSON_GetObjectItemCaseSensitive(args_root, "actions");
-            
-            if (cJSON_IsString(trigger_item) && cJSON_IsArray(conditions_array) && cJSON_IsArray(actions_array)) {
-                
-                // Allocate from SPIRAM if possible, fallback to standard malloc
-                esp_claw_rule_t *new_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (!new_rule) {
-                    new_rule = malloc(sizeof(esp_claw_rule_t));
-                }
-                
-                if (new_rule) {
-                    memset(new_rule, 0, sizeof(esp_claw_rule_t));
-                    strlcpy(new_rule->trigger, trigger_item->valuestring, sizeof(new_rule->trigger));
-                    
-                    // Parse conditions
-                    int num_conditions = cJSON_GetArraySize(conditions_array);
-                    if (num_conditions > MAX_CONDITIONS) num_conditions = MAX_CONDITIONS;
-                    new_rule->num_conditions = num_conditions;
-                    
-                    for (int i = 0; i < num_conditions; i++) {
-                        cJSON *cond = cJSON_GetArrayItem(conditions_array, i);
-                        cJSON *sensor = cJSON_GetObjectItemCaseSensitive(cond, "sensor");
-                        cJSON *op = cJSON_GetObjectItemCaseSensitive(cond, "op");
-                        cJSON *val = cJSON_GetObjectItemCaseSensitive(cond, "val");
-                        
-                        if (cJSON_IsString(sensor)) {
-                            strlcpy(new_rule->conditions[i].sensor, sensor->valuestring, sizeof(new_rule->conditions[i].sensor));
-                        }
-                        if (cJSON_IsString(op)) {
-                            strlcpy(new_rule->conditions[i].op, op->valuestring, sizeof(new_rule->conditions[i].op));
-                        }
-                        
-                        if (cJSON_IsNumber(val)) {
-                            new_rule->conditions[i].val_type = VAL_TYPE_NUMBER;
-                            new_rule->conditions[i].f_val = (float)val->valuedouble;
-                        } else if (cJSON_IsBool(val)) {
-                            new_rule->conditions[i].val_type = VAL_TYPE_BOOL;
-                            new_rule->conditions[i].b_val = (bool)cJSON_IsTrue(val);
-                        } else if (cJSON_IsString(val)) {
-                            new_rule->conditions[i].val_type = VAL_TYPE_STRING;
-                            strlcpy(new_rule->conditions[i].s_val, val->valuestring, sizeof(new_rule->conditions[i].s_val));
-                        }
-                    }
-                    
-                    // Parse actions
-                    int num_actions = cJSON_GetArraySize(actions_array);
-                    if (num_actions > MAX_ACTIONS) num_actions = MAX_ACTIONS;
-                    new_rule->num_actions = num_actions;
-                    
-                    for (int i = 0; i < num_actions; i++) {
-                        cJSON *action = cJSON_GetArrayItem(actions_array, i);
-                        if (cJSON_IsString(action)) {
-                            strlcpy(new_rule->actions[i].target, action->valuestring, sizeof(new_rule->actions[i].target));
-                            new_rule->actions[i].target[255] = '\0';
-                        }
-                    }
-                    
-                    // Dispatch to queue
-                    if (esp_claw_send_rule(new_rule) != ESP_OK) {
-                        ESP_LOGW(TAG, "Rule queue full, dropping rule");
-                        free(new_rule);
-                    } else {
-                        ESP_LOGI(TAG, "Rule successfully queued");
-                    }
-                    send_function_output(call_id, "Automation rule created successfully.");
-                    sendEvent("response.create", NULL);
-                } else {
-                    ESP_LOGE(TAG, "Failed to allocate memory for rule");
-                    send_function_output(call_id, "Error: out of memory.");
-                    sendEvent("response.create", NULL);
-                }
-            } else {
-                ESP_LOGW(TAG, "Invalid arguments for create_automation_rule");
-                send_function_output(call_id, "Error: missing or invalid trigger, conditions, or actions.");
-                sendEvent("response.create", NULL);
-            }
-        } else if (strcmp(name->valuestring, "list_automation_rules") == 0) {
-            class_found = true;
-            char buffer[512];
-            esp_claw_request_list(buffer, sizeof(buffer));
-            send_function_output(call_id, buffer);
-            sendEvent("response.create", NULL);
-        } else if (strcmp(name->valuestring, "delete_automation_rule") == 0) {
-            class_found = true;
-            char buffer[512];
-            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
-            if (cJSON_IsString(trigger_item)) {
-                esp_claw_request_delete(trigger_item->valuestring, buffer, sizeof(buffer));
-            } else {
-                strlcpy(buffer, "Error: Missing or invalid trigger parameter.", sizeof(buffer));
-            }
-            send_function_output(call_id, buffer);
-            sendEvent("response.create", NULL);
-        } else if (strcmp(name->valuestring, "execute_automation_trigger") == 0) {
-            class_found = true;
-            cJSON *trigger_item = cJSON_GetObjectItemCaseSensitive(args_root, "trigger");
-            if (cJSON_IsString(trigger_item)) {
-                esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
-                
-                if (dummy_rule) {
-                    memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
-                    strlcpy(dummy_rule->trigger, "SYS_CMD:EXECUTE", sizeof(dummy_rule->trigger));
-                    dummy_rule->num_actions = 1;
-                    strlcpy(dummy_rule->actions[0].target, trigger_item->valuestring, sizeof(dummy_rule->actions[0].target));
-                    dummy_rule->actions[0].target[sizeof(dummy_rule->actions[0].target)-1] = '\0';
-                    
-                    if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
-                        free(dummy_rule);
-                        send_function_output(call_id, "{\"error\": \"Lua system busy\"}");
-                    } else {
-                        send_function_output(call_id, "{\"status\": \"queued\"}");
-                    }
-                } else {
-                    send_function_output(call_id, "{\"error\": \"out of memory\"}");
-                }
-            } else {
-                send_function_output(call_id, "{\"error\": \"Missing or invalid trigger parameter.\"}");
-            }
-            sendEvent("response.create", NULL);
-        }
 
     if (!class_found)
     {
@@ -2672,38 +2767,10 @@ static int process_json(const char *json_data, int json_size)
                 }
                 break; // Procesada (o falló el argumento)
             }
-            else if (strcmp(iter->name, "emit_ir_command") == 0)
+            else if (strcmp(iter->name, "execute_automation_trigger") == 0 ||
+                     strcmp(iter->name, "emit_ir_command") == 0)
             {
-                cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
-                cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
-    
-                if (cJSON_IsString(dev_item) && dev_item->valuestring && 
-                    cJSON_IsString(act_item) && act_item->valuestring)
-                {
-                    esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                    if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
-                    
-                    if (dummy_rule) {
-                        memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
-                        strlcpy(dummy_rule->trigger, "SYS_CMD:IR_DIRECT", sizeof(dummy_rule->trigger));
-                        dummy_rule->num_actions = 1;
-                        snprintf(dummy_rule->actions[0].target, sizeof(dummy_rule->actions[0].target), "%s:%s", dev_item->valuestring, act_item->valuestring);
-                        
-                        if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
-                            free(dummy_rule);
-                            send_function_output(call_id, "{\"error\": \"Lua system busy\"}");
-                        } else {
-                            send_function_output(call_id, "{\"status\": \"queued\"}");
-                        }
-                    } else {
-                        send_function_output(call_id, "{\"error\": \"out of memory\"}");
-                    }
-                }
-                else
-                {
-                    ESP_LOGE(TAG, "Invalid IR arguments in JSON");
-                    send_function_output(call_id, "{\"error\": \"Invalid arguments\"}");
-                }
+                start_automation_task(call_id, iter->name, arguments->valuestring);
                 break; // Procesada
             }
             else
@@ -2719,7 +2786,17 @@ static int process_json(const char *json_data, int json_size)
 
     if (!class_found)
     {
-        ESP_LOGW(TAG, "No matching class handler found for name: %s", name->valuestring);
+        if (strcmp(name->valuestring, "list_automation_rules") == 0 ||
+            strcmp(name->valuestring, "create_automation_rule") == 0 ||
+            strcmp(name->valuestring, "delete_automation_rule") == 0)
+        {
+            start_automation_task(call_id, name->valuestring, arguments->valuestring);
+            class_found = true;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "No matching class handler found for name: %s", name->valuestring);
+        }
     }
 
     cJSON_Delete(args_root);
@@ -2804,6 +2881,12 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_input_speech_active = true;
         g_last_input_speech_ms = app_millis();
         webrtc_mark_activity();
+
+        if (g_response_in_progress)
+        {
+            webrtc_send_json("{\"type\":\"response.cancel\"}");
+            g_response_in_progress = false;
+        }
     }
     else if (strcmp(event_type, "input_audio_buffer.speech_stopped") == 0)
     {

@@ -53,10 +53,12 @@
 #include "ui.h"
 #include "simi.h"
 #include "mute_handler.h"
+#include "media_sys.h"
 #include "bsp/esp-bsp.h"
 #include "nvs_setup.h"
 #include "ble_device_callbacks.h" // Callbacks para control de dispositivos BLE
 #include "ble_device_control.h"
+#include "responses_client.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "app_events.h"
@@ -1271,6 +1273,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
+        ui_deinit_keep_last_frame();
         stop_webrtc();
         ble_device_stop_smart_task();
         ble_device_control_stop();
@@ -1284,6 +1287,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_SLEEP:
     {
         ESP_LOGI(TAG, "STATE_SLEEP: WiFi is up; WebRTC remains off. Starting CSI motion sensing.");
+        media_sys_set_vigilante_mute(false);
         reset_alert_context();
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
@@ -1293,6 +1297,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
+        ui_deinit_keep_last_frame();
         orchestrator_show_phase("wifi_ready", "WiFi ready", "Standing by", COLOR_GREEN_BGR565);
         esp_err_t sleep_ble_err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
         if (sleep_ble_err != ESP_OK)
@@ -1425,10 +1430,9 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
     case STATE_ACTIVE:
         ESP_LOGI(TAG, "STATE_ACTIVE: WebRTC active; injecting arrival context.");
         orchestrator_cancel_sleep_csi_cooldown();
-        if (s_is_muted && media_sys_is_ready())
+        if (s_is_muted)
         {
             ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
-            media_sys_mic_mute(true);
             ui_simi_set_state(SIMI_STATE_MUTED);
             ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
         }
@@ -1477,6 +1481,7 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
 
     case STATE_STOPPING_WEBRTC:
         ESP_LOGI(TAG, "STATE_STOPPING_WEBRTC: waiting for explicit WebRTC stopped event.");
+        media_sys_set_vigilante_mute(false);
         orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
         radar_hal_disable();
@@ -1532,16 +1537,7 @@ static void app_startup_orchestrator_task(void *param)
         if (xQueueReceive(s_orchestrator_event_queue, &event_msg, wait_ticks) != pdTRUE)
         {
             memset(&event_msg, 0, sizeof(event_msg));
-            if (state == STATE_STOPPING_WEBRTC &&
-                orchestrator_webrtc_stop_timeout_expired())
-            {
-                ESP_LOGE(TAG,
-                         "STATE_STOPPING_WEBRTC: hard timeout after %d ms; forcing sleep",
-                         WEBRTC_STOP_TIMEOUT_MS);
-                orchestrator_enter_state(&state, STATE_SLEEP);
-                continue;
-            }
-            else if (state == STATE_ACTIVE &&
+            if (state == STATE_ACTIVE &&
                      orchestrator_is_vigilante_active() &&
                      orchestrator_poll_vigilante_monitor(&event_msg))
             {
@@ -1645,6 +1641,7 @@ static void app_startup_orchestrator_task(void *param)
             }
             else if (event == ORCH_EVENT_IDENTITY_PRESENT)
             {
+                media_sys_set_vigilante_mute(false);
                 s_alert_dispatch_pending = false;
                 s_pending_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
                 s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
@@ -1657,9 +1654,11 @@ static void app_startup_orchestrator_task(void *param)
                 {
                     s_alert_timestamp_ms = orchestrator_now_ms();
                 }
+
                 s_alert_dispatch_pending = true;
                 s_pending_webrtc_mode = WEBRTC_SESSION_MODE_VIGILANTE;
                 s_ble_release_to_sleep = false;
+                media_sys_set_vigilante_mute(true);
 
                 orchestrator_enter_state(&state, STATE_RELEASING_BLE);
             }
@@ -1773,10 +1772,6 @@ static void app_startup_orchestrator_task(void *param)
                 if (s_is_muted != want_mute)
                 {
                     s_is_muted = want_mute;
-                    if (media_sys_is_ready())
-                    {
-                        media_sys_mic_mute(s_is_muted);
-                    }
                 }
                 
                 // Actualizar timestamp de actividad por interacción física con el botón
@@ -1970,6 +1965,72 @@ void app_main(void)
         ESP_LOGW(TAG, "No se pudo registrar hook de fallo de heap: %s", esp_err_to_name(heap_hook_err));
     }
 
+    // --- PRE-BOOT LittleFS BOOTSTRAPPER ---
+    init_nvs(); // Initialize NVS first for partition tables
+    
+    esp_vfs_littlefs_conf_t lfs_conf = {
+        .base_path = "/littlefs",
+        .partition_label = "littlefs",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+    if (esp_vfs_littlefs_register(&lfs_conf) == ESP_OK) {
+        FILE *f = fopen("/littlefs/init.lua", "r");
+        if (f == NULL) {
+            ESP_LOGW(TAG, "Pre-boot: init.lua not found. Auto-generating minimal skeleton...");
+            f = fopen("/littlefs/init.lua", "w");
+            if (f != NULL) {
+                const char* engine_lua = 
+                    "-- Automation Engine init.lua\n"
+                    "rules_db = rules_db or {}\n"
+                    "function register_rule(rule_table)\n"
+                    "    if type(rule_table) ~= \"table\" then return end\n"
+                    "    local call_id = rule_table.call_id or \"\"\n"
+                    "    local trigger = rule_table.trigger or \"\"\n"
+                    "    \n"
+                    "    if trigger == \"SYS_CMD:LIST\" then\n"
+                    "        local list_json = \"[\"\n"
+                    "        local first = true\n"
+                    "        for k, v in pairs(rules_db) do\n"
+                    "            if not first then list_json = list_json .. \", \" end\n"
+                    "            list_json = list_json .. \"{\\\"trigger\\\": \\\"\" .. tostring(k) .. \"\\\"}\"\n"
+                    "            first = false\n"
+                    "        end\n"
+                    "        list_json = list_json .. \"]\"\n"
+                    "        c_send_webrtc_response(call_id, list_json)\n"
+                    "        return\n"
+                    "    elseif trigger == \"SYS_CMD:DELETE\" then\n"
+                    "        local target = rule_table.actions and rule_table.actions[1] and rule_table.actions[1].target\n"
+                    "        if target and rules_db[target] then\n"
+                    "            rules_db[target] = nil\n"
+                    "            c_save_rules()\n"
+                    "            c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"deleted\\\"}\")\n"
+                    "        else\n"
+                    "            c_send_webrtc_response(call_id, \"{\\\"error\\\": \\\"not found\\\"}\")\n"
+                    "        end\n"
+                    "        return\n"
+                    "    elseif trigger == \"SYS_CMD:EXECUTE\" or trigger == \"SYS_CMD:IR_DIRECT\" then\n"
+                    "        c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"executed\\\"}\")\n"
+                    "        return\n"
+                    "    end\n"
+                    "    \n"
+                    "    -- Standard Rule Creation\n"
+                    "    rules_db[trigger] = rule_table\n"
+                    "    c_save_rules()\n"
+                    "    c_send_webrtc_response(call_id, \"{\\\"status\\\":\\\"success\\\", \\\"message\\\":\\\"Rule saved\\\"}\")\n"
+                    "end\n";
+                fprintf(f, "%s", engine_lua);
+                fclose(f);
+                ESP_LOGI(TAG, "Pre-boot: Minimal init.lua written successfully.");
+            }
+        } else {
+            fclose(f);
+        }
+        esp_vfs_littlefs_unregister("littlefs");
+        ESP_LOGI(TAG, "Pre-boot: LittleFS formatting and skeleton generation complete. VFS unmounted.");
+    }
+    // ---------------------------------------
+
     // 1) Inicializa la interfaz de usuario (pantalla LCD)
     esp_err_t err = ui_init();
     if (err != ESP_OK)
@@ -1984,10 +2045,7 @@ void app_main(void)
     media_lib_thread_set_schedule_cb(thread_scheduler); // Configura scheduler de hilos
 
     // 3) Inicializa almacenamiento y manejadores
-    init_nvs();                 // Non-Volatile Storage para configuraciones
     mute_handler_init();        // Manejador de silenciado de audio
-    config_manager_init();      // Gestor de configuración
-    webrtc_init_action_queue(); // Inicializa la cola/tarea de acciones WebRTC
 
     bool boot_to_provisioning = nvs_read_and_clear_boot_to_provisioning_flag();
 
@@ -2019,10 +2077,14 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(500)); // Espera 0.5 segundos para que se vea el log
     // 8. Listar la API Key guardada en NVS (para depuración)
     list_api_keys_from_nvs();
-    // -------------------------
 #endif
 
-    // 4) Crear primitivas de sincronización
+    // 4) Configuración tardía que depende de NVS
+    config_manager_init();      // Gestor de configuración (LEE la API KEY desde NVS a RAM)
+    http_worker_init();         // Inicia el Worker Persistente de PSRAM para HTTP requests
+    webrtc_init_action_queue(); // Inicializa la cola/tarea de acciones WebRTC
+
+    // 5) Crear primitivas de sincronización
     // Crear el grupo de eventos para sincronización de arranque
     app_startup_event_group = xEventGroupCreate();
     // Crear el semáforo que usaremos para esperar la sincronización
@@ -2044,203 +2106,6 @@ void app_main(void)
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
     ESP_LOGI(TAG, "BLE Central permanece deshabilitado por defecto.");
 
-    // --- INITIALIZE LittleFS ---
-    esp_vfs_littlefs_conf_t conf = {
-        .base_path = "/littlefs",
-        .partition_label = "littlefs",
-        .format_if_mount_failed = true,
-        .dont_mount = false,
-    };
-    esp_err_t ret = esp_vfs_littlefs_register(&conf);
-
-    if (ret != ESP_OK) {
-        if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount or format filesystem");
-        } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "Failed to find LittleFS partition");
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
-        }
-    } else {
-        size_t total = 0, used = 0;
-        ret = esp_littlefs_info(conf.partition_label, &total, &used);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to get LittleFS partition information (%s)", esp_err_to_name(ret));
-        } else {
-            ESP_LOGI(TAG, "LittleFS partition size: total: %d, used: %d, free: %d", total, used, total - used);
-        }
-
-        // --- ADDED FALLBACK LOGIC ---
-        FILE *f = fopen("/littlefs/init.lua", "r");
-        if (f == NULL) {
-            ESP_LOGW("MAIN", "init.lua not found. Auto-generating default script...");
-            f = fopen("/littlefs/init.lua", "w");
-            if (f != NULL) {
-                const char* default_lua = 
-                    "hw_ir_locked = false\n"
-                    "function process_command(device, action)\n"
-                    "    print('Lua routing from LittleFS: ' .. device .. ' -> ' .. action)\n"
-                    "    local map = {\n"
-                    "        tv = {\n"
-                    "            power = 0xFD020707,\n"
-                    "            vol_up = 0xF8070707,\n"
-                    "            vol_down = 0xF40B0707,\n"
-                    "            ch_up = 0xED120707,\n"
-                    "            ch_down = 0xEF100707,\n"
-                    "            mute = 0xF00F0707,\n"
-                    "            num_1 = 0xFB040707,\n"
-                    "            num_2 = 0xFA050707,\n"
-                    "            num_3 = 0xF9060707,\n"
-                    "            num_4 = 0xF7080707,\n"
-                    "            num_5 = 0xF6090707,\n"
-                    "            num_6 = 0xF50A0707,\n"
-                    "            num_7 = 0xF30C0707,\n"
-                    "            num_8 = 0xF20D0707,\n"
-                    "            num_9 = 0xF10E0707,\n"
-                    "            num_0 = 0xEE110707,\n"
-                    "            dash = 0xDC230707\n"
-                    "        }\n"
-                    "    }\n"
-                    "    local dev_map = map[device]\n"
-                    "    if dev_map and dev_map[action] then\n"
-                    "        ir.send(dev_map[action])\n"
-                    "        print('IR executed correctly by Lua')\n"
-                    "    else\n"
-                    "        print('Error: Device or action not found in Lua map')\n"
-                    "    end\n"
-                    "end\n"
-                    "rules_db = {}\n"
-                    "function register_rule(rule)\n"
-                    "    if rule.trigger == 'SYS_CMD:IR_DIRECT' then\n"
-                    "        local device, action = string.match(rule.actions[1], '([^:]+):([^:]+)')\n"
-                    "        if hw_ir_locked then\n"
-                    "            c_send_response('{\"error\": \"IR hardware busy\"}')\n"
-                    "            return\n"
-                    "        end\n"
-                    "        hw_ir_locked = true\n"
-                    "        local exec_thread = coroutine.wrap(function()\n"
-                    "            if device and action then\n"
-                    "                process_command(device, action)\n"
-                    "            end\n"
-                    "            c_sys_delay(200)\n"
-                    "            hw_ir_locked = false\n"
-                    "            c_send_response('{\"status\": \"success\", \"message\": \"IR command executed\"}')\n"
-                    "        end)\n"
-                    "        exec_thread()\n"
-                    "        return\n"
-                    "    end\n"
-                    "    if rule.trigger == 'SYS_CMD:EXECUTE' then\n"
-                    "        local target = rule.actions[1]\n"
-                    "        if type(rules_db[target]) ~= 'table' then\n"
-                    "            c_send_response('{\"error\": \"Trigger not found in DB\"}')\n"
-                    "            return\n"
-                    "        end\n"
-                    "        if rules_db[target].is_running then\n"
-                    "            c_send_response('{\"error\": \"Action already in progress\"}')\n"
-                    "            return\n"
-                    "        end\n"
-                    "        rules_db[target].is_running = true\n"
-                    "        local exec_thread = coroutine.wrap(function()\n"
-                    "            for _, action in ipairs(rules_db[target].actions) do\n"
-                    "                local cmd, param = string.match(action, '([^:]+):?(.*)')\n"
-                    "                if not cmd then cmd = action end\n"
-                    "                if cmd == 'sys.delay' then\n"
-                    "                    local ms = tonumber(param) or 0\n"
-                    "                    c_sys_delay(ms)\n"
-                    "                else\n"
-                    "                    local device, act = string.match(cmd, '([^%.]+)%.([^%.]+)')\n"
-                    "                    if device and act then\n"
-                    "                        process_command(device, act)\n"
-                    "                    else\n"
-                    "                        print('Warning: Unsupported action syntax ' .. action)\n"
-                    "                    end\n"
-                    "                end\n"
-                    "            end\n"
-                    "            rules_db[target].is_running = false\n"
-                    "            c_send_response('{\"status\": \"execution_completed\"}')\n"
-                    "        end)\n"
-                    "        exec_thread()\n"
-                    "        return\n"
-                    "    end\n"
-                    "    if rule.trigger == 'SYS_CMD:LIST' then\n"
-                    "        local result = ''\n"
-                    "        for k, _ in pairs(rules_db) do\n"
-                    "            result = result .. k .. ','\n"
-                    "        end\n"
-                    "        if result == '' then\n"
-                    "            c_send_response('No active rules.')\n"
-                    "        else\n"
-                    "            c_send_response(result)\n"
-                    "        end\n"
-                    "        return\n"
-                    "    end\n"
-                    "    if rule.trigger == 'SYS_CMD:DELETE' then\n"
-                    "        local target = rule.actions[1]\n"
-                    "        if target then\n"
-                    "            rules_db[target] = nil\n"
-                    "            c_save_rules()\n"
-                    "            c_send_response('Rule deleted successfully.')\n"
-                    "        else\n"
-                    "            c_send_response('Error: Target rule not specified.')\n"
-                    "        end\n"
-                    "        return\n"
-                    "    end\n"
-                    "    rules_db[rule.trigger] = rule\n"
-                    "    c_save_rules()\n"
-                    "    print('Rule registered: ' .. rule.trigger)\n"
-                    "end\n"
-                    "operators = {\n"
-                    "    ['>'] = function(a, b) return a > b end,\n"
-                    "    ['<'] = function(a, b) return a < b end,\n"
-                    "    ['=='] = function(a, b) return a == b end\n"
-                    "}\n"
-                    "function evaluate_rules(trigger_event, sensor_data)\n"
-                    "    local rule = rules_db[trigger_event]\n"
-                    "    if rule then\n"
-                    "        local all_passed = true\n"
-                    "        for _, cond in ipairs(rule.conditions) do\n"
-                    "            local current_val = sensor_data[cond.sensor]\n"
-                    "            if current_val == nil then\n"
-                    "                all_passed = false\n"
-                    "                break\n"
-                    "            end\n"
-                    "            local op_func = operators[cond.op]\n"
-                    "            if op_func and not op_func(current_val, cond.val) then\n"
-                    "                all_passed = false\n"
-                    "                break\n"
-                    "            end\n"
-                    "        end\n"
-                    "        if all_passed then\n"
-                    "            for _, action in ipairs(rule.actions) do\n"
-                    "                local cmd, param = string.match(action, '([^:]+):?(.*)')\n"
-                    "                if not cmd then cmd = action end\n"
-                    "                if cmd == 'sys.delay' then\n"
-                    "                    local ms = tonumber(param) or 0\n"
-                    "                    c_sys_delay(ms)\n"
-                    "                else\n"
-                    "                    local device, act = string.match(cmd, '([^%.]+)%.([^%.]+)')\n"
-                    "                    if device and act then\n"
-                    "                        process_command(device, act)\n"
-                    "                    else\n"
-                    "                        print('Warning: Unsupported action syntax ' .. action)\n"
-                    "                    end\n"
-                    "                end\n"
-                    "            end\n"
-                    "        end\n"
-                    "    end\n"
-                    "end\n";
-                
-                fprintf(f, "%s", default_lua);
-                fclose(f);
-                ESP_LOGI("MAIN", "Default init.lua written to LittleFS successfully.");
-            } else {
-                ESP_LOGE("MAIN", "Failed to create init.lua in LittleFS!");
-            }
-        } else {
-            ESP_LOGI("MAIN", "init.lua found in LittleFS.");
-            fclose(f);
-        }
-    }
     // ---------------------------
 
     // 6) Iniciar tarea orquestadora de arranque
@@ -2310,6 +2175,9 @@ void app_main(void)
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
 
+
+    // Safe to unblock Lua VM now that all hardware and WiFi initializations are done
+    esp_claw_signal_safe_to_start();
 
     // 7) Loop principal - monitorea el estado de WebRTC continuamente
     while (1)
