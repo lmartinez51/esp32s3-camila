@@ -493,8 +493,12 @@ static esp_err_t ui_deinit_internal(bool keep_last_frame)
         ret = bus_err;
     }
 
+    g_status_msg_x = 0;
+    g_status_msg_y = 0;
     g_status_msg_w = 0;
     g_status_msg_h = 0;
+    g_help_msg_x = 0;
+    g_help_msg_y = 0;
     g_help_msg_w = 0;
     g_help_msg_h = 0;
 
@@ -562,7 +566,7 @@ static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
     }
 
     int w = x1 - x0;
-    int max_bytes_per_chunk = 16384; // 16KB to fit in fragmented DMA memory
+    int max_bytes_per_chunk = 4096; // 4KB to safely fit in heavily fragmented DMA memory
     int rows_per_chunk = max_bytes_per_chunk / (w * 2);
     if (rows_per_chunk < 1) rows_per_chunk = 1;
 

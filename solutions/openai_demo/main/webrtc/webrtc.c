@@ -2101,11 +2101,14 @@ static void activate_mute_task(void *arg)
     }
     vTaskDelay(pdMS_TO_TICKS(500)); // Delay to ensure chatbot's response is complete
     
+    // Físicamente apagar el micrófono (Hardware Halt) para eliminar el placebo
+    media_sys_mic_mute(true);
+
     // Delegate media control and UI to the central orchestrator
     orchestrator_post_mute_state(true);
 
-    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Orchestrator notified. Hardware will remain muted until physical unmute.");
-    // Notify OpenAI via WebRTC
+    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Orchestrator notified. Hardware is now physically dead until physical unmute.");
+    // Notify OpenAI via WebRTC so it understands the silence
     sendEvent("conversation.item.create", "Microphone muted successfully. I must wait for the user to physically unmute.");
     vTaskDelay(pdMS_TO_TICKS(200));
 

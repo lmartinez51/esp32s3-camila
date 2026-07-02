@@ -365,3 +365,42 @@ int test_capture_to_player(void)
     av_render_reset(player_sys.player);
     return 0;
 }
+
+/**
+ * @brief Turn on or off the microphone (mute/unmute).
+ *
+ * @param mute If `true`, mutes the microphone. If `false`, unmutes it.
+ * @return bool true if successful, false if there is an error.
+ */
+bool media_sys_mic_mute(bool mute)
+{
+    if (capture_sys.capture_handle == NULL)
+    {
+        ESP_LOGE(TAG, "Capture handle inválido");
+        return false;
+    }
+
+    if (mute)
+    {
+        ESP_LOGI(TAG, "Silenciando micrófono (stop capture)...");
+        int ret = esp_capture_stop(capture_sys.capture_handle);
+        if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
+        {
+            ESP_LOGE(TAG, "Fallo esp_capture_stop: %d", ret);
+            return false;
+        }
+        capture_sys.mic_muted = true;
+    }
+    else
+    {
+        capture_sys.mic_muted = false;
+        ESP_LOGI(TAG, "Reactivando micrófono (start capture)...");
+        int ret = esp_capture_start(capture_sys.capture_handle);
+        if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
+        {
+            ESP_LOGE(TAG, "Fallo esp_capture_start: %d", ret);
+            return false;
+        }
+    }
+    return true;
+}

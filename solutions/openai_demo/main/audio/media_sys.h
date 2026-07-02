@@ -8,6 +8,14 @@
 void media_sys_set_vigilante_mute(bool muted);
 
 /**
+ * @brief Turn on or off the microphone (mute/unmute) at the hardware level.
+ *
+ * @param mute If `true`, mutes the microphone. If `false`, unmutes it.
+ * @return bool true if successful, false if there is an error.
+ */
+bool media_sys_mic_mute(bool mute);
+
+/**
  * @brief Initializes the media system.
  * @return 0 on success, non-zero on failure.
  */

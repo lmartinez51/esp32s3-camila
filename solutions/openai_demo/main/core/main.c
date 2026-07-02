@@ -422,6 +422,19 @@ static esp_err_t orchestrator_ensure_ui_ready(const char *reason)
 {
     if (ui_is_initialized())
     {
+        // Add check for Simi readiness to prevent fragmentation bugs after Sentinel mode
+        if (!ui_simi_ready())
+        {
+            ESP_LOGI(TAG, "LCD UI is up but Simi is missing. Restoring Simi after BLE handoff: %s", reason ? reason : "");
+            orchestrator_log_heap_snapshot("ui_restore:simi_before");
+            esp_err_t err = ui_simi_init();
+            orchestrator_log_heap_snapshot((err == ESP_OK) ? "ui_restore:simi_after" : "ui_restore:simi_failed");
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Simi UI restore failed: %s", esp_err_to_name(err));
+            }
+            return err;
+        }
         return ESP_OK;
     }
 
@@ -1391,6 +1404,10 @@ static void orchestrator_enter_state(orchestrator_state_t *state, orchestrator_s
         radar_hal_disable();
         csi_handler_stop();
         s_arrival_context_sent = false;
+
+        // Reset persistent session logic to cold-boot defaults to guarantee sync with UI
+        s_is_muted = false;
+        mute_handler_stop_idle_timer();
         webrtc_session_mode_t ignition_mode = s_ignition_webrtc_mode;
         s_active_webrtc_mode = ignition_mode;
 
@@ -1777,15 +1794,17 @@ static void app_startup_orchestrator_task(void *param)
                 // Actualizar timestamp de actividad por interacción física con el botón
                 webrtc_mark_activity();
 
-                // Synchronize UI Canvas State
+                // Synchronize UI Canvas State & Hardware Mic
                 if (event == ORCH_EVENT_MIC_MUTED)
                 {
+                    media_sys_mic_mute(true); // Físicamente apagar el micrófono (Modo Normal)
                     mute_handler_start_idle_timer();
                     ui_simi_set_state(SIMI_STATE_MUTED);
                     ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
                 }
                 else
                 {
+                    media_sys_mic_mute(false); // Reactivar micrófono físicamente (Modo Normal)
                     mute_handler_stop_idle_timer();
                     ui_simi_set_state(SIMI_STATE_LISTENING);
                     ui_clear_status_message();

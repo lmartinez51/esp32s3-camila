@@ -37,7 +37,7 @@ static const char *TAG = "SIMI";
 #define SIMI_BLIT_Y 0
 #define SIMI_CX 160
 
-#define SIMI_DIRTY_BUF_SIZE 16384
+#define SIMI_DIRTY_BUF_SIZE 8192
 static uint16_t *s_dirty_buf = NULL;
 
 #define SIMI_ANIM_STACK_SIZE 4096
@@ -880,6 +880,10 @@ void ui_simi_deinit(void)
     s_simi_screen_cleared = false;
     s_simi_backlight_ready = false;
     s_cv.w = s_cv.h = 0;
+    
+    // Reset static states to ensure clean slate on next initialization
+    s_simi_overlay_text[0] = '\0';
+    s_anim_state = SIMI_STATE_IDLE;
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */

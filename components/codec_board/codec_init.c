@@ -221,6 +221,17 @@ static int _i2s_init(uint8_t port, esp_codec_dev_type_t dev_type, codec_init_cfg
             ESP_LOGI(TAG, "output init tdm ret %d", ret);
         }
 #endif
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "TX channel init failed (%d). Rolling back to prevent zombie state.", ret);
+            i2s_del_channel(i2s_keep[port]->tx_handle);
+            if (i2s_keep[port]->rx_handle) {
+                i2s_del_channel(i2s_keep[port]->rx_handle);
+            }
+            free(i2s_keep[port]);
+            i2s_keep[port] = NULL;
+            return ret;
+        }
     }
     if (i2s_keep[port]->rx_handle)
     {
@@ -236,6 +247,17 @@ static int _i2s_init(uint8_t port, esp_codec_dev_type_t dev_type, codec_init_cfg
             ESP_LOGI(TAG, "Input init tdm ret %d", ret);
         }
 #endif
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "RX channel init failed (%d). Rolling back to prevent zombie state.", ret);
+            i2s_del_channel(i2s_keep[port]->rx_handle);
+            if (i2s_keep[port]->tx_handle) {
+                i2s_del_channel(i2s_keep[port]->tx_handle);
+            }
+            free(i2s_keep[port]);
+            i2s_keep[port] = NULL;
+            return ret;
+        }
     }
     // Enable I2S here for maybe some codec need I2S clock to set register correctly
     if (i2s_keep[port]->tx_handle)
