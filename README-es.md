@@ -20,7 +20,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
-- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para el Dr. Simi (ej. Doctor, Selección Mexicana, Chapulín Colorado, FC Barcelona, Navidad) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
+- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para el Dr. Simi (ej. Doctor, Selección Mexicana, Chapulín Colorado, FC Barcelona) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
 - 🌡️ **Sensores Ambientales** — monitoreo en tiempo real de temperatura y humedad por I2C (AHT30), mostrado directamente en la pantalla LCD.
 - 🦎 **Motor Lua ESP-Claw** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, prototipado rápido de lógica y procesamiento de Infrarrojo acelerado por hardware (`lua_ir_bindings`) sin bloquear el ciclo principal en C de WebRTC.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
