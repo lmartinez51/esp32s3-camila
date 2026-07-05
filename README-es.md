@@ -139,10 +139,12 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
   - *"Doctor, póngase la playera de la selección."*
   - *"Doctor, ponte la camisa del Barça."*
   - **Acción**: Ejecuta `change_simi_outfit`.
-- **Controlar Dispositivos Electrónicos**:
+- **Controlar Dispositivos Electrónicos (IR)**:
   - *"Doctor, enciende la tele."*
-  - *"Doctor, sube el volumen."*
-  - **Acción**: Ejecuta `emit_ir_command`.
+  - *"Doctor, apréndete el botón de encendido de la tele."*
+  - *"Doctor, guarda los códigos infrarrojos."*
+  - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"*
+  - **Acción**: Ejecuta `ir_transmit_command`, `ir_learn_button`, `ir_save_database` o `ir_get_devices`.
 
 ---
 
