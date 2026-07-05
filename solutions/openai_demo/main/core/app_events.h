@@ -50,6 +50,7 @@ typedef enum
     ORCH_EVENT_MIC_UNMUTED,
     ORCH_EVENT_IDLE_ALERT_START,
     ORCH_EVENT_IDLE_ALERT_END,
+    ORCH_EVENT_FATAL_ERROR,
 } orchestrator_event_t;
 
 typedef struct
@@ -57,11 +58,13 @@ typedef struct
     orchestrator_event_t type;
     uint32_t timestamp_ms;
     float corr_drop;
+    char context_str[64];
 } orchestrator_event_msg_t;
 
 void orchestrator_post_event(orchestrator_event_t event);
 void orchestrator_post_motion_detected(uint32_t timestamp_ms, float corr_drop);
 void orchestrator_post_mute_state(bool is_muted);
+void orchestrator_post_fatal_error(void);
 bool orchestrator_get_mute_state(void);
 
 #ifdef __cplusplus

@@ -117,6 +117,7 @@ static int l_send_response(lua_State *L) {
 }
 
 extern int send_function_output(const char *call_id, const char *output);
+extern int sendEvent(const char *type, const char *payload);
 
 static int l_send_webrtc_response(lua_State *L) {
     if (lua_gettop(L) >= 2) {
@@ -126,6 +127,18 @@ static int l_send_webrtc_response(lua_State *L) {
             // Thread-Safety: send_function_output encapsulates webrtc_send_json
             // which safely takes g_webrtc_mutex (Core 0/1 sync) before transmission.
             send_function_output(call_id, payload);
+            sendEvent("response.create", NULL);
+        }
+    }
+    return 0;
+}
+
+static int l_inject_webrtc_message(lua_State *L) {
+    if (lua_gettop(L) >= 1) {
+        const char* message = lua_tostring(L, 1);
+        if (message) {
+            sendEvent("conversation.item.create", message);
+            sendEvent("response.create", NULL);
         }
     }
     return 0;
@@ -346,6 +359,7 @@ static void lua_worker_task(void *arg) {
     lua_register(L, "c_sys_delay", l_sys_delay);
     lua_register(L, "c_send_response", l_send_response);
     lua_register(L, "c_send_webrtc_response", l_send_webrtc_response);
+    lua_register(L, "c_inject_webrtc_message", l_inject_webrtc_message);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
 
     ESP_LOGI(TAG, "Registering IR bindings safely");

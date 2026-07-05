@@ -103,44 +103,31 @@ static void openai_sdp_answer(http_resp_t *resp, void *ctx)
     // resp->data no está garantizado como string terminado en NULL.
     if (resp->data && resp->size > 0)
     {
-        char *body = calloc(1, resp->size + 1);
-        if (!body)
-        {
-            ESP_LOGE(TAG, "No hay memoria para copiar respuesta de OpenAI");
-            return;
-        }
-        memcpy(body, resp->data, resp->size);
-
-        if (strstr(body, "\"error\"") != NULL)
+        if (strnstr(resp->data, "\"error\"", resp->size) != NULL)
         {
             ESP_LOGE(TAG, "❌ Error en respuesta de OpenAI API");
-            ESP_LOGE(TAG, "Respuesta: %s", body);
+            ESP_LOGE(TAG, "Respuesta: %.*s", resp->size, resp->data);
 
-            if (strstr(body, "invalid_api_key") != NULL ||
-                strstr(body, "incorrect_api_key") != NULL ||
-                strstr(body, "Unauthorized") != NULL)
+            if (strnstr(resp->data, "insufficient_quota", resp->size) != NULL)
+            {
+                ESP_LOGE(TAG, "🚫 Error de cuota detectado");
+                orchestrator_post_fatal_error();
+            }
+            else if (strnstr(resp->data, "invalid_api_key", resp->size) != NULL ||
+                     strnstr(resp->data, "incorrect_api_key", resp->size) != NULL ||
+                     strnstr(resp->data, "Unauthorized", resp->size) != NULL)
             {
                 ESP_LOGE(TAG, "🔑 Error de autenticación detectado - API Key inválida");
-
-                // Señalizar el error de API Key al orquestador
-                extern EventGroupHandle_t app_startup_event_group;
-                if (app_startup_event_group != NULL)
-                {
-                    xEventGroupSetBits(app_startup_event_group, WEBRTC_API_ERROR_BIT);
-                    xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
-                    ESP_LOGI(TAG, "✅ Bit de error de API señalizado");
-                }
-
-                // No almacenar esta respuesta como SDP válido
-                free(body);
-                return;
+                orchestrator_post_fatal_error();
+            }
+            else
+            {
+                ESP_LOGE(TAG, "❌ Otro rechazo de la API detectado");
+                orchestrator_post_fatal_error();
             }
 
-            free(body);
             return;
         }
-
-        free(body);
     }
 
     // ============================================================================

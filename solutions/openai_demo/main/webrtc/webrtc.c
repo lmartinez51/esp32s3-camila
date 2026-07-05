@@ -1449,47 +1449,130 @@ static class_t *build_execute_automation_trigger_class(void)
     return execute_trigger;
 }
 
-static class_t *build_emit_ir_command_class(void)
+static class_t *build_ir_get_devices_class(void)
 {
-    class_t *emit_ir = calloc(1, sizeof(class_t));
-    if (!emit_ir) return NULL;
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
+
+    parameters_t params = {
+        .type = "object",
+        .properties = NULL,
+        .properties_num = 0,
+        .required = NULL,
+        .required_num = 0,
+    };
+
+    cls->type = "function";
+    cls->name = "ir_get_devices";
+    cls->desc = "Retrieves a list of all currently saved IR devices and their associated buttons.";
+    cls->parameters = params;
+    cls->attr_list = NULL;
+    cls->attr_num = 0;
+
+    return cls;
+}
+
+static class_t *build_ir_learn_button_class(void)
+{
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
 
     static attribute_t properties[] = {
         {
-            .name = "device",
-            .desc = "The target device (e.g., 'tv', 'ac', 'soundbar').",
+            .name = "device_name",
+            .desc = "The target device (e.g., 'tv', 'ac').",
             .type = ATTRIBUTE_TYPE_STRING,
             .required = true,
         },
         {
-            .name = "action",
-            .desc = "The action to perform (e.g., 'power', 'vol_up', 'ch_down', 'mute').",
+            .name = "button_name",
+            .desc = "The button to learn (e.g., 'power', 'vol_up').",
             .type = ATTRIBUTE_TYPE_STRING,
             .required = true,
         },
     };
 
-    static const char *required[] = {"device", "action"};
-
-    const size_t properties_num = sizeof(properties) / sizeof(properties[0]);
-    const size_t required_num = sizeof(required) / sizeof(required[0]);
+    static const char *required[] = {"device_name", "button_name"};
 
     parameters_t params = {
         .type = "object",
         .properties = properties,
-        .properties_num = properties_num,
+        .properties_num = ELEMS(properties),
         .required = (char **)required,
-        .required_num = required_num,
+        .required_num = ELEMS(required),
     };
 
-    emit_ir->type = "function";
-    emit_ir->name = "emit_ir_command";
-    emit_ir->desc = "Emits an infrared (IR) command to control electronic devices.";
-    emit_ir->parameters = params;
-    emit_ir->attr_list = properties;
-    emit_ir->attr_num = properties_num;
+    cls->type = "function";
+    cls->name = "ir_learn_button";
+    cls->desc = "Arms the IR sniffer to learn a new button code from a physical remote.";
+    cls->parameters = params;
+    cls->attr_list = properties;
+    cls->attr_num = ELEMS(properties);
 
-    return emit_ir;
+    return cls;
+}
+
+static class_t *build_ir_transmit_command_class(void)
+{
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
+
+    static attribute_t properties[] = {
+        {
+            .name = "device_name",
+            .desc = "The target device (e.g., 'tv', 'ac').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+        {
+            .name = "button_name",
+            .desc = "The button to transmit (e.g., 'power', 'vol_up').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+    };
+
+    static const char *required[] = {"device_name", "button_name"};
+
+    parameters_t params = {
+        .type = "object",
+        .properties = properties,
+        .properties_num = ELEMS(properties),
+        .required = (char **)required,
+        .required_num = ELEMS(required),
+    };
+
+    cls->type = "function";
+    cls->name = "ir_transmit_command";
+    cls->desc = "Transmits a learned IR code from the database to control a device.";
+    cls->parameters = params;
+    cls->attr_list = properties;
+    cls->attr_num = ELEMS(properties);
+
+    return cls;
+}
+
+static class_t *build_ir_save_database_class(void)
+{
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
+
+    parameters_t params = {
+        .type = "object",
+        .properties = NULL,
+        .properties_num = 0,
+        .required = NULL,
+        .required_num = 0,
+    };
+
+    cls->type = "function";
+    cls->name = "ir_save_database";
+    cls->desc = "Saves all learned IR codes to persistent flash memory after programming is complete.";
+    cls->parameters = params;
+    cls->attr_list = NULL;
+    cls->attr_num = 0;
+
+    return cls;
 }
 
 static void add_class(class_t *cls)
@@ -1525,7 +1608,10 @@ static int build_classes(void)
     add_class(build_activate_mute_class());
     add_class(build_control_display_class());
     add_class(build_execute_automation_trigger_class());
-    add_class(build_emit_ir_command_class());
+    add_class(build_ir_learn_button_class());
+    add_class(build_ir_transmit_command_class());
+    add_class(build_ir_save_database_class());
+    add_class(build_ir_get_devices_class());
     build_once = true;
     return 0;
 }
@@ -2101,9 +2187,6 @@ static void activate_mute_task(void *arg)
     }
     vTaskDelay(pdMS_TO_TICKS(500)); // Delay to ensure chatbot's response is complete
     
-    // Físicamente apagar el micrófono (Hardware Halt) para eliminar el placebo
-    media_sys_mic_mute(true);
-
     // Delegate media control and UI to the central orchestrator
     orchestrator_post_mute_state(true);
 
@@ -2540,33 +2623,8 @@ static void automation_handler_task(void *arg)
             } else {
                 send_function_output(ctx->call_id, "{\"error\": \"Missing or invalid trigger parameter.\"}");
             }
-        } else if (strcmp(ctx->function_name, "emit_ir_command") == 0) {
-            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device");
-            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
-            if (cJSON_IsString(dev_item) && dev_item->valuestring && 
-                cJSON_IsString(act_item) && act_item->valuestring) {
-                esp_claw_rule_t *dummy_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (!dummy_rule) dummy_rule = malloc(sizeof(esp_claw_rule_t));
-                
-                if (dummy_rule) {
-                    memset(dummy_rule, 0, sizeof(esp_claw_rule_t));
-                    strlcpy(dummy_rule->call_id, ctx->call_id, sizeof(dummy_rule->call_id));
-                    strlcpy(dummy_rule->trigger, "SYS_CMD:IR_DIRECT", sizeof(dummy_rule->trigger));
-                    dummy_rule->num_actions = 1;
-                    snprintf(dummy_rule->actions[0].target, sizeof(dummy_rule->actions[0].target), "%s:%s", dev_item->valuestring, act_item->valuestring);
-                    
-                    if (esp_claw_send_rule(dummy_rule) != ESP_OK) {
-                        free(dummy_rule);
-                        send_function_output(ctx->call_id, "{\"error\": \"Lua system busy\"}");
-                    }
-                } else {
-                    send_function_output(ctx->call_id, "{\"error\": \"out of memory\"}");
-                }
-            } else {
-                ESP_LOGE(TAG, "Invalid IR arguments in JSON");
-                send_function_output(ctx->call_id, "{\"error\": \"Invalid arguments\"}");
-            }
         }
+
         
         if (args_root) cJSON_Delete(args_root);
     }
@@ -2770,11 +2828,46 @@ static int process_json(const char *json_data, int json_size)
                 }
                 break; // Procesada (o falló el argumento)
             }
-            else if (strcmp(iter->name, "execute_automation_trigger") == 0 ||
-                     strcmp(iter->name, "emit_ir_command") == 0)
+            else if (strcmp(iter->name, "execute_automation_trigger") == 0)
             {
                 start_automation_task(call_id, iter->name, arguments->valuestring);
                 break; // Procesada
+            }
+            else if (strcmp(iter->name, "ir_learn_button") == 0 ||
+                     strcmp(iter->name, "ir_save_database") == 0 ||
+                     strcmp(iter->name, "ir_get_devices") == 0 ||
+                     strcmp(iter->name, "ir_transmit_command") == 0)
+            {
+                esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
+                if (req) {
+                    if (call_id) {
+                        strlcpy(req->call_id, call_id, sizeof(req->call_id));
+                    }
+                    if (strcmp(iter->name, "ir_learn_button") == 0) {
+                        strlcpy(req->trigger, "LUA_TOOL_IR_LEARN", sizeof(req->trigger));
+                    } else if (strcmp(iter->name, "ir_save_database") == 0) {
+                        strlcpy(req->trigger, "LUA_TOOL_IR_SAVE", sizeof(req->trigger));
+                    } else if (strcmp(iter->name, "ir_get_devices") == 0) {
+                        strlcpy(req->trigger, "LUA_TOOL_IR_GET_DEVICES", sizeof(req->trigger));
+                    } else {
+                        strlcpy(req->trigger, "LUA_TOOL_IR_TRANSMIT", sizeof(req->trigger));
+                    }
+                    
+                    cJSON* device_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
+                    cJSON* button_item = cJSON_GetObjectItemCaseSensitive(args_root, "button_name");
+                    
+                    if (cJSON_IsString(device_item) && device_item->valuestring &&
+                        cJSON_IsString(button_item) && button_item->valuestring) {
+                        strlcpy(req->actions[0].target, device_item->valuestring, sizeof(req->actions[0].target));
+                        strlcpy(req->actions[1].target, button_item->valuestring, sizeof(req->actions[1].target));
+                        req->num_actions = 2;
+                    }
+                    esp_claw_send_rule(req);
+                    ESP_LOGI(TAG, "IR tool %s injected into IPC queue", iter->name);
+                } else {
+                    ESP_LOGE(TAG, "Failed to allocate memory for IR tool IPC payload");
+                }
+                break; // Processed
             }
             else
             {

@@ -28,6 +28,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
 #include "driver/spi_master.h"
+#include "driver/gpio.h"
 
 // Headers de FreeRTOS (mutex de acceso al panel)
 #include "freertos/FreeRTOS.h"
@@ -38,6 +39,8 @@
 #include <string.h> // Para memset()
 #include <stdlib.h> // Para malloc() y free()
 #include <stdio.h>
+
+
 
 static const char *TAG = "UI";
 esp_lcd_panel_handle_t g_panel_handle = NULL;
@@ -406,6 +409,7 @@ esp_err_t ui_init(void)
     }
 
     const bsp_display_config_t disp_cfg = {.max_transfer_sz = BSP_LCD_H_RES * 100 * sizeof(uint16_t)};
+
     esp_err_t err = bsp_display_new(&disp_cfg, &g_panel_handle, &g_io_handle);
     if (err != ESP_OK)
     {
@@ -731,9 +735,13 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
     {
         char_spacing = CHAR_SPACING_SCALE_3X;
     }
-    else
+    else if (scale == 2)
     {
         char_spacing = CHAR_SPACING_SCALE_2X;
+    }
+    else
+    {
+        char_spacing = CHAR_SPACING_SCALE_1X;
     }
 
     // Calcular dimensiones totales del texto
@@ -1584,14 +1592,33 @@ void ui_show_status_message(const char *message, uint16_t color)
     if (num_chars == 0)
         return;
 
+    int32_t safe_h_res = (int32_t)BSP_LCD_H_RES;
     int scale = 2;
-    int online_text_y_center = (BSP_LCD_V_RES - (CHAR_HEIGHT * scale)) / 2;
-    int online_text_y = online_text_y_center + (CHAR_HEIGHT * scale) + 12;
-    int online_text_height = CHAR_HEIGHT * scale;
+    int char_spacing = CHAR_SPACING_SCALE_2X;
+    int32_t status_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+
+    // Dynamic Downscale: prevent text from spilling out of bounds
+    if (status_width >= (safe_h_res - 12))
+    {
+        scale = 1;
+        char_spacing = CHAR_SPACING_SCALE_1X;
+        status_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+    }
+
+    // Keep vertical layout anchored to scale=2 so it doesn't jump
+    int layout_scale = 2;
+    int online_text_y_center = (BSP_LCD_V_RES - (CHAR_HEIGHT * layout_scale)) / 2;
+    int online_text_y = online_text_y_center + (CHAR_HEIGHT * layout_scale) + 12;
+    int online_text_height = CHAR_HEIGHT * layout_scale;
     int status_y = online_text_y + online_text_height + 20;
 
-    int status_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int status_x = (BSP_LCD_H_RES - status_width) / 2;
+    int32_t status_x = (safe_h_res - status_width) / 2;
+    // Safety Clamp: strictly signed math comparison
+    if (status_x < 6)
+    {
+        status_x = 6;
+    }
+    
     int status_height = CHAR_HEIGHT * scale;
 
     // ⭐ ÁREA DE LIMPIEZA: TODO EL ANCHO (respetando bordes de la pantalla)
@@ -1607,6 +1634,8 @@ void ui_show_status_message(const char *message, uint16_t color)
 
     display_text(status_x, status_y, char_map, num_chars, color, scale);
 }
+
+
 
 void ui_clear_status_message(void)
 {

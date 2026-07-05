@@ -205,6 +205,7 @@ typedef enum
     STATE_ACTIVE,
     STATE_AUTO_SLEEPING,
     STATE_STOPPING_WEBRTC,
+    STATE_FATAL_ERROR,
 } orchestrator_state_t;
 #define ENABLE_ONE_TIME_PROVISIONING 0 // Pon esto en 0 para deshabilitarlo después del primer arranque
 
@@ -694,6 +695,8 @@ static const char *orchestrator_state_name(orchestrator_state_t state)
         return "STATE_AUTO_SLEEPING";
     case STATE_STOPPING_WEBRTC:
         return "STATE_STOPPING_WEBRTC";
+    case STATE_FATAL_ERROR:
+        return "STATE_FATAL_ERROR";
     default:
         return "STATE_UNKNOWN";
     }
@@ -755,6 +758,8 @@ static const char *orchestrator_event_name(orchestrator_event_t event)
         return "ORCH_EVENT_IDLE_ALERT_START";
     case ORCH_EVENT_IDLE_ALERT_END:
         return "ORCH_EVENT_IDLE_ALERT_END";
+    case ORCH_EVENT_FATAL_ERROR:
+        return "ORCH_EVENT_FATAL_ERROR";
     default:
         return "ORCH_EVENT_UNKNOWN";
     }
@@ -785,6 +790,26 @@ void orchestrator_post_event(orchestrator_event_t event)
                    pdMS_TO_TICKS(ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS)) != pdTRUE)
     {
         ESP_LOGW(TAG, "Orchestrator queue blocked; dropping %s", orchestrator_event_name(event));
+    }
+}
+
+void orchestrator_post_fatal_error(void)
+{
+    orchestrator_event_msg_t msg = {
+        .type = ORCH_EVENT_FATAL_ERROR,
+    };
+
+    if (s_orchestrator_event_queue == NULL)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue not ready; dropping fatal error");
+        return;
+    }
+
+    if (xQueueSend(s_orchestrator_event_queue,
+                   &msg,
+                   pdMS_TO_TICKS(ORCHESTRATOR_EVENT_SEND_TIMEOUT_MS)) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue blocked; dropping fatal error");
     }
 }
 
@@ -1529,6 +1554,14 @@ static void orchestrator_ignore_event(orchestrator_state_t state, orchestrator_e
              orchestrator_state_name(state));
 }
 
+static void fatal_error_timer_cb(void *arg)
+{
+    ESP_LOGE(TAG, "Fatal error 15-minute timeout reached. Rebooting system now.");
+    esp_restart();
+}
+
+
+
 /**
  * @brief Orchestrator task that manages the state machine for WiFi, motion detection, identity validation, and WebRTC session management.
  *
@@ -1584,6 +1617,12 @@ static void app_startup_orchestrator_task(void *param)
         ESP_LOGI(TAG, "Orchestrator event: %s while in %s",
                  orchestrator_event_name(event),
                  orchestrator_state_name(state));
+
+        // GLOBAL FATAL ERROR INTERCEPT
+        if (event == ORCH_EVENT_FATAL_ERROR && state != STATE_FATAL_ERROR)
+        {
+            orchestrator_enter_state(&state, STATE_FATAL_ERROR);
+        }
 
         if (s_aht30_present && (event == ORCH_EVENT_WEBRTC_CONNECTED || event == ORCH_EVENT_WEBRTC_DISCONNECTED)) {
             poll_and_draw_temperature();
@@ -1797,17 +1836,17 @@ static void app_startup_orchestrator_task(void *param)
                 // Synchronize UI Canvas State & Hardware Mic
                 if (event == ORCH_EVENT_MIC_MUTED)
                 {
-                    media_sys_mic_mute(true); // Físicamente apagar el micrófono (Modo Normal)
-                    mute_handler_start_idle_timer();
                     ui_simi_set_state(SIMI_STATE_MUTED);
                     ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
+                    media_sys_mic_mute(true); // Físicamente apagar el micrófono (Modo Normal)
+                    mute_handler_start_idle_timer();
                 }
                 else
                 {
-                    media_sys_mic_mute(false); // Reactivar micrófono físicamente (Modo Normal)
-                    mute_handler_stop_idle_timer();
                     ui_simi_set_state(SIMI_STATE_LISTENING);
                     ui_clear_status_message();
+                    media_sys_mic_mute(false); // Reactivar micrófono físicamente (Modo Normal)
+                    mute_handler_stop_idle_timer();
                     webrtc_post_action(WEBRTC_ACTION_NOTIFY_UNMUTE);
                 }
             }
@@ -1887,6 +1926,46 @@ static void app_startup_orchestrator_task(void *param)
             }
             else
             {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_FATAL_ERROR:
+            if (event == ORCH_EVENT_FATAL_ERROR)
+            {
+
+
+                ESP_LOGE(TAG, "Executing Fatal Error Teardown...");
+                
+                // 1. Update UI FIRST
+                // Send text through the normal pipeline while Simi is ALIVE (triggers Delegation Trap)
+                ui_show_status_message("API Error 429", COLOR_RED_BGR565);
+                
+                // Allow the Simi task time to render and flush the overlay frame to the LCD
+                vTaskDelay(pdMS_TO_TICKS(250));
+                
+                // Kill the animation task, freezing the overlay frame permanently on the screen
+                ui_simi_stop();
+
+                // 2. Forcefully stop hardware SECOND
+                radar_hal_disable();
+                csi_handler_stop();
+                media_sys_teardown();
+
+
+                // 3. Safe Timeout
+                esp_timer_create_args_t timer_args = {
+                    .callback = &fatal_error_timer_cb,
+                    .name = "fatal_reboot_timer"
+                };
+                esp_timer_handle_t reboot_timer;
+                if (esp_timer_create(&timer_args, &reboot_timer) == ESP_OK) {
+                    esp_timer_start_once(reboot_timer, 900000000ULL); // 15 mins (microseconds)
+                }
+            }
+            else
+            {
+                // Total Isolation: Ignore all other incoming events
                 orchestrator_ignore_event(state, event);
             }
             break;

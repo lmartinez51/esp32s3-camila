@@ -14,13 +14,34 @@
 #include "ir_action_map.h"
 #include "app_events.h"
 #include "ui/simi.h"
+#include "esp_claw_init.h"
 
 static const char *TAG = "IR_SNIFFER";
 
-// Pairing State Machine
-static bool s_is_pairing = false;
-static ir_action_t s_pairing_target = IR_ACTION_NONE;
-static TimerHandle_t s_pairing_timer = NULL;
+
+// Mode State
+static ir_sniffer_mode_t s_ir_mode = IR_MODE_RECEIVER;
+static TimerHandle_t s_learning_timer = NULL;
+
+static void ir_learning_timeout_cb(TimerHandle_t xTimer) {
+    if (s_ir_mode == IR_MODE_LEARNING) {
+        s_ir_mode = IR_MODE_RECEIVER;
+        ESP_LOGW(TAG, "Learning mode timed out! Reverting to RECEIVER mode.");
+        
+        esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
+        if (req) {
+            strlcpy(req->trigger, LUA_CMD_IR_TIMEOUT, sizeof(req->trigger));
+            esp_claw_send_rule(req);
+        }
+    }
+}
+
+void ir_sniffer_start_learning(void) {
+    if (!s_learning_timer) return;
+    s_ir_mode = IR_MODE_LEARNING;
+    xTimerReset(s_learning_timer, 0);
+    ESP_LOGI(TAG, "IR Sniffer Mode changed to: IR_MODE_LEARNING (15s timeout)");
+}
 
 #define IR_RX_GPIO_NUM 38
 #define IR_TX_GPIO_NUM 39
@@ -85,24 +106,17 @@ static void ir_rx_task(void *arg) {
                     }
                     ESP_LOGW(TAG, "✅ Decoded Hex: 0x%08lX", (unsigned long)scan_code);
                     
-                    if (s_is_pairing) {
-                        xTimerStop(s_pairing_timer, 0);
-                        esp_err_t pair_err = ir_map_add_code(s_pairing_target, scan_code);
-                        if (pair_err == ESP_OK) {
-                            ESP_LOGW(TAG, "✅ Pairing Success! Code 0x%08lX mapped to action %d.", (unsigned long)scan_code, s_pairing_target);
-                            // TODO: Dispatch ORCH_EVENT_IR_PAIRING_SUCCESS to Orchestrator
-                        } else {
-                            ESP_LOGE(TAG, "❌ Pairing Failed! NVS/Cache Error: %s", esp_err_to_name(pair_err));
-                        }
+                    if (s_ir_mode == IR_MODE_LEARNING) {
+                        xTimerStop(s_learning_timer, 0);
+                        s_ir_mode = IR_MODE_RECEIVER;
+                        ESP_LOGI(TAG, "✅ Learned Code: 0x%08lX. Reverting to RECEIVER.", (unsigned long)scan_code);
                         
-                        if (s_pairing_target < IR_ACTION_MAX - 1) {
-                            s_pairing_target++;
-                            xTimerReset(s_pairing_timer, 0);
-                            ESP_LOGW(TAG, "Proceeding to next target: %d. Waiting for IR signal...", s_pairing_target);
-                        } else {
-                            s_is_pairing = false;
-                            s_pairing_target = IR_ACTION_NONE;
-                            ESP_LOGW(TAG, "Pairing sequence completed.");
+                        esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
+                        if (req) {
+                            strlcpy(req->trigger, LUA_CMD_IR_LEARNED, sizeof(req->trigger));
+                            req->num_actions = 1;
+                            snprintf(req->actions[0].target, sizeof(req->actions[0].target), "%lu", (unsigned long)scan_code);
+                            esp_claw_send_rule(req);
                         }
                     } else {
                         ir_action_t action = ir_map_lookup(scan_code);
@@ -199,24 +213,7 @@ esp_err_t ir_transmitter_send_raw(uint32_t hex_code) {
     }
 }
 
-static void ir_pairing_timeout_cb(TimerHandle_t xTimer) {
-    if (s_is_pairing) {
-        s_is_pairing = false;
-        s_pairing_target = IR_ACTION_NONE;
-        ESP_LOGW(TAG, "Pairing mode timed out! No IR code received in 30 seconds.");
-        // TODO: Dispatch ORCH_EVENT_IR_PAIRING_TIMEOUT to Orchestrator
-    }
-}
 
-void ir_sniffer_enter_pairing_mode(ir_action_t target_action) {
-    if (!s_pairing_timer) return;
-    
-    s_pairing_target = target_action;
-    s_is_pairing = true;
-    xTimerReset(s_pairing_timer, 0); // Starts or resets the 30-second timer
-    
-    ESP_LOGI(TAG, "Intercept Mode ACTIVE. Waiting up to 30s for IR signal to map action %d...", target_action);
-}
 
 esp_err_t ir_sniffer_init(void) {
 
@@ -283,8 +280,9 @@ esp_err_t ir_sniffer_init(void) {
         rmt_enable(tx_chan);
     }
 
-    // Initialize the 30-second intercept timeout timer (one-shot)
-    s_pairing_timer = xTimerCreate("ir_pair_tmr", pdMS_TO_TICKS(30000), pdFALSE, NULL, ir_pairing_timeout_cb);
+
+    // Initialize the 15-second learning timeout timer
+    s_learning_timer = xTimerCreate("ir_learn_tmr", pdMS_TO_TICKS(15000), pdFALSE, NULL, ir_learning_timeout_cb);
 
     // Create the diagnostic background sniffer task with increased stack to prevent overflows.
     if (xTaskCreate(ir_rx_task, "ir_rx_task", 4096, NULL, tskIDLE_PRIORITY + 2, NULL) != pdPASS) {

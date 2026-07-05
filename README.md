@@ -144,10 +144,12 @@ You can control various device features simply by talking to Dr. Simi. Here are 
   - *"Doctor, póngase la playera de la selección."* (Context: "Doc, put on the national team jersey.")
   - *"Doctor, ponte la camisa del Barça."* (Context: "Doc, put on the FC Barcelona jersey.")
   - **Action**: Triggers `change_simi_outfit`.
-- **Control Electronic Devices**:
+- **Control Electronic Devices (IR)**:
   - *"Doctor, enciende la tele."* (Context: "Doc, turn on the TV.")
-  - *"Doctor, sube el volumen."* (Context: "Doc, turn the volume up.")
-  - **Action**: Triggers `emit_ir_command`.
+  - *"Doctor, apréndete el botón de encendido de la tele."* (Context: "Doc, learn the TV power button.")
+  - *"Doctor, guarda los códigos infrarrojos."* (Context: "Doc, save the IR codes.")
+  - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"* (Context: "Doc, what IR devices do you have registered?")
+  - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, `ir_save_database`, or `ir_get_devices`.
 
 ---
 

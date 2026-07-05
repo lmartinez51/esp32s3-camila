@@ -74,6 +74,8 @@ typedef struct
 static capture_system_t capture_sys;
 static player_system_t player_sys;
 
+
+
 void media_sys_teardown(void)
 {
     if (capture_sys.capture_handle == NULL && player_sys.player == NULL &&
@@ -389,7 +391,10 @@ bool media_sys_mic_mute(bool mute)
             ESP_LOGE(TAG, "Fallo esp_capture_stop: %d", ret);
             return false;
         }
-        capture_sys.mic_muted = true;
+        else
+        {
+            capture_sys.mic_muted = true;
+        }
     }
     else
     {
