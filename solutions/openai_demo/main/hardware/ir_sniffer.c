@@ -115,7 +115,7 @@ static void ir_rx_task(void *arg) {
                         if (req) {
                             strlcpy(req->trigger, LUA_CMD_IR_LEARNED, sizeof(req->trigger));
                             req->num_actions = 1;
-                            snprintf(req->actions[0].target, sizeof(req->actions[0].target), "%lu", (unsigned long)scan_code);
+                            snprintf(req->actions[0].target, sizeof(req->actions[0].target), "0x%08lX", (unsigned long)scan_code);
                             esp_claw_send_rule(req);
                         }
                     } else {

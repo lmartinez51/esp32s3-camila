@@ -2066,68 +2066,6 @@ void app_main(void)
     // --- PRE-BOOT LittleFS BOOTSTRAPPER ---
     init_nvs(); // Initialize NVS first for partition tables
     
-    esp_vfs_littlefs_conf_t lfs_conf = {
-        .base_path = "/littlefs",
-        .partition_label = "littlefs",
-        .format_if_mount_failed = true,
-        .dont_mount = false,
-    };
-    if (esp_vfs_littlefs_register(&lfs_conf) == ESP_OK) {
-        FILE *f = fopen("/littlefs/init.lua", "r");
-        if (f == NULL) {
-            ESP_LOGW(TAG, "Pre-boot: init.lua not found. Auto-generating minimal skeleton...");
-            f = fopen("/littlefs/init.lua", "w");
-            if (f != NULL) {
-                const char* engine_lua = 
-                    "-- Automation Engine init.lua\n"
-                    "rules_db = rules_db or {}\n"
-                    "function register_rule(rule_table)\n"
-                    "    if type(rule_table) ~= \"table\" then return end\n"
-                    "    local call_id = rule_table.call_id or \"\"\n"
-                    "    local trigger = rule_table.trigger or \"\"\n"
-                    "    \n"
-                    "    if trigger == \"SYS_CMD:LIST\" then\n"
-                    "        local list_json = \"[\"\n"
-                    "        local first = true\n"
-                    "        for k, v in pairs(rules_db) do\n"
-                    "            if not first then list_json = list_json .. \", \" end\n"
-                    "            list_json = list_json .. \"{\\\"trigger\\\": \\\"\" .. tostring(k) .. \"\\\"}\"\n"
-                    "            first = false\n"
-                    "        end\n"
-                    "        list_json = list_json .. \"]\"\n"
-                    "        c_send_webrtc_response(call_id, list_json)\n"
-                    "        return\n"
-                    "    elseif trigger == \"SYS_CMD:DELETE\" then\n"
-                    "        local target = rule_table.actions and rule_table.actions[1] and rule_table.actions[1].target\n"
-                    "        if target and rules_db[target] then\n"
-                    "            rules_db[target] = nil\n"
-                    "            c_save_rules()\n"
-                    "            c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"deleted\\\"}\")\n"
-                    "        else\n"
-                    "            c_send_webrtc_response(call_id, \"{\\\"error\\\": \\\"not found\\\"}\")\n"
-                    "        end\n"
-                    "        return\n"
-                    "    elseif trigger == \"SYS_CMD:EXECUTE\" or trigger == \"SYS_CMD:IR_DIRECT\" then\n"
-                    "        c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"executed\\\"}\")\n"
-                    "        return\n"
-                    "    end\n"
-                    "    \n"
-                    "    -- Standard Rule Creation\n"
-                    "    rules_db[trigger] = rule_table\n"
-                    "    c_save_rules()\n"
-                    "    c_send_webrtc_response(call_id, \"{\\\"status\\\":\\\"success\\\", \\\"message\\\":\\\"Rule saved\\\"}\")\n"
-                    "end\n";
-                fprintf(f, "%s", engine_lua);
-                fclose(f);
-                ESP_LOGI(TAG, "Pre-boot: Minimal init.lua written successfully.");
-            }
-        } else {
-            fclose(f);
-        }
-        esp_vfs_littlefs_unregister("littlefs");
-        ESP_LOGI(TAG, "Pre-boot: LittleFS formatting and skeleton generation complete. VFS unmounted.");
-    }
-    // ---------------------------------------
 
     // 1) Inicializa la interfaz de usuario (pantalla LCD)
     esp_err_t err = ui_init();

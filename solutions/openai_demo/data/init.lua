@@ -1,5 +1,6 @@
 -- IR Database (RAM Table)
 ir_db = ir_db or {}
+rules_db = rules_db or {}
 
 -- Target for current learning session
 ir_learning_target_device = nil
@@ -68,7 +69,7 @@ function register_rule(rule)
     -- Handle IR Learning Mode Events
     if rule.trigger == "LUA_CMD_IR_LEARNED" then
         if rule.actions and rule.actions[1] then
-            local hex_code = tonumber(rule.actions[1])
+            local hex_code = rule.actions[1]
             
             if ir_learning_target_device and ir_learning_target_button then
                 local is_duplicate = false
@@ -94,10 +95,13 @@ function register_rule(rule)
                 else
                     -- Update active RAM table
                     ir_db[ir_learning_target_device][ir_learning_target_button] = hex_code
+                    if ir and ir.save_db then 
+                        ir.save_db() 
+                    end
                     print("LEARNED: " .. ir_learning_target_device .. "." .. ir_learning_target_button .. " -> " .. tostring(hex_code))
                     
                     if c_inject_webrtc_message then
-                        c_inject_webrtc_message("System Context: Code successfully captured. Ask the user if they want to test it by transmitting it back, or save the database.")
+                        c_inject_webrtc_message("System Context: Code successfully captured and automatically saved to the hardware database. Instruction: Explicitly confirm to the user that the code is already permanently saved, and then ask if they want to test it.")
                     end
                 end
                 
@@ -159,14 +163,6 @@ function register_rule(rule)
         end
         return
 
-    elseif rule.trigger == "LUA_TOOL_IR_SAVE" then
-        if ir.save_db then
-            ir.save_db()
-        end
-        if c_send_webrtc_response then
-            c_send_webrtc_response(rule.call_id, "Success: Database saved to flash.")
-        end
-        return
 
     elseif rule.trigger == "LUA_TOOL_IR_GET_DEVICES" then
         local response = ""
@@ -198,9 +194,75 @@ function register_rule(rule)
             c_send_webrtc_response(rule.call_id, response)
         end
         return
+    elseif rule.trigger == "SYS_CMD:LIST" then
+        rules_db = rules_db or {}
+        local response = ""
+        local has_rules = false
+        for trigger, stored_rule in pairs(rules_db) do
+            if string.sub(trigger, 1, 8) ~= "SYS_CMD:" then
+                has_rules = true
+                response = response .. "- Trigger: " .. trigger
+                if stored_rule.actions and #stored_rule.actions > 0 then
+                    response = response .. " | Actions: "
+                    for i, act in ipairs(stored_rule.actions) do
+                        response = response .. "[" .. tostring(act) .. "] "
+                    end
+                end
+                response = response .. "\n"
+            end
+        end
+        if not has_rules then
+            response = "No automation rules exist."
+        end
+        if c_send_webrtc_response then
+            c_send_webrtc_response(rule.call_id, response)
+        end
+        return
+    elseif rule.trigger == "SYS_CMD:DELETE" then
+        local target = rule.actions and rule.actions[1]
+        local response = ""
+        if not target then
+            response = "Error: No target trigger specified for deletion."
+        else
+            rules_db = rules_db or {}
+            if rules_db[target] then
+                rules_db[target] = nil
+                if c_save_rules then c_save_rules() end
+                response = "Rule deleted successfully."
+            else
+                response = "Rule not found."
+            end
+        end
+        if c_send_webrtc_response then
+            c_send_webrtc_response(rule.call_id, response)
+        end
+        return
     end
 
     -- Process normal rules (legacy stub for existing IPC architecture)
+    print("DEBUG_LUA: [1] Entering legacy stub for rule creation.")
     rules_db = rules_db or {}
     rules_db[rule.trigger] = rule
+    print("DEBUG_LUA: [2] Rule added to rules_db RAM. Trigger: " .. tostring(rule.trigger))
+    
+    if c_save_rules then
+        print("DEBUG_LUA: [3] c_save_rules binding found. Executing save...")
+        c_save_rules()
+        print("DEBUG_LUA: [4] c_save_rules execution completed.")
+    else
+        print("DEBUG_LUA: [ERROR] c_save_rules binding NOT found.")
+    end
+    
+    if c_send_webrtc_response then
+        print("DEBUG_LUA: [5] c_send_webrtc_response binding found.")
+        if rule.call_id then
+            print("DEBUG_LUA: [6] rule.call_id is present: " .. tostring(rule.call_id))
+            c_send_webrtc_response(rule.call_id, "Rule created and saved successfully.")
+            print("DEBUG_LUA: [7] WebRTC response payload sent.")
+        else
+            print("DEBUG_LUA: [ERROR] rule.call_id is missing or nil in Lua!")
+        end
+    else
+        print("DEBUG_LUA: [ERROR] c_send_webrtc_response binding NOT found.")
+    end
 end

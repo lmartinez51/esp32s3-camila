@@ -143,9 +143,8 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
 - **Controlar Dispositivos Electrónicos (IR)**:
   - *"Doctor, enciende la tele."*
   - *"Doctor, apréndete el botón de encendido de la tele."*
-  - *"Doctor, guarda los códigos infrarrojos."*
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"*
-  - **Acción**: Ejecuta `ir_transmit_command`, `ir_learn_button`, `ir_save_database` o `ir_get_devices`.
+  - **Acción**: Ejecuta `ir_transmit_command`, `ir_learn_button` o `ir_get_devices`.
 
 ---
 

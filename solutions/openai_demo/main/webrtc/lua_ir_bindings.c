@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const char *TAG = "LUA_IR";
 
@@ -19,7 +20,8 @@ static int l_ir_start_learning(lua_State *L) {
 
 static int l_ir_send(lua_State *L) {
     ESP_LOGI("ESP_CLAW_ISO", "LUA binding entered");
-    uint32_t hex = (uint32_t)luaL_checkinteger(L, 1);
+    const char *hex_str = luaL_checkstring(L, 1);
+    uint32_t hex = (uint32_t)strtoul(hex_str, NULL, 16);
     esp_err_t err = ir_transmitter_send_raw(hex);
     ESP_LOGI("ESP_CLAW_ISO", "LUA binding exit: %s", esp_err_to_name(err));
     lua_pushboolean(L, err == ESP_OK);
@@ -70,6 +72,7 @@ static int l_ir_write_db(lua_State *L) {
     
     size_t len = strlen(content);
     size_t written = fwrite(content, 1, len, f);
+    fsync(fileno(f));
     fclose(f);
     
     lua_pushboolean(L, written == len);

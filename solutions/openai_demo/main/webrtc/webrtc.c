@@ -1552,28 +1552,6 @@ static class_t *build_ir_transmit_command_class(void)
     return cls;
 }
 
-static class_t *build_ir_save_database_class(void)
-{
-    class_t *cls = calloc(1, sizeof(class_t));
-    if (!cls) return NULL;
-
-    parameters_t params = {
-        .type = "object",
-        .properties = NULL,
-        .properties_num = 0,
-        .required = NULL,
-        .required_num = 0,
-    };
-
-    cls->type = "function";
-    cls->name = "ir_save_database";
-    cls->desc = "Saves all learned IR codes to persistent flash memory after programming is complete.";
-    cls->parameters = params;
-    cls->attr_list = NULL;
-    cls->attr_num = 0;
-
-    return cls;
-}
 
 static void add_class(class_t *cls)
 {
@@ -1610,7 +1588,6 @@ static int build_classes(void)
     add_class(build_execute_automation_trigger_class());
     add_class(build_ir_learn_button_class());
     add_class(build_ir_transmit_command_class());
-    add_class(build_ir_save_database_class());
     add_class(build_ir_get_devices_class());
     build_once = true;
     return 0;
@@ -2629,10 +2606,6 @@ static void automation_handler_task(void *arg)
         if (args_root) cJSON_Delete(args_root);
     }
     
-    // Allow time for JSON output to process and notify OpenAI
-    vTaskDelay(pdMS_TO_TICKS(150));
-    sendEvent("response.create", NULL);
-
     if (ctx->args_json) free(ctx->args_json);
     free(ctx);
     vTaskDelete(NULL);
@@ -2834,7 +2807,6 @@ static int process_json(const char *json_data, int json_size)
                 break; // Procesada
             }
             else if (strcmp(iter->name, "ir_learn_button") == 0 ||
-                     strcmp(iter->name, "ir_save_database") == 0 ||
                      strcmp(iter->name, "ir_get_devices") == 0 ||
                      strcmp(iter->name, "ir_transmit_command") == 0)
             {
@@ -2845,8 +2817,6 @@ static int process_json(const char *json_data, int json_size)
                     }
                     if (strcmp(iter->name, "ir_learn_button") == 0) {
                         strlcpy(req->trigger, "LUA_TOOL_IR_LEARN", sizeof(req->trigger));
-                    } else if (strcmp(iter->name, "ir_save_database") == 0) {
-                        strlcpy(req->trigger, "LUA_TOOL_IR_SAVE", sizeof(req->trigger));
                     } else if (strcmp(iter->name, "ir_get_devices") == 0) {
                         strlcpy(req->trigger, "LUA_TOOL_IR_GET_DEVICES", sizeof(req->trigger));
                     } else {
