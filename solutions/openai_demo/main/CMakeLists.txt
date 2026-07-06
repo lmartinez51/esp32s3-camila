@@ -1,6 +1,11 @@
 idf_component_register(
     SRCS
         "core/main.c"
+        "core/sensor_dock.c"
+        "core/orchestrator_helpers.c"
+        "core/orchestrator_tasks.c"
+        "core/orchestrator_vigilante.c"
+        "core/orchestrator_fsm.c"
         "core/lua_benchmark.c"
         "core/esp_claw_init.c"
 
