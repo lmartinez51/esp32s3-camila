@@ -144,6 +144,7 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
   - *"Doctor, enciende la tele."*
   - *"Doctor, apréndete el botón de encendido de la tele."*
   - *"Doctor, borra la tele de tus registros."*
+  - *"Doctor, borra el botón de encendido de la tele."*
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"*
   - **Acción**: Ejecuta `ir_transmit_command`, `ir_learn_button`, `ir_delete_device` o `ir_get_devices`.
 
