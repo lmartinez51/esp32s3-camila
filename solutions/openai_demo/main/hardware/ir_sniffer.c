@@ -22,24 +22,79 @@ static const char *TAG = "IR_SNIFFER";
 // Mode State
 static ir_sniffer_mode_t s_ir_mode = IR_MODE_RECEIVER;
 static TimerHandle_t s_learning_timer = NULL;
+static int s_learning_remaining_seconds = 15;
+
+// Spinlock for protecting state variable transitions across the Tmr Svc task
+// (ir_learning_timeout_cb) and the lua_worker task (ir_sniffer_start_learning).
+// portMUX_TYPE spinlocks are safe in timer callbacks; they do NOT block.
+static portMUX_TYPE s_ir_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+// Deferred UI flags removed: using direct try-lock instead.
 
 static void ir_learning_timeout_cb(TimerHandle_t xTimer) {
+    // ── Read current state under spinlock (no blocking allowed here) ──────────
+    taskENTER_CRITICAL(&s_ir_spinlock);
+    bool in_learning = (s_ir_mode == IR_MODE_LEARNING);
+    taskEXIT_CRITICAL(&s_ir_spinlock);
+
+    if (!in_learning) return;
+
+    // ── Decrement the countdown ───────────────────────────────────────────────
+    taskENTER_CRITICAL(&s_ir_spinlock);
+    if (s_learning_remaining_seconds > 0) {
+        s_learning_remaining_seconds--;
+    }
+    int remaining = s_learning_remaining_seconds;
+    taskEXIT_CRITICAL(&s_ir_spinlock);
+
+    if (remaining > 0) {
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "Waiting: %ds", remaining);
+        ui_simi_try_set_arbiter_slot(1, buffer); // Safe try-lock, zero block time
+        return;
+    }
+
+    // ── Timeout reached: transition state under spinlock ─────────────────────
+    bool did_timeout = false;
+    taskENTER_CRITICAL(&s_ir_spinlock);
     if (s_ir_mode == IR_MODE_LEARNING) {
         s_ir_mode = IR_MODE_RECEIVER;
-        ESP_LOGW(TAG, "Learning mode timed out! Reverting to RECEIVER mode.");
+        did_timeout = true;
+    }
+    taskEXIT_CRITICAL(&s_ir_spinlock);
+
+    if (did_timeout) {
+        ui_simi_try_set_arbiter_slot(1, ""); // Clear immediately
         
+        xTimerStop(s_learning_timer, 0); 
+        ESP_LOGW(TAG, "Learning mode timed out! Reverting to RECEIVER mode.");
+
         esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
         if (req) {
             strlcpy(req->trigger, LUA_CMD_IR_TIMEOUT, sizeof(req->trigger));
-            esp_claw_send_rule(req);
+            if (esp_claw_send_rule(req) != ESP_OK) {
+                free(req);
+            }
         }
     }
 }
 
 void ir_sniffer_start_learning(void) {
     if (!s_learning_timer) return;
+
+    // ── Transition state under spinlock ──────────────────────────────────────
+    // This prevents the timeout callback from racing against this re-arm and
+    // immediately overwriting the new IR_MODE_LEARNING state back to RECEIVER.
+    taskENTER_CRITICAL(&s_ir_spinlock);
     s_ir_mode = IR_MODE_LEARNING;
-    xTimerReset(s_learning_timer, 0);
+    s_learning_remaining_seconds = 15;
+    taskEXIT_CRITICAL(&s_ir_spinlock);
+
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Waiting: %ds", 15);
+    ui_simi_set_arbiter_slot(1, buffer);
+
+    xTimerReset(s_learning_timer, 0); // Reset timer if already running; start if not.
     ESP_LOGI(TAG, "IR Sniffer Mode changed to: IR_MODE_LEARNING (15s timeout)");
 }
 
@@ -107,16 +162,28 @@ static void ir_rx_task(void *arg) {
                     ESP_LOGW(TAG, "✅ Decoded Hex: 0x%08lX", (unsigned long)scan_code);
                     
                     if (s_ir_mode == IR_MODE_LEARNING) {
-                        xTimerStop(s_learning_timer, 0);
-                        s_ir_mode = IR_MODE_RECEIVER;
-                        ESP_LOGI(TAG, "✅ Learned Code: 0x%08lX. Reverting to RECEIVER.", (unsigned long)scan_code);
-                        
-                        esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
-                        if (req) {
-                            strlcpy(req->trigger, LUA_CMD_IR_LEARNED, sizeof(req->trigger));
-                            req->num_actions = 1;
-                            snprintf(req->actions[0].target, sizeof(req->actions[0].target), "0x%08lX", (unsigned long)scan_code);
-                            esp_claw_send_rule(req);
+                        bool timer_needs_stop = false;
+                        taskENTER_CRITICAL(&s_ir_spinlock);
+                        if (s_ir_mode == IR_MODE_LEARNING) {
+                            s_ir_mode = IR_MODE_RECEIVER;
+                            timer_needs_stop = true;
+                        }
+                        taskEXIT_CRITICAL(&s_ir_spinlock);
+
+                        if (timer_needs_stop) {
+                            xTimerStop(s_learning_timer, pdMS_TO_TICKS(10));
+                            ui_simi_set_arbiter_slot(1, ""); // Clear slot on success
+                            ESP_LOGI(TAG, "✅ Learned Code: 0x%08lX. Reverting to RECEIVER.", (unsigned long)scan_code);
+                            
+                            esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
+                            if (req) {
+                                strlcpy(req->trigger, LUA_CMD_IR_LEARNED, sizeof(req->trigger));
+                                req->num_actions = 1;
+                                snprintf(req->actions[0].target, sizeof(req->actions[0].target), "0x%08lX", (unsigned long)scan_code);
+                                if (esp_claw_send_rule(req) != ESP_OK) {
+                                    free(req);
+                                }
+                            }
                         }
                     } else {
                         ir_action_t action = ir_map_lookup(scan_code);
@@ -281,8 +348,8 @@ esp_err_t ir_sniffer_init(void) {
     }
 
 
-    // Initialize the 15-second learning timeout timer
-    s_learning_timer = xTimerCreate("ir_learn_tmr", pdMS_TO_TICKS(15000), pdFALSE, NULL, ir_learning_timeout_cb);
+    // Initialize the 1-second learning timeout timer
+    s_learning_timer = xTimerCreate("ir_learn_tmr", pdMS_TO_TICKS(1000), pdTRUE, NULL, ir_learning_timeout_cb);
 
     // Create the diagnostic background sniffer task with increased stack to prevent overflows.
     if (xTaskCreate(ir_rx_task, "ir_rx_task", 4096, NULL, tskIDLE_PRIORITY + 2, NULL) != pdPASS) {

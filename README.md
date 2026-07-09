@@ -147,8 +147,9 @@ You can control various device features simply by talking to Dr. Simi. Here are 
 - **Control Electronic Devices (IR)**:
   - *"Doctor, enciende la tele."* (Context: "Doc, turn on the TV.")
   - *"Doctor, apréndete el botón de encendido de la tele."* (Context: "Doc, learn the TV power button.")
+  - *"Doctor, borra la tele de tus registros."* (Context: "Doc, delete the TV from your records.")
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"* (Context: "Doc, what IR devices do you have registered?")
-  - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, or `ir_get_devices`.
+  - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, `ir_delete_device`, or `ir_get_devices`.
 
 ---
 

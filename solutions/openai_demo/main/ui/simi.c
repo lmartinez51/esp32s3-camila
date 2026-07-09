@@ -85,6 +85,11 @@ static char s_simi_overlay_text[32] = {0};
 static uint16_t s_simi_overlay_color = 0;
 
 static char s_simi_temperature_text[16] = {0};
+static char s_simi_top_right_text[32] = {0};
+
+static char s_arbiter_slot1[32] = {0};
+static char s_arbiter_slot2[32] = {0};
+static char s_arbiter_slot3[32] = "Lorenzo";
 
 static SemaphoreHandle_t s_anim_mutex = NULL;
 static TaskHandle_t s_anim_task = NULL;
@@ -450,10 +455,12 @@ static void simi_anim_task(void *arg)
             static simi_face_t last_f = {0};
             static char last_overlay_text[32] = {0};
             static char last_temperature_text[16] = {0};
+            static char last_top_right_text[32] = {0};
             static simi_outfit_t last_outfit = OUTFIT_MAX;
             
             bool text_changed = false;
             bool temp_changed = false;
+            bool top_right_changed = false;
             bool outfit_changed = false;
 
             if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(50)) == pdTRUE)
@@ -463,6 +470,9 @@ static void simi_anim_task(void *arg)
                 
                 temp_changed = strncmp(s_simi_temperature_text, last_temperature_text, sizeof(last_temperature_text)) != 0;
                 if (temp_changed) strncpy(last_temperature_text, s_simi_temperature_text, sizeof(last_temperature_text));
+
+                top_right_changed = strncmp(s_simi_top_right_text, last_top_right_text, sizeof(last_top_right_text)) != 0;
+                if (top_right_changed) strncpy(last_top_right_text, s_simi_top_right_text, sizeof(last_top_right_text));
 
                 outfit_changed = (s_active_outfit != last_outfit);
                 if (outfit_changed) last_outfit = s_active_outfit;
@@ -475,6 +485,7 @@ static void simi_anim_task(void *arg)
                                outfit_changed || 
                                text_changed || 
                                temp_changed || 
+                               top_right_changed || 
                                f.alert_border;
 
             if (full_redraw)
@@ -647,6 +658,10 @@ esp_err_t ui_simi_start(void)
     }
 
     xTaskNotifyGive(new_task);
+    
+    // Inject the initial trigger for the arbiter slot 3 now that the task is ready
+    ui_simi_set_arbiter_slot(3, "Lorenzo");
+    
     return ESP_OK;
 }
 
@@ -842,6 +857,158 @@ void ui_simi_set_temperature_text(const char *text)
     }
 }
 
+void ui_simi_set_arbiter_slot(int slot, const char *text)
+{
+    if (simi_anim_ensure_mutex() != ESP_OK)
+    {
+        return;
+    }
+
+    if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
+        char *target_slot = NULL;
+        if (slot == 1) target_slot = s_arbiter_slot1;
+        else if (slot == 2) target_slot = s_arbiter_slot2;
+        else if (slot == 3) target_slot = s_arbiter_slot3;
+
+        if (target_slot != NULL)
+        {
+            if (text)
+            {
+                strncpy(target_slot, text, 31);
+                target_slot[31] = '\0';
+            }
+            else
+            {
+                target_slot[0] = '\0';
+            }
+        }
+
+        const char *selected_text = NULL;
+        if (s_arbiter_slot1[0] != '\0') selected_text = s_arbiter_slot1;
+        else if (s_arbiter_slot2[0] != '\0') selected_text = s_arbiter_slot2;
+        else selected_text = s_arbiter_slot3;
+
+        xSemaphoreGive(s_anim_mutex);
+        
+        ui_simi_set_top_right_text(selected_text);
+    }
+}
+
+void ui_simi_set_top_right_text(const char *text)
+{
+    if (simi_anim_ensure_mutex() != ESP_OK)
+    {
+        return;
+    }
+
+    TaskHandle_t task = NULL;
+    bool changed = false;
+    if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
+        if (text)
+        {
+            if (strncmp(s_simi_top_right_text, text, sizeof(s_simi_top_right_text)) != 0)
+            {
+                strncpy(s_simi_top_right_text, text, sizeof(s_simi_top_right_text) - 1);
+                s_simi_top_right_text[sizeof(s_simi_top_right_text) - 1] = '\0';
+                changed = true;
+            }
+        }
+        else
+        {
+            if (s_simi_top_right_text[0] != '\0')
+            {
+                s_simi_top_right_text[0] = '\0';
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            task = s_anim_task;
+        }
+        xSemaphoreGive(s_anim_mutex);
+    }
+
+    if (task != NULL && changed)
+    {
+        xTaskNotifyGive(task);
+    }
+}
+
+void ui_simi_try_set_top_right_text(const char *text)
+{
+    if (simi_anim_ensure_mutex() != ESP_OK) return;
+
+    TaskHandle_t task = NULL;
+    bool changed = false;
+    if (xSemaphoreTake(s_anim_mutex, 0) == pdTRUE)
+    {
+        if (text)
+        {
+            if (strncmp(s_simi_top_right_text, text, sizeof(s_simi_top_right_text)) != 0)
+            {
+                strncpy(s_simi_top_right_text, text, sizeof(s_simi_top_right_text) - 1);
+                s_simi_top_right_text[sizeof(s_simi_top_right_text) - 1] = '\0';
+                changed = true;
+            }
+        }
+        else
+        {
+            if (s_simi_top_right_text[0] != '\0')
+            {
+                s_simi_top_right_text[0] = '\0';
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            task = s_anim_task;
+        }
+        xSemaphoreGive(s_anim_mutex);
+    }
+
+    if (task != NULL && changed)
+    {
+        xTaskNotifyGive(task);
+    }
+}
+
+void ui_simi_try_set_arbiter_slot(int slot, const char *text)
+{
+    if (simi_anim_ensure_mutex() != ESP_OK) return;
+
+    if (xSemaphoreTake(s_anim_mutex, 0) == pdTRUE)
+    {
+        char *target_slot = NULL;
+        if (slot == 1) target_slot = s_arbiter_slot1;
+        else if (slot == 2) target_slot = s_arbiter_slot2;
+        else if (slot == 3) target_slot = s_arbiter_slot3;
+
+        if (target_slot != NULL)
+        {
+            if (text)
+            {
+                strncpy(target_slot, text, 31);
+                target_slot[31] = '\0';
+            }
+            else
+            {
+                target_slot[0] = '\0';
+            }
+        }
+
+        const char *selected_text = NULL;
+        if (s_arbiter_slot1[0] != '\0') selected_text = s_arbiter_slot1;
+        else if (s_arbiter_slot2[0] != '\0') selected_text = s_arbiter_slot2;
+        else selected_text = s_arbiter_slot3;
+
+        xSemaphoreGive(s_anim_mutex);
+        
+        ui_simi_try_set_top_right_text(selected_text);
+    }
+}
+
 void ui_simi_deinit(void)
 {
     ui_simi_stop();
@@ -883,6 +1050,7 @@ void ui_simi_deinit(void)
     
     // Reset static states to ensure clean slate on next initialization
     s_simi_overlay_text[0] = '\0';
+    s_simi_top_right_text[0] = '\0';
     s_anim_state = SIMI_STATE_IDLE;
 }
 
@@ -1629,6 +1797,37 @@ static void simi_render(const simi_face_t *f)
             canvas_fill_rect(cv, degree_x, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
             canvas_fill_rect(cv, degree_x + 2, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
         }
+    }
+
+    // ── Zócalo de Top-Right (e.g. Mute Timer) ──
+    if (s_simi_top_right_text[0] != '\0')
+    {
+        int text_scale = 1;
+        int text_width = ui_get_text_width(s_simi_top_right_text, text_scale);
+        int text_height = 8 * text_scale;
+        
+        int pad_left = 6;
+        int pad_right = 6;
+        int pad_top = 4;
+        int pad_bottom = 4;
+        
+        // Match the height of the temperature badge which includes a 16px icon
+        int target_icon_h = 16;
+        
+        int badge_w = pad_left + text_width + pad_right;
+        int badge_h = (text_height > target_icon_h ? text_height : target_icon_h) + pad_top + pad_bottom;
+        
+        int badge_x = cv->w - badge_w - 15;
+        int badge_y = 20;
+        
+        // Background Badge (Dark Slate Gray)
+        uint16_t c_badge = SIMI_RGB(30, 30, 35);
+        canvas_fill_round_rect(cv, badge_x, badge_y, badge_w, badge_h, 4, c_badge);
+        
+        // Text
+        int text_x = badge_x + pad_left;
+        int text_y = badge_y + (badge_h - text_height) / 2;
+        ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, text_x, text_y, s_simi_top_right_text, SIMI_RGB(255, 255, 255), text_scale);
     }
 
     // ── Procedural Snot Bubble (Teardrop) (drawn at the very end to sit on top of everything) ──

@@ -19,6 +19,9 @@
 #include "lua_ir_bindings.h"
 #include "lua_mic_bindings.h"
 #include "app_events.h"
+#include "driver/gpio.h"
+#include "esp_system.h"
+#include "webrtc.h"
 
 static const char *TAG = "ESP_CLAW_ISO";
 static QueueHandle_t s_test_queue = NULL;
@@ -28,9 +31,17 @@ static EventGroupHandle_t s_claw_event_group = NULL;
 #define LUA_SAFE_TO_START_BIT BIT0
 #define LUA_ENGINE_READY_BIT BIT1
 
+// Written by Core 1 (lua_worker_task), read by Core 0 (WebRTC task).
+// Must be volatile to guarantee cross-core visibility on the LX7 dual-core.
+static volatile bool g_fs_corrupted = false;
+
 bool esp_claw_is_automation_ready(void) {
     if (!s_claw_event_group) return false;
     return (xEventGroupGetBits(s_claw_event_group) & LUA_ENGINE_READY_BIT) != 0;
+}
+
+bool esp_claw_is_fs_corrupted(void) {
+    return g_fs_corrupted;
 }
 
 void esp_claw_signal_safe_to_start(void) {
@@ -139,6 +150,15 @@ static int l_inject_webrtc_message(lua_State *L) {
     if (lua_gettop(L) >= 1) {
         const char* message = lua_tostring(L, 1);
         if (message) {
+            // Only send response.cancel when the server is actively generating.
+            // webrtc_is_server_generating() checks g_response_in_progress exclusively,
+            // matching the same guard used by the VAD speech_started handler.
+            // Crucially, it does NOT fire when only g_output_audio_active is true
+            // (i.e., server is done but ESP32 I2S buffer is still draining) — that
+            // was the source of the response_cancel_not_active error.
+            if (webrtc_is_server_generating()) {
+                sendEvent("response.cancel", NULL);
+            }
             sendEvent("conversation.item.create", message);
             sendEvent("response.create", NULL);
         }
@@ -340,93 +360,6 @@ static void instruction_limit_hook(lua_State *L, lua_Debug *ar) {
     luaL_error(L, "Execution limit exceeded. Rule Engine killed infinite loop!");
 }
 
-static void esp_claw_ensure_init_lua_skeleton(void) {
-    FILE *f = fopen("/littlefs/init.lua", "r");
-    if (f == NULL) {
-        ESP_LOGW(TAG, "Pre-boot: init.lua not found. Auto-generating minimal skeleton...");
-        f = fopen("/littlefs/init.lua", "w");
-        if (f != NULL) {
-            const char* engine_lua = 
-                "-- Automation Engine init.lua\n"
-                "rules_db = rules_db or {}\n"
-                "function ir.save_db()\n"
-                "    if not ir.write_db then return end\n"
-                "    local json_str = \"{\\n\"\n"
-                "    local first_dev = true\n"
-                "    for dev, buttons in pairs(ir_db or {}) do\n"
-                "        if not first_dev then json_str = json_str .. \",\\n\" end\n"
-                "        first_dev = false\n"
-                "        json_str = json_str .. '  \"' .. dev .. '\": {\\n'\n"
-                "        local first_btn = true\n"
-                "        for btn, code in pairs(buttons) do\n"
-                "            if not first_btn then json_str = json_str .. \",\\n\" end\n"
-                "            first_btn = false\n"
-                "            json_str = json_str .. '    \"' .. btn .. '\": \"' .. tostring(code) .. '\"'\n"
-                "        end\n"
-                "        json_str = json_str .. \"\\n  }\"\n"
-                "    end\n"
-                "    json_str = json_str .. \"\\n}\\n\"\n"
-                "    ir.write_db(json_str)\n"
-                "end\n"
-                "function register_rule(rule_table)\n"
-                "    if type(rule_table) ~= \"table\" then return end\n"
-                "    local call_id = rule_table.call_id or \"\"\n"
-                "    local trigger = rule_table.trigger or \"\"\n"
-                "    if trigger == \"ir_get_devices\" or trigger == \"list_automation_rules\" or trigger == \"ir_learn_button\" or trigger == \"create_automation_rule\" then return end\n"
-                "    \n"
-                "    if trigger == \"SYS_CMD:LIST\" then\n"
-                "        local list_json = \"[\"\n"
-                "        local first = true\n"
-                "        for k, v in pairs(rules_db) do\n"
-                "            if not first then list_json = list_json .. \", \" end\n"
-                "            list_json = list_json .. \"{\\\"trigger\\\": \\\"\" .. tostring(k) .. \"\\\"}\"\n"
-                "            first = false\n"
-                "        end\n"
-                "        list_json = list_json .. \"]\"\n"
-                "        c_send_webrtc_response(call_id, list_json)\n"
-                "        return\n"
-                "    elseif trigger == \"SYS_CMD:DELETE\" then\n"
-                "        local target = rule_table.actions and rule_table.actions[1] and rule_table.actions[1].target\n"
-                "        if target and rules_db[target] then\n"
-                "            rules_db[target] = nil\n"
-                "            c_save_rules()\n"
-                "            c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"deleted\\\"}\")\n"
-                "        else\n"
-                "            c_send_webrtc_response(call_id, \"{\\\"error\\\": \\\"not found\\\"}\")\n"
-                "        end\n"
-                "        return\n"
-                "    elseif trigger == \"SYS_CMD:EXECUTE\" or trigger == \"SYS_CMD:IR_DIRECT\" then\n"
-                "        c_send_webrtc_response(call_id, \"{\\\"status\\\": \\\"executed\\\"}\")\n"
-                "        return\n"
-                "    elseif trigger == \"LUA_CMD_IR_LEARNED\" then\n"
-                "        if rule_table.actions and rule_table.actions[1] and ir_learning_target_device and ir_learning_target_button then\n"
-                "            ir_db = ir_db or {}\n"
-                "            ir_db[ir_learning_target_device] = ir_db[ir_learning_target_device] or {}\n"
-                "            ir_db[ir_learning_target_device][ir_learning_target_button] = rule_table.actions[1]\n"
-                "            if ir and ir.save_db then ir.save_db() end\n"
-                "            ir_learning_target_device = nil\n"
-                "            ir_learning_target_button = nil\n"
-                "        end\n"
-                "        return\n"
-                "    end\n"
-                "    -- Standard Rule Creation\n"
-                "    rules_db = rules_db or {}\n"
-                "    rules_db[rule_table.trigger] = rule_table\n"
-                "    if c_save_rules then c_save_rules() end\n"
-                "    if c_send_webrtc_response and rule_table.call_id then\n"
-                "        c_send_webrtc_response(rule_table.call_id, \"Rule created and saved successfully.\")\n"
-                "    end\n"
-                "end\n";
-            fprintf(f, "%s", engine_lua);
-            fsync(fileno(f));
-            fclose(f);
-            ESP_LOGI(TAG, "Pre-boot: Minimal init.lua written successfully.");
-        }
-    } else {
-        fclose(f);
-    }
-}
-
 static bool esp_claw_lua_has_register_rule(lua_State *L) {
     lua_getglobal(L, "register_rule");
     bool present = lua_isfunction(L, -1);
@@ -482,6 +415,11 @@ static void lua_worker_task(void *arg) {
     // one-off action (flash a build with this temporarily `true`, let it
     // format once, then reflash normal firmware) rather than the
     // permanent policy.
+    // format_if_mount_failed is permanently FALSE.
+    // The system must NEVER silently erase user data on a mount inconsistency.
+    // Recovery from a deliberately erased partition requires a one-off build
+    // with this temporarily set to true, then reflashing normal firmware.
+    // A corrupted-but-unmountable partition triggers degraded mode instead.
     esp_vfs_littlefs_conf_t conf = {
         .base_path = "/littlefs",
         .partition_label = "littlefs",
@@ -489,46 +427,45 @@ static void lua_worker_task(void *arg) {
         .dont_mount = false,
     };
     if (esp_vfs_littlefs_register(&conf) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize LittleFS");
+        ESP_LOGE(TAG, "LittleFS mount FAILED. Entering RAM-only degraded mode. "
+                      "IR DB and Rules DB are OFFLINE. "
+                      "Long-press MUTE for 10s to factory reset.");
+        g_fs_corrupted = true;
+        // Do NOT load init.lua. Do NOT set LUA_ENGINE_READY_BIT.
+        // The dead-queue guard in webrtc.c (esp_claw_is_automation_ready)
+        // will handle all downstream IR/automation tool calls gracefully.
+        // The FS corruption alert is injected into the LLM context by
+        // webrtc_inject_arrival_context() once WebRTC connects.
     } else {
-        esp_claw_ensure_init_lua_skeleton();
-
         // 2. Safely load the automation script from LittleFS.
         //
         // IMPORTANT: luaL_dofile() returning LUA_OK only proves the script
         // ran with no Lua-level error. It says NOTHING about which globals
-        // it happened to define. A stale, truncated, or schema-mismatched
-        // init.lua left over on flash would "successfully execute" here
-        // and simply not define register_rule - and previously nothing
-        // downstream ever checked for that, so the gap went unnoticed
-        // until the first real tool call failed at runtime. We now
-        // explicitly verify register_rule exists, and self-heal exactly
-        // once if it doesn't, instead of silently coming online broken.
+        // it happened to define. A stale or schema-mismatched init.lua would
+        // "successfully execute" but not define register_rule, causing silent
+        // failures at runtime. We explicitly verify register_rule exists.
+        // If it is missing, we log a fatal error and leave the engine OFFLINE
+        // rather than auto-overwriting the file with a broken C-string stub.
         bool init_ok = (luaL_dofile(L, "/littlefs/init.lua") == LUA_OK);
         if (!init_ok) {
             ESP_LOGE(TAG, "Failed to load init.lua: %s", lua_tostring(L, -1));
             lua_pop(L, 1);
         } else if (!esp_claw_lua_has_register_rule(L)) {
-            ESP_LOGE(TAG, "init.lua executed but register_rule() is undefined "
-                          "(stale or incompatible script). Quarantining and regenerating.");
-            unlink("/littlefs/init.lua.bad");
-            rename("/littlefs/init.lua", "/littlefs/init.lua.bad");
-            esp_claw_ensure_init_lua_skeleton();
-            init_ok = (luaL_dofile(L, "/littlefs/init.lua") == LUA_OK) &&
-                      esp_claw_lua_has_register_rule(L);
-            if (!init_ok) {
-                ESP_LOGE(TAG, "Regenerated init.lua still missing register_rule(). "
-                              "Automation engine will NOT come online.");
-            }
+            ESP_LOGE(TAG,
+                "init.lua executed but register_rule() is undefined. "
+                "Script on flash is stale or incompatible. "
+                "Automation engine will NOT come online. "
+                "Reflash data/init.lua to restore functionality.");
+            init_ok = false;
         }
 
         if (init_ok) {
             ESP_LOGI(TAG, "Successfully executed init.lua");
-            
+
             // 3. Load stored dynamic rules
             esp_claw_load_rules_from_fs(L);
-            
-            // 4. Notify C-System that Lua is online
+
+            // 4. Notify C-system that Lua is online
             xEventGroupSetBits(s_claw_event_group, LUA_ENGINE_READY_BIT);
         }
     }
@@ -615,6 +552,7 @@ esp_err_t esp_claw_init(void) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }
+
     return ESP_OK;
 }
 

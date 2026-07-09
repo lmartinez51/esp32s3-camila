@@ -131,6 +131,23 @@ void ui_simi_set_overlay_text(const char *text, uint16_t color);
 void ui_simi_set_temperature_text(const char *text);
 
 /**
+ * @brief Sets the top-right overlay text (e.g., mute timer) to be rendered on top of Dr. Simi.
+ *        Pass NULL to clear the text.
+ */
+void ui_simi_set_top_right_text(const char *text);
+
+/**
+ * @brief Updates a specific slot in the top-right text arbiter.
+ *        slot 1 = Highest priority, slot 3 = Lowest priority.
+ */
+void ui_simi_set_arbiter_slot(int slot, const char *text);
+
+/**
+ * @brief Tries to update the arbiter slot with zero block time. Safe for FreeRTOS timers.
+ */
+void ui_simi_try_set_arbiter_slot(int slot, const char *text);
+
+/**
  * @brief Releases the canvas buffer.
  */
 void ui_simi_deinit(void);

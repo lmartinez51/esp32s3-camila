@@ -201,6 +201,14 @@ bool webrtc_realtime_is_busy(void)
     return g_input_speech_active || g_response_in_progress || g_output_audio_active;
 }
 
+// Returns true ONLY when the OpenAI server is actively generating a response.
+// Unlike webrtc_realtime_is_busy(), this does NOT include local I2S audio playback.
+// Use this to gate response.cancel — it is only valid while the server is generating.
+bool webrtc_is_server_generating(void)
+{
+    return g_response_in_progress;
+}
+
 static int webrtc_send_json(const char *json_string)
 {
     int ret = -1;
@@ -1552,6 +1560,45 @@ static class_t *build_ir_transmit_command_class(void)
     return cls;
 }
 
+static class_t *build_ir_delete_device_class(void)
+{
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
+
+    static attribute_t properties[] = {
+        {
+            .name = "device_name",
+            .desc = "The name of the IR device to delete.",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+        {
+            .name = "button_name",
+            .desc = "Optional. The specific button to delete. If omitted, the entire device is deleted.",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = false,
+        },
+    };
+
+    static const char *required[] = {"device_name"};
+
+    parameters_t params = {
+        .type = "object",
+        .properties = properties,
+        .properties_num = ELEMS(properties),
+        .required = (char **)required,
+        .required_num = ELEMS(required),
+    };
+
+    cls->type = "function";
+    cls->name = "ir_delete_device";
+    cls->desc = "Deletes a specified IR device or a specific button from the database.";
+    cls->parameters = params;
+    cls->attr_list = properties;
+    cls->attr_num = ELEMS(properties);
+
+    return cls;
+}
 
 static void add_class(class_t *cls)
 {
@@ -1589,6 +1636,7 @@ static int build_classes(void)
     add_class(build_ir_learn_button_class());
     add_class(build_ir_transmit_command_class());
     add_class(build_ir_get_devices_class());
+    add_class(build_ir_delete_device_class());
     build_once = true;
     return 0;
 }
@@ -2443,6 +2491,13 @@ int webrtc_inject_arrival_context(void)
         return 0;
     }
 
+    if (esp_claw_is_fs_corrupted()) {
+        sendEvent("system.message.create",
+            "SYSTEM ALERT: The on-device filesystem failed to mount and the database is offline. "
+            "Please inform the Architect that they need to connect the device to the PC and "
+            "manually format the LittleFS partition using esptool.");
+    }
+
     return sendEvent("response.create", NULL);
 }
 
@@ -2832,12 +2887,61 @@ static int process_json(const char *json_data, int json_size)
                         strlcpy(req->actions[1].target, button_item->valuestring, sizeof(req->actions[1].target));
                         req->num_actions = 2;
                     }
+
+                    if (!esp_claw_is_automation_ready()) {
+                        ESP_LOGW(TAG, "IR tool '%s' rejected: automation offline.", iter->name);
+                        if (call_id) {
+                            send_function_output(call_id, "{\"error\": \"IR subsystem offline. Filesystem may be corrupted.\"}");
+                            sendEvent("response.create", NULL);
+                        }
+                        free(req);
+                        break;
+                    }
                     esp_claw_send_rule(req);
                     ESP_LOGI(TAG, "IR tool %s injected into IPC queue", iter->name);
                 } else {
                     ESP_LOGE(TAG, "Failed to allocate memory for IR tool IPC payload");
                 }
                 break; // Processed
+            }
+            else if (strcmp(iter->name, "ir_delete_device") == 0)
+            {
+                esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
+                if (req) {
+                    if (call_id) {
+                        strlcpy(req->call_id, call_id, sizeof(req->call_id));
+                    }
+                    strlcpy(req->trigger, "LUA_TOOL_IR_DELETE", sizeof(req->trigger));
+                    
+                    cJSON* device_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
+                    if (cJSON_IsString(device_item) && device_item->valuestring) {
+                        strlcpy(req->actions[0].target, device_item->valuestring, sizeof(req->actions[0].target));
+                        req->num_actions = 1;
+                        
+                        cJSON* button_item = cJSON_GetObjectItemCaseSensitive(args_root, "button_name");
+                        if (cJSON_IsString(button_item) && button_item->valuestring) {
+                            strlcpy(req->actions[1].target, button_item->valuestring, sizeof(req->actions[1].target));
+                            req->num_actions = 2;
+                            ESP_LOGI(TAG, "Deleting IR button: %s on device: %s", button_item->valuestring, device_item->valuestring);
+                        } else {
+                            ESP_LOGI(TAG, "Deleting IR device: %s (via Lua IPC)", device_item->valuestring);
+                        }
+                    }
+
+                    if (!esp_claw_is_automation_ready()) {
+                        ESP_LOGW(TAG, "IR tool '%s' rejected: automation offline.", iter->name);
+                        if (call_id) {
+                            send_function_output(call_id, "{\"error\": \"IR subsystem offline. Filesystem may be corrupted.\"}");
+                            sendEvent("response.create", NULL);
+                        }
+                        free(req);
+                        break;
+                    }
+                    esp_claw_send_rule(req);
+                } else {
+                    ESP_LOGE(TAG, "Failed to allocate memory for IR delete IPC payload");
+                }
+                break;
             }
             else
             {

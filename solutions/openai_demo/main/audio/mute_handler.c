@@ -12,6 +12,9 @@
 #include "mute_handler.h"
 #include "webrtc.h"
 #include "app_events.h"
+#include "esp_littlefs.h"
+#include "esp_system.h"
+#include "esp_claw_init.h"
 
 #define TAG "MUTE_HANDLER"
 #define IDLE_TIMEOUT_MS (14 * 60 * 1000)
@@ -31,7 +34,9 @@ typedef struct
 static QueueHandle_t mute_evt_queue = NULL;
 static volatile bool mic_muted = false;
 static bool s_idle_warning_sent = false;
+static int s_mute_remaining_seconds = 840;
 TimerHandle_t g_idle_timer = NULL;
+
 static void vIdleTimerCallback(TimerHandle_t xTimer);
 
 /**
@@ -52,6 +57,7 @@ static void IRAM_ATTR mute_isr_handler(void *arg)
 
     mute_event_t evt = {
         .state = gpio_get_level(MUTE_BUTTON_GPIO) == 0 ? MUTE_STATE_MUTED : MUTE_STATE_UNMUTED};
+
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     xQueueSendFromISR(mute_evt_queue, &evt, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken)
@@ -80,7 +86,7 @@ static void mute_evt_task(void *arg)
             if (mic_muted != new_state)
             {
                 mic_muted = new_state;
-                
+
                 if (mic_muted)
                 {
                     ESP_LOGI(TAG, "Physical mute button pressed (MUTED)");
@@ -128,14 +134,14 @@ void mute_handler_init(void)
     gpio_isr_handler_add(MUTE_BUTTON_GPIO, mute_isr_handler, NULL);
 
     ESP_LOGI(TAG, "Callback de mute registrado en GPIO %d", MUTE_BUTTON_GPIO);
-    // Crear el timer de inactividad (one-shot)
-    ESP_LOGI(TAG, "Creando timer de inactividad (%d minutos)...", IDLE_TIMEOUT_MS / 60000);
+    // Crear el timer de inactividad (periodico 1s)
+    ESP_LOGI(TAG, "Creando timer de inactividad periódico de 1 segundo...");
     g_idle_timer = xTimerCreate(
-        "IdleTimer",                    // Nombre (para debug)
-        pdMS_TO_TICKS(IDLE_TIMEOUT_MS), // Periodo (14 min)
-        pdFALSE,                        // pdFALSE = No es auto-reload, es "one-shot"
-        (void *)0,                      // ID del timer (no lo usamos)
-        vIdleTimerCallback              // La función a llamar
+        "IdleTimer",
+        pdMS_TO_TICKS(1000), // Periodo (1 segundo)
+        pdTRUE,              // pdTRUE = Auto-reload, periódico
+        (void *)0,
+        vIdleTimerCallback
     );
 
     if (g_idle_timer == NULL)
@@ -146,21 +152,29 @@ void mute_handler_init(void)
 
 static void vIdleTimerCallback(TimerHandle_t xTimer)
 {
-    if (!s_idle_warning_sent)
+    if (s_mute_remaining_seconds > 0)
     {
-        ESP_LOGW(TAG, "¡Timer de inactividad expiró después de 14 minutos de mute! Avisando al usuario...");
-        s_idle_warning_sent = true;
+        s_mute_remaining_seconds--;
+        
+        char buffer[32];
+        int mins = s_mute_remaining_seconds / 60;
+        int secs = s_mute_remaining_seconds % 60;
+        snprintf(buffer, sizeof(buffer), "Reboot:%02d:%02d", mins, secs);
+        ui_simi_set_arbiter_slot(2, buffer);
 
-        // Enviar el prompt al sistema de IA para resetear el timer de OpenAI
-        webrtc_post_action(WEBRTC_ACTION_PLAY_IDLE_ALERT);
-
-        // Cambiar el periodo del timer a 2 minutos para la etapa de gracia
-        xTimerChangePeriod(g_idle_timer, pdMS_TO_TICKS(2 * 60 * 1000), 100);
+        if (s_mute_remaining_seconds == 120 && !s_idle_warning_sent)
+        {
+            ESP_LOGW(TAG, "Quedan 2 minutos. Avisando al usuario...");
+            s_idle_warning_sent = true;
+            webrtc_post_action(WEBRTC_ACTION_PLAY_IDLE_ALERT);
+        }
     }
-    else
+
+    if (s_mute_remaining_seconds == 0)
     {
-        ESP_LOGE(TAG, "¡Pasaron 2 minutos desde el aviso y no hubo respuesta! A dormir...");
-        // Disparar el evento de auto-sleep forzado
+        ESP_LOGE(TAG, "¡Timer de inactividad llegó a 0! A dormir...");
+        xTimerStop(g_idle_timer, 0);
+        ui_simi_set_arbiter_slot(2, "");
         orchestrator_post_event(ORCH_EVENT_AUTO_SLEEP_TIMEOUT);
     }
 }
@@ -174,8 +188,8 @@ void mute_handler_start_idle_timer(void)
     if (g_idle_timer != NULL)
     {
         s_idle_warning_sent = false;
-        // Reiniciar el timer con su duración original de 14 minutos
-        xTimerChangePeriod(g_idle_timer, pdMS_TO_TICKS(IDLE_TIMEOUT_MS), 100);
+        s_mute_remaining_seconds = 840;
+        xTimerStart(g_idle_timer, 100);
     }
 }
 
@@ -189,5 +203,7 @@ void mute_handler_stop_idle_timer(void)
     {
         ESP_LOGI(TAG, "Deteniendo timer de inactividad (usuario hizo unmute).");
         xTimerStop(g_idle_timer, pdMS_TO_TICKS(100));
+        s_mute_remaining_seconds = 840;
+        ui_simi_set_arbiter_slot(2, "");
     }
 }

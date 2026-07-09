@@ -64,6 +64,8 @@ esp_err_t esp_claw_request_list(char* out_buffer, size_t max_len);
 esp_err_t esp_claw_request_delete(const char* trigger, char* out_buffer, size_t max_len);
 void esp_claw_signal_safe_to_start(void);
 bool esp_claw_is_automation_ready(void);
+bool esp_claw_is_fs_corrupted(void);
+
 #ifdef __cplusplus
 }
 #endif

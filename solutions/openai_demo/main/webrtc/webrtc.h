@@ -57,6 +57,7 @@ extern "C"
     uint32_t webrtc_get_last_activity_ms(void);
     void webrtc_mark_activity(void);
     bool webrtc_realtime_is_busy(void);
+    bool webrtc_is_server_generating(void);
 
     /**
      * @brief Publica una acción en la cola de acciones de WebRTC.
