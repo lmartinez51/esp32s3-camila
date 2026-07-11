@@ -45,6 +45,10 @@ float              s_alert_corr_drop                = 0.0f;
 webrtc_session_mode_t s_pending_webrtc_mode         = WEBRTC_SESSION_MODE_FRIENDLY;
 webrtc_session_mode_t s_ignition_webrtc_mode        = WEBRTC_SESSION_MODE_FRIENDLY;
 webrtc_session_mode_t s_active_webrtc_mode          = WEBRTC_SESSION_MODE_FRIENDLY;
+
+/** Phase 1: Populated from NVS in app_main() before the orchestrator task starts. */
+boot_operation_mode_t g_boot_operation_mode          = BOOT_MODE_DIRECTO;
+
 bool               s_ble_release_to_sleep           = false;
 uint32_t           s_vigilante_active_started_ms    = 0;
 uint32_t           s_vigilante_resting_since_ms     = 0;

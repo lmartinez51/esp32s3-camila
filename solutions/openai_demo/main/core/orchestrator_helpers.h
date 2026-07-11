@@ -23,6 +23,7 @@
 #include "freertos/event_groups.h"
 #include "app_events.h"
 #include "common.h"   /* webrtc_session_mode_t, start_webrtc, stop_webrtc */
+#include "nvs_setup.h" /* boot_operation_mode_t, nvs_set/get_operation_mode — Phase 1 */
 
 /* ── Orchestrator State Enum ────────────────────────────────────────────── */
 
@@ -72,6 +73,11 @@ extern SemaphoreHandle_t  ble_sync_semaphore;
 extern QueueHandle_t      s_orchestrator_event_queue;
 
 /* ── Shared Orchestrator State Variables ────────────────────────────────── */
+
+/** Phase 1: Boot operation mode read from NVS at startup. Governs whether
+ *  the FSM takes the DIRECTO (skip radar) or CENTINELA (arm radar) path
+ *  when WiFi connects. Written once in main.c; read by orchestrator_fsm.c. */
+extern boot_operation_mode_t g_boot_operation_mode;
 
 extern bool               s_is_muted;
 extern bool               s_arrival_context_sent;

@@ -17,6 +17,7 @@ idf_component_register(
         "hardware/radar.c"
         "hardware/ir_sniffer.c"
         "hardware/ir_action_map.c"
+        "hardware/kill_switch.c"
 
         "audio/media_sys.c"
         "audio/mute_handler.c"

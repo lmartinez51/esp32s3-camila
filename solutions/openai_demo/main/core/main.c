@@ -82,6 +82,7 @@
 #include "orchestrator_tasks.h"
 #include "orchestrator_vigilante.h"
 #include "orchestrator_fsm.h"
+#include "kill_switch.h"
 
 static const char *TAG = "MAIN";
 
@@ -313,6 +314,14 @@ void app_main(void)
     /* ── Pre-boot: NVS ───────────────────────────────────────────────── */
     init_nvs();
 
+    /* ── Phase 1: Boot Operation Mode ───────────────────────────────────
+     * Read once here, before the orchestrator task is spawned, so the FSM
+     * always sees a consistent value. BOOT_MODE_DIRECTO is the safe default
+     * when the NVS key is absent (fresh flash or intentional erase).      */
+    g_boot_operation_mode = nvs_get_operation_mode();
+    ESP_LOGI(TAG, "Boot mode leído de NVS: %s",
+             g_boot_operation_mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
+
     /* 1) UI */
     esp_err_t err = ui_init();
     if (err != ESP_OK) {
@@ -322,6 +331,7 @@ void app_main(void)
 
     /* 2) I2C bus, media adapter, thread scheduler */
     bsp_i2c_init();
+    kill_switch_init(); // Initialize Phase 2 Kill Switch GT911 polling
     media_lib_add_default_adapter();
     media_lib_thread_set_schedule_cb(thread_scheduler);
 

@@ -18,7 +18,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 
 - 📡 **Two-Factor Presence Detection (Radar/CSI + BLE)** — uses an optional hardware radar or deterministic Wi-Fi CSI DSP for motion sensing, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
 - 📡 **IR Sniffer Integration** — capture and map infrared remote commands to trigger internal actions (e.g., mute/unmute) when docked.
-- 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2** model).
+- 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2.1** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.

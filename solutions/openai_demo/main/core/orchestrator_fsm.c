@@ -107,6 +107,20 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_SLEEP:
     {
         ESP_LOGI(TAG, "STATE_SLEEP: WiFi is up; WebRTC remains off. Starting CSI motion sensing.");
+
+        /* ── Phase 1: Arm NVS for next boot if a Vigilante session just ended ──
+         * s_active_webrtc_mode retains WEBRTC_SESSION_MODE_VIGILANTE until the
+         * next successful ignition. Writing CENTINELA here ensures that if the
+         * device is power-cycled while re-armed in STATE_SLEEP, the next boot
+         * starts in the armed path automatically.
+         * The write is idempotent — if CENTINELA is already stored, no harm.   */
+        if (s_active_webrtc_mode == WEBRTC_SESSION_MODE_VIGILANTE) {
+            ESP_LOGW(TAG, "STATE_SLEEP: Sesión Vigilante concluida. "
+                          "Escribiendo CENTINELA en NVS para el próximo arranque.");
+            nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+        }
+        /* ────────────────────────────────────────────────────────────────── */
+
         media_sys_set_vigilante_mute(false);
         reset_alert_context();
         reset_vigilante_runtime_context();
@@ -377,7 +391,22 @@ void app_startup_orchestrator_task(void *param)
         {
         case STATE_WAIT_WIFI:
             if (event == ORCH_EVENT_WIFI_CONNECTED) {
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                /* ── Phase 1: Boot-routing branch ──────────────────────────
+                 * DIRECTO: owner trusted — skip radar, go straight to BLE
+                 *          identity validation. STATE_SLEEP is never entered
+                 *          so orchestrator_schedule_sleep_csi_start() is
+                 *          never called and the radar is never armed.
+                 * CENTINELA: armed mode — arm radar/CSI via STATE_SLEEP as
+                 *             normal (existing path).                       */
+                if (g_boot_operation_mode == BOOT_MODE_DIRECTO) {
+                    ESP_LOGI(TAG, "Modo DIRECTO: omitiendo STATE_SLEEP; "
+                                  "salto directo a validación BLE.");
+                    orchestrator_enter_state(&state, STATE_PREPARING_BLE);
+                } else {
+                    ESP_LOGI(TAG, "Modo CENTINELA: iniciando armado de sensor en STATE_SLEEP.");
+                    orchestrator_enter_state(&state, STATE_SLEEP);
+                }
+                /* ────────────────────────────────────────────────────── */
             } else if (event != ORCH_EVENT_WIFI_DISCONNECTED) {
                 orchestrator_ignore_event(state, event);
             }
@@ -424,6 +453,19 @@ void app_startup_orchestrator_task(void *param)
             if (event == ORCH_EVENT_WIFI_DISCONNECTED) {
                 orchestrator_enter_state(&state, STATE_WAIT_WIFI);
             } else if (event == ORCH_EVENT_IDENTITY_PRESENT) {
+                /* ── Phase 1: CENTINELA reset on owner validation ───────────
+                 * The owner has been authenticated during an armed boot.
+                 * Reset NVS to DIRECTO so the NEXT power-cycle starts
+                 * in the normal (non-armed) state. Also update the in-memory
+                 * flag so subsequent STATE_SLEEP entries do not re-write
+                 * CENTINELA for this (now friendly) session.               */
+                if (g_boot_operation_mode == BOOT_MODE_CENTINELA) {
+                    ESP_LOGI(TAG, "CENTINELA: Propietario validado. "
+                                  "Restableciendo NVS a DIRECTO.");
+                    nvs_set_operation_mode(BOOT_MODE_DIRECTO);
+                    g_boot_operation_mode = BOOT_MODE_DIRECTO;
+                }
+                /* ────────────────────────────────────────────────────────── */
                 media_sys_set_vigilante_mute(false);
                 s_alert_dispatch_pending  = false;
                 s_pending_webrtc_mode     = WEBRTC_SESSION_MODE_FRIENDLY;

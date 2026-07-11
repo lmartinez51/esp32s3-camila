@@ -254,6 +254,48 @@ extern "C"
      */
     bool nvs_read_and_clear_boot_to_provisioning_flag(void);
 
+    /* ── Phase 1: Boot Operation Mode ──────────────────────────────────────
+     * Persists whether the device should arm itself (CENTINELA) or run the
+     * normal BLE-identity flow (DIRECTO) on the next power-on.
+     *
+     * NVS namespace : "system"
+     * NVS key       : "op_mode"  (u8, 15-char limit observed)
+     * Default       : BOOT_MODE_DIRECTO (key absent ≡ DIRECTO)
+     * ─────────────────────────────────────────────────────────────────── */
+
+    /**
+     * @brief Persistent boot-routing flag stored in NVS.
+     *
+     * BOOT_MODE_DIRECTO   — Normal operation: skip radar, validate BLE on boot.
+     * BOOT_MODE_CENTINELA — Armed mode: arm radar/CSI on boot; require motion
+     *                       before BLE validation. Written when an intruder
+     *                       session ends so the next power-on is pre-armed.
+     */
+    typedef enum {
+        BOOT_MODE_DIRECTO   = 0, /**< Default / trusted-occupant boot. */
+        BOOT_MODE_CENTINELA = 1, /**< Armed / post-intrusion boot.     */
+    } boot_operation_mode_t;
+
+    /**
+     * @brief Persist the boot operation mode to NVS flash.
+     *
+     * Opens namespace "system", writes key "op_mode" as a u8, commits, and
+     * closes. Safe to call from any FreeRTOS task context.
+     *
+     * @param mode  BOOT_MODE_DIRECTO or BOOT_MODE_CENTINELA.
+     */
+    void nvs_set_operation_mode(boot_operation_mode_t mode);
+
+    /**
+     * @brief Read the current boot operation mode from NVS.
+     *
+     * Returns BOOT_MODE_DIRECTO if the key is absent (fresh flash / erased NVS)
+     * so the system always defaults to the safe, non-armed state.
+     *
+     * @return The stored boot_operation_mode_t value.
+     */
+    boot_operation_mode_t nvs_get_operation_mode(void);
+
 #ifdef __cplusplus
 }
 #endif

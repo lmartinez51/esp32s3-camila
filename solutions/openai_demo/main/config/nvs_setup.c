@@ -1409,4 +1409,59 @@ bool nvs_read_and_clear_boot_to_provisioning_flag(void)
     return flag_is_set;
 }
 
+/* ── Phase 1: Boot Operation Mode ─────────────────────────────────────── */
+
+void nvs_set_operation_mode(boot_operation_mode_t mode)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("system", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        nvs_set_u8(nvs_handle, "op_mode", (uint8_t)mode);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGW(TAG, "NVS: op_mode escrito → %s",
+                 mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "NVS: No se pudo abrir namespace 'system' para escribir op_mode: %s",
+                 esp_err_to_name(err));
+    }
+}
+
+boot_operation_mode_t nvs_get_operation_mode(void)
+{
+    nvs_handle_t nvs_handle;
+    boot_operation_mode_t mode = BOOT_MODE_DIRECTO; /* safe default */
+
+    esp_err_t err = nvs_open("system", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
+    {
+        uint8_t raw = 0;
+        esp_err_t get_err = nvs_get_u8(nvs_handle, "op_mode", &raw);
+        if (get_err == ESP_OK)
+        {
+            mode = (raw == (uint8_t)BOOT_MODE_CENTINELA)
+                       ? BOOT_MODE_CENTINELA
+                       : BOOT_MODE_DIRECTO;
+        }
+        else if (get_err != ESP_ERR_NVS_NOT_FOUND)
+        {
+            ESP_LOGE(TAG, "NVS: Error al leer op_mode: %s", esp_err_to_name(get_err));
+        }
+        /* ESP_ERR_NVS_NOT_FOUND → key absent → DIRECTO (default) */
+        nvs_close(nvs_handle);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "NVS: No se pudo abrir namespace 'system' para leer op_mode: %s",
+                 esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG, "NVS: op_mode leído → %s",
+             mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
+    return mode;
+}
+
 /* End of file */

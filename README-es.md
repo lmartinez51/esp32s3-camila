@@ -14,7 +14,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 
 - 📡 **Detección de Presencia de Doble Factor (Radar/CSI + BLE)** — utiliza un radar de hardware opcional o DSP determinista sobre Wi-Fi CSI para detectar movimiento físico, combinada con la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar al asistente.
 - 📡 **Integración de Sniffer IR** — captura y mapea comandos infrarrojos para activar acciones internas (p. ej., silenciar/activar el audio) cuando el dispositivo está acoplado.
-- 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2**).
+- 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2.1**).
 - 🎧 **Control dinámico de audio** — activa o desactiva el silencio con una estrategia robusta de reinicio de la tubería de audio.
 - 🤫 **Modo Silencio Inteligente** — cuando el usuario pide al asistente que guarde silencio, este silencia el micrófono pero mantiene activa la sesión, pudiendo enviar mensajes cortos de solo texto a la pantalla.
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
