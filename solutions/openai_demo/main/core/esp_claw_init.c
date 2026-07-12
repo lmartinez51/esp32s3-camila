@@ -367,6 +367,18 @@ static bool esp_claw_lua_has_register_rule(lua_State *L) {
     return present;
 }
 
+static int c_message_handler(lua_State *L) {
+    const char *msg = lua_tostring(L, 1);
+    if (msg == NULL) { 
+        if (luaL_callmeta(L, 1, "__tostring") && lua_type(L, -1) == LUA_TSTRING) return 1;
+        else msg = lua_pushfstring(L, "(error object is a %s value)", luaL_typename(L, 1));
+    }
+    // Generar el traceback usando C, sin exponer la librería debug a Lua
+    luaL_traceback(L, L, msg, 1);
+    return 1;
+}
+
+
 static void lua_worker_task(void *arg) {
     ESP_LOGI(TAG, "Starting Lua Isolation Test Worker");
     
@@ -483,14 +495,17 @@ static void lua_worker_task(void *arg) {
                     
                     // (Hardware Lockdown Interceptor Bypass removed for Phase 1 Rollback)
 
-                    lua_getglobal(L, "register_rule");
+                    lua_pushcfunction(L, c_message_handler);   // [handler]
+                    int handler_idx = lua_gettop(L);
+
+                    lua_getglobal(L, "register_rule");          // [handler, func]
                     
                     if (lua_isfunction(L, -1)) {
-                        claw_push_rule_to_lua(L, current);
+                        claw_push_rule_to_lua(L, current);      // [handler, func, arg]
                         
                         lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, 50000);
-                        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-                            ESP_LOGE(TAG, "Lua Execution Error (register_rule): %s", lua_tostring(L, -1));
+                        if (lua_pcall(L, 1, 0, handler_idx) != LUA_OK) {
+                            ESP_LOGE(TAG, "Lua Fatal Error:\n%s", lua_tostring(L, -1));
                             lua_pop(L, 1);
                             // The Lua side never got to call c_send_webrtc_response
                             // for this call_id. Left alone, the Realtime agent
@@ -505,8 +520,8 @@ static void lua_worker_task(void *arg) {
                         }
                         lua_sethook(L, instruction_limit_hook, 0, 0);
                     } else {
+                        lua_pop(L, 1); // pop the non-function value
                         ESP_LOGE(TAG, "register_rule function not found in Lua environment");
-                        lua_pop(L, 1);
                         // Same problem as above: nothing Lua-side will ever
                         // answer this call_id if register_rule doesn't
                         // exist. Answer it from C so the caller isn't left
@@ -516,6 +531,7 @@ static void lua_worker_task(void *arg) {
                             sendEvent("response.create", NULL);
                         }
                     }
+                    lua_pop(L, 1); // pop the handler
                     
                     free(current);
                     current = next;

@@ -82,23 +82,24 @@ function ir.save_db()
         return
     end
 
-    local json_str = "{\n"
+    local chunks = {"{\n"}
     local first_dev = true
     for dev, buttons in pairs(ir_db) do
-        if not first_dev then json_str = json_str .. ",\n" end
+        if not first_dev then table.insert(chunks, ",\n") end
         first_dev = false
-        json_str = json_str .. '  "' .. dev .. '": {\n'
-
+        table.insert(chunks, '  "' .. dev .. '": {\n')
+        
         local first_btn = true
         for btn, code in pairs(buttons) do
-            if not first_btn then json_str = json_str .. ",\n" end
+            if not first_btn then table.insert(chunks, ",\n") end
             first_btn = false
-            -- code is already a "0x%08X" string — wrap in JSON quotes directly.
-            json_str = json_str .. '    "' .. btn .. '": "' .. code .. '"'
+            table.insert(chunks, '    "' .. btn .. '": "' .. code .. '"')
         end
-        json_str = json_str .. "\n  }"
+        table.insert(chunks, "\n  }")
     end
-    json_str = json_str .. "\n}\n"
+    table.insert(chunks, "\n}\n")
+    
+    local json_str = table.concat(chunks)
 
     if ir.write_db(json_str) then
         print("ir_db: flushed to LittleFS.")
