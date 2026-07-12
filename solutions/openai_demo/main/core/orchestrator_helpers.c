@@ -314,6 +314,8 @@ const char *orchestrator_state_name(orchestrator_state_t state)
     case STATE_ACTIVE:              return "STATE_ACTIVE";
     case STATE_AUTO_SLEEPING:       return "STATE_AUTO_SLEEPING";
     case STATE_STOPPING_WEBRTC:     return "STATE_STOPPING_WEBRTC";
+    case STATE_TEARING_DOWN_UI_FOR_SCAN: return "STATE_TEARING_DOWN_UI_FOR_SCAN";
+    case STATE_AUTO_ARM_BLE_SCANNING: return "STATE_AUTO_ARM_BLE_SCANNING";
     case STATE_FATAL_ERROR:         return "STATE_FATAL_ERROR";
     default:                        return "STATE_UNKNOWN";
     }
@@ -348,6 +350,7 @@ const char *orchestrator_event_name(orchestrator_event_t event)
     case ORCH_EVENT_MIC_UNMUTED:             return "ORCH_EVENT_MIC_UNMUTED";
     case ORCH_EVENT_IDLE_ALERT_START:        return "ORCH_EVENT_IDLE_ALERT_START";
     case ORCH_EVENT_IDLE_ALERT_END:          return "ORCH_EVENT_IDLE_ALERT_END";
+    case ORCH_EVENT_RAM_FREED:               return "ORCH_EVENT_RAM_FREED";
     case ORCH_EVENT_FATAL_ERROR:             return "ORCH_EVENT_FATAL_ERROR";
     default:                                 return "ORCH_EVENT_UNKNOWN";
     }

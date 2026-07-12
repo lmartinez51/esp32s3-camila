@@ -34,7 +34,7 @@ typedef struct
 static QueueHandle_t mute_evt_queue = NULL;
 static volatile bool mic_muted = false;
 static bool s_idle_warning_sent = false;
-static int s_mute_remaining_seconds = 840;
+static int s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
 TimerHandle_t g_idle_timer = NULL;
 
 static void vIdleTimerCallback(TimerHandle_t xTimer);
@@ -188,7 +188,7 @@ void mute_handler_start_idle_timer(void)
     if (g_idle_timer != NULL)
     {
         s_idle_warning_sent = false;
-        s_mute_remaining_seconds = 840;
+        s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
         xTimerStart(g_idle_timer, 100);
     }
 }
@@ -203,7 +203,7 @@ void mute_handler_stop_idle_timer(void)
     {
         ESP_LOGI(TAG, "Deteniendo timer de inactividad (usuario hizo unmute).");
         xTimerStop(g_idle_timer, pdMS_TO_TICKS(100));
-        s_mute_remaining_seconds = 840;
+        s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
         ui_simi_set_arbiter_slot(2, "");
     }
 }

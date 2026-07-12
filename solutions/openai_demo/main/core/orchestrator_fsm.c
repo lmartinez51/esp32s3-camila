@@ -43,6 +43,17 @@
 
 static const char *TAG = "MAIN";
 
+/* ── Phase 3: RAM Guillotine Timer & State ──────────────────────────────── */
+
+static esp_timer_handle_t s_ram_guillotine_timer = NULL;
+static bool s_teardown_ui_pending = false;
+
+static void ram_guillotine_timer_cb(void *arg)
+{
+    ESP_LOGI(TAG, "RAM Guillotine Timer Expired! Posting ORCH_EVENT_RAM_FREED");
+    orchestrator_post_event(ORCH_EVENT_RAM_FREED);
+}
+
 /* ── Fatal Error Timer ──────────────────────────────────────────────────── */
 
 static void fatal_error_timer_cb(void *arg)
@@ -307,6 +318,35 @@ void orchestrator_enter_state(orchestrator_state_t *state,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
                                  WEBRTC_API_ERROR_BIT);
         orchestrator_start_webrtc_stop();
+        break;
+
+    case STATE_TEARING_DOWN_UI_FOR_SCAN:
+    {
+        ESP_LOGW(TAG, "STATE_TEARING_DOWN_UI_FOR_SCAN: tearing down UI to free RAM for BLE Scan");
+        radar_hal_disable();
+        csi_handler_stop();
+        ui_simi_stop();
+        ui_simi_deinit();
+        ui_deinit_keep_last_frame();
+        
+        esp_timer_create_args_t timer_args = {
+            .callback = &ram_guillotine_timer_cb,
+            .name     = "ram_guillotine_timer"
+        };
+        if (s_ram_guillotine_timer != NULL) {
+            esp_timer_stop(s_ram_guillotine_timer);
+            esp_timer_delete(s_ram_guillotine_timer);
+            s_ram_guillotine_timer = NULL;
+        }
+        if (esp_timer_create(&timer_args, &s_ram_guillotine_timer) == ESP_OK) {
+            esp_timer_start_once(s_ram_guillotine_timer, 500000ULL); /* 500 ms */
+        }
+        break;
+    }
+
+    case STATE_AUTO_ARM_BLE_SCANNING:
+        ESP_LOGI(TAG, "STATE_AUTO_ARM_BLE_SCANNING: Booting BLE stack headlessly for Ghost Scan...");
+        orchestrator_start_ble_prepare();
         break;
 
     default:
@@ -589,6 +629,7 @@ void app_startup_orchestrator_task(void *param)
             } else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
                        !orchestrator_is_vigilante_active())
             {
+                s_teardown_ui_pending = true;
                 orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
                 orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
             } else if (event == ORCH_EVENT_VIGILANTE_ROOM_VACATED ||
@@ -624,11 +665,49 @@ void app_startup_orchestrator_task(void *param)
                 orchestrator_enter_state(&state, STATE_WAIT_WIFI);
             } else if (event == ORCH_EVENT_WEBRTC_STOPPED) {
                 s_webrtc_stop_started_ms = 0;
-                orchestrator_enter_state(&state, STATE_SLEEP);
+                if (s_teardown_ui_pending) {
+                    s_teardown_ui_pending = false;
+                    orchestrator_enter_state(&state, STATE_TEARING_DOWN_UI_FOR_SCAN);
+                } else {
+                    orchestrator_enter_state(&state, STATE_SLEEP);
+                }
             } else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
                        event == ORCH_EVENT_WEBRTC_API_ERROR)
             {
                 ESP_LOGI(TAG, "Ignoring WebRTC disconnect notification during local shutdown");
+            } else {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_TEARING_DOWN_UI_FOR_SCAN:
+            if (event == ORCH_EVENT_RAM_FREED) {
+                ESP_LOGI(TAG, "STATE_TEARING_DOWN_UI_FOR_SCAN: UI is dead. System RAM freed for BLE scanning.");
+                orchestrator_enter_state(&state, STATE_AUTO_ARM_BLE_SCANNING);
+            } else {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_AUTO_ARM_BLE_SCANNING:
+            if (event == ORCH_EVENT_BLE_READY) {
+                ESP_LOGI(TAG, "STATE_AUTO_ARM_BLE_SCANNING: BLE stack ready. Starting headless identity validation...");
+                orchestrator_start_identity_validation();
+            } else if (event == ORCH_EVENT_BLE_BUSY) {
+                ESP_LOGE(TAG, "STATE_AUTO_ARM_BLE_SCANNING: BLE stack failed to initialize. Arming system (CENTINELA).");
+                nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+            } else if (event == ORCH_EVENT_IDENTITY_PRESENT) {
+                ESP_LOGI(TAG, "STATE_AUTO_ARM_BLE_SCANNING: Identity FOUND. Re-routing boot to DIRECTO.");
+                nvs_set_operation_mode(BOOT_MODE_DIRECTO);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+            } else if (event == ORCH_EVENT_IDENTITY_REJECTED) {
+                ESP_LOGW(TAG, "STATE_AUTO_ARM_BLE_SCANNING: Identity REJECTED. Arming system (CENTINELA).");
+                nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
             } else {
                 orchestrator_ignore_event(state, event);
             }
