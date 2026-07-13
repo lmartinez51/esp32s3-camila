@@ -216,7 +216,7 @@ idf.py -p <PORT> flash monitor
 ## 📁 Estructura del Proyecto (Alto Nivel)
 
 ```
-/solutions/openai_demo/main
+/solutions/openai_camila/main
  ├── alert/                # Despachador de alertas de movimiento CSI
  ├── audio/                # Captura/reproducción de audio, tuberías y silencio
  ├── ble/                  # Lógica BLE central y aprovisionamiento

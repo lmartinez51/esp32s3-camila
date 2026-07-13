@@ -48,7 +48,6 @@
 #include "media_lib_os.h"
 
 /* ── Project Modules ────────────────────────────────────────────────────── */
-#include "hardware/radar.h"
 #include "common.h"
 #include "lua_benchmark.h"
 #include "esp_claw_init.h"
@@ -73,11 +72,9 @@
 #include "csi_handler.h"
 #include "ei_inference.h"
 #include "alert_dispatcher.h"
-#include "aht30.h"
-#include "hardware/ir_sniffer.h"
+#include "alert_dispatcher.h"
 
 /* ── Orchestrator Sub-Modules ───────────────────────────────────────────── */
-#include "sensor_dock.h"
 #include "orchestrator_helpers.h"
 #include "orchestrator_tasks.h"
 #include "orchestrator_vigilante.h"
@@ -375,28 +372,12 @@ void app_main(void)
         return;
     }
 
-    /* 6) Radar HAL */
-    if (radar_hal_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize Radar HAL");
-    }
-
+    /* 6) Radar HAL (Removed for Camila) */
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
     ESP_LOGI(TAG, "BLE Central permanece deshabilitado por defecto.");
 
     /* 7) Orchestrator task */
     xTaskCreate(app_startup_orchestrator_task, "startup_orch", 4096, NULL, 5, NULL);
-
-    /* 8) Sensor dock (AHT30 + dock detection) + IR sniffer */
-    sensor_dock_init();
-
-    if (s_aht30_present) {
-        ESP_LOGI(TAG, "Dock confirmed. Initializing IR Sniffer on GPIO 38.");
-        ir_sniffer_init();
-        // esp_claw_init();
-        // ir_sniffer_enter_pairing_mode(IR_ACTION_OUTFIT_BARCA);
-    } else {
-        ESP_LOGW(TAG, "Dock not present. Bypassing IR Sniffer to prevent floating noise.");
-    }
 
     /* 9) WiFi connect or BLE provisioning */
     bool wifi_connected = false;
@@ -414,10 +395,6 @@ void app_main(void)
         }
 
         display_startup_screen();
-        if (s_aht30_present) {
-            sensor_dock_poll_temperature();
-            s_last_aht30_poll_ms = orchestrator_now_ms();
-        }
         ESP_ERROR_CHECK(network_wifi_init(network_event_handler));
         wifi_connected = network_wifi_connect_main(WIFI_SSID, WIFI_PASSWORD);
     }

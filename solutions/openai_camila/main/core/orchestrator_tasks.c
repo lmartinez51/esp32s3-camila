@@ -29,8 +29,7 @@
 #include "alert_dispatcher.h"
 #include "webrtc.h"
 #include "csi_handler.h"
-#include "hardware/radar.h"
-#include "sensor_dock.h"
+// Removed radar.h and sensor_dock.h
 #include "common.h"
 #include "ui.h"     /* COLOR_*_BGR565 constants */
 
@@ -378,18 +377,11 @@ static void orchestrator_sleep_csi_cooldown_task(void *param)
         ESP_LOGI(TAG, "STATE_SLEEP: Cooldown complete; starting unified motion sensing.");
         s_sleep_motion_allowed_ms = 0;
 
-        if (g_hardware_radar_present) {
-            ESP_LOGI(TAG, "STATE_SLEEP: Arming One-Shot Hardware Radar.");
-            radar_hal_enable();
-            orchestrator_show_phase("radar_watch", "Watching", "Radar Armed", COLOR_GREEN_BGR565);
+        esp_err_t csi_err = csi_handler_start();
+        if (csi_err != ESP_OK) {
+            ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s", esp_err_to_name(csi_err));
         } else {
-            esp_err_t csi_err = csi_handler_start();
-            if (csi_err != ESP_OK) {
-                ESP_LOGE(TAG, "STATE_SLEEP: failed to start CSI after cooldown: %s",
-                         esp_err_to_name(csi_err));
-            } else {
-                orchestrator_show_phase("csi_watch", "Watching", "Motion scan", COLOR_GREEN_BGR565);
-            }
+            orchestrator_show_phase("csi_watch", "Watching", "Motion scan", COLOR_GREEN_BGR565);
         }
     }
     else

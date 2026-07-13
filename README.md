@@ -220,7 +220,7 @@ idf.py -p <PORT> flash monitor
 ## 📁 Project Layout (high level)
 
 ```
-/solutions/openai_demo/main
+/solutions/openai_camila/main
  ├── alert/                # CSI drop/motion alert dispatcher
  ├── audio/                # Audio capture/playback, pipeline control, and mute logic
  ├── ble/                  # BLE central logic and provisioning

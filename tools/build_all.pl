@@ -2,7 +2,7 @@ use Cwd qw(cwd);
 my %target = (
  "peer_demo"      => [qw/esp32 esp32s3 esp32s2/],
  "doorbell_demo"  => [qw/esp32p4 esp32s3/],
- "openai_demo"    => [qw/esp32s3/],
+ "openai_camila"    => [qw/esp32s3/],
  "videocall_demo" => [qw/esp32p4/]
  );
 

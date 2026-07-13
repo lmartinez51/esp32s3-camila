@@ -84,7 +84,6 @@ static bool s_simi_backlight_ready = false;
 static char s_simi_overlay_text[32] = {0};
 static uint16_t s_simi_overlay_color = 0;
 
-static char s_simi_temperature_text[16] = {0};
 static char s_simi_top_right_text[32] = {0};
 
 static char s_arbiter_slot1[32] = {0};
@@ -454,12 +453,10 @@ static void simi_anim_task(void *arg)
 
             static simi_face_t last_f = {0};
             static char last_overlay_text[32] = {0};
-            static char last_temperature_text[16] = {0};
             static char last_top_right_text[32] = {0};
             static simi_outfit_t last_outfit = OUTFIT_MAX;
             
             bool text_changed = false;
-            bool temp_changed = false;
             bool top_right_changed = false;
             bool outfit_changed = false;
 
@@ -468,9 +465,6 @@ static void simi_anim_task(void *arg)
                 text_changed = strncmp(s_simi_overlay_text, last_overlay_text, sizeof(last_overlay_text)) != 0;
                 if (text_changed) strncpy(last_overlay_text, s_simi_overlay_text, sizeof(last_overlay_text));
                 
-                temp_changed = strncmp(s_simi_temperature_text, last_temperature_text, sizeof(last_temperature_text)) != 0;
-                if (temp_changed) strncpy(last_temperature_text, s_simi_temperature_text, sizeof(last_temperature_text));
-
                 top_right_changed = strncmp(s_simi_top_right_text, last_top_right_text, sizeof(last_top_right_text)) != 0;
                 if (top_right_changed) strncpy(last_top_right_text, s_simi_top_right_text, sizeof(last_top_right_text));
 
@@ -484,7 +478,6 @@ static void simi_anim_task(void *arg)
                                (last_visual_state == SIMI_STATE_MAX) || 
                                outfit_changed || 
                                text_changed || 
-                               temp_changed || 
                                top_right_changed || 
                                f.alert_border;
 
@@ -800,47 +793,6 @@ void ui_simi_set_overlay_text(const char *text, uint16_t color)
             if (s_simi_overlay_text[0] != '\0')
             {
                 s_simi_overlay_text[0] = '\0';
-                changed = true;
-            }
-        }
-        if (changed)
-        {
-            task = s_anim_task;
-        }
-        xSemaphoreGive(s_anim_mutex);
-    }
-
-    if (task != NULL && changed)
-    {
-        xTaskNotifyGive(task);
-    }
-}
-
-void ui_simi_set_temperature_text(const char *text)
-{
-    if (simi_anim_ensure_mutex() != ESP_OK)
-    {
-        return;
-    }
-
-    TaskHandle_t task = NULL;
-    bool changed = false;
-    if (xSemaphoreTake(s_anim_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
-    {
-        if (text)
-        {
-            if (strncmp(s_simi_temperature_text, text, sizeof(s_simi_temperature_text)) != 0)
-            {
-                strncpy(s_simi_temperature_text, text, sizeof(s_simi_temperature_text) - 1);
-                s_simi_temperature_text[sizeof(s_simi_temperature_text) - 1] = '\0';
-                changed = true;
-            }
-        }
-        else
-        {
-            if (s_simi_temperature_text[0] != '\0')
-            {
-                s_simi_temperature_text[0] = '\0';
                 changed = true;
             }
         }
@@ -1466,49 +1418,6 @@ static void draw_eye(simi_canvas_t *cv, int ex, int ey, const simi_face_t *f)
     }
 }
 
-static void canvas_draw_thermometer_icon(simi_canvas_t *cv, int x, int y)
-{
-    // A simple 8x16 minimalist thermometer pattern.
-    // 0 = Transparent, 1 = White (Glass), 2 = Red (Liquid), 3 = Dark Slate Gray (Empty)
-    static const uint8_t pattern[16][8] = {
-        {0, 0, 1, 1, 1, 1, 0, 0},
-        {0, 1, 3, 3, 3, 3, 1, 0},
-        {0, 1, 3, 3, 3, 3, 1, 0},
-        {0, 1, 3, 3, 3, 3, 1, 0},
-        {0, 1, 3, 3, 3, 3, 1, 0},
-        {0, 1, 3, 3, 3, 3, 1, 0},
-        {0, 1, 2, 2, 2, 2, 1, 0},
-        {0, 1, 2, 2, 2, 2, 1, 0},
-        {0, 1, 2, 2, 2, 2, 1, 0},
-        {0, 1, 2, 2, 2, 2, 1, 0},
-        {1, 2, 2, 2, 2, 2, 2, 1},
-        {1, 2, 2, 2, 2, 2, 2, 1},
-        {1, 2, 2, 2, 2, 2, 2, 1},
-        {1, 2, 2, 2, 2, 2, 2, 1},
-        {0, 1, 2, 2, 2, 2, 1, 0},
-        {0, 0, 1, 1, 1, 1, 0, 0}
-    };
-
-    uint16_t palette[4] = {
-        0,                            // 0 = Transparent (unused in draw)
-        SIMI_RGB(255, 255, 255),      // 1 = White (Glass)
-        SIMI_RGB(255, 40, 40),        // 2 = Red (Liquid)
-        SIMI_RGB(30, 30, 35)          // 3 = Dark Slate Gray (Empty)
-    };
-
-    for (int r = 0; r < 16; r++) {
-        for (int c = 0; c < 8; c++) {
-            uint8_t p = pattern[r][c];
-            if (p == 0) continue; // Skip transparent pixels
-            
-            int px = x + c;
-            int py = y + r;
-            if (px >= 0 && py >= 0 && px < cv->w && py < cv->h) {
-                cv->buf[py * cv->w + px] = palette[p];
-            }
-        }
-    }
-}
 
 static inline bool is_in_teardrop(int dx, int dy, int r)
 {
@@ -1745,60 +1654,6 @@ static void simi_render(const simi_face_t *f)
         ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, bx, by, s_simi_overlay_text, s_simi_overlay_color, text_scale);
     }
 
-    // ── Zócalo de Temperatura (Top Left) ──
-    if (s_simi_temperature_text[0] != '\0')
-    {
-        int text_scale = 1;
-        int text_width = ui_get_text_width(s_simi_temperature_text, text_scale);
-        int text_height = 8 * text_scale;
-        
-        int pad_left = 6;
-        int pad_right = 6;
-        int pad_mid = 4;
-        int pad_top = 4;
-        int pad_bottom = 4;
-        
-        int icon_w = 8;
-        int icon_h = 16;
-        
-        int badge_w = pad_left + icon_w + pad_mid + text_width + pad_right;
-        int badge_h = (text_height > icon_h ? text_height : icon_h) + pad_top + pad_bottom;
-        
-        int badge_x = 15;
-        int badge_y = 20;
-        
-        // Background Badge (Dark Slate Gray)
-        uint16_t c_badge = SIMI_RGB(30, 30, 35);
-        canvas_fill_round_rect(cv, badge_x, badge_y, badge_w, badge_h, 4, c_badge);
-        
-        // Thermometer Icon
-        int icon_y = badge_y + (badge_h - icon_h) / 2;
-        canvas_draw_thermometer_icon(cv, badge_x + pad_left, icon_y);
-        
-        // Text
-        int text_x = badge_x + pad_left + icon_w + pad_mid;
-        int text_y = badge_y + (badge_h - text_height) / 2;
-        ui_draw_text_to_buffer(cv->buf, cv->w, cv->h, text_x, text_y, s_simi_temperature_text, SIMI_RGB(255, 255, 255), text_scale);
-        
-        // Procedural Degree Symbol (°)
-        char *space_ptr = strchr(s_simi_temperature_text, ' ');
-        if (space_ptr) {
-            int num_len = space_ptr - s_simi_temperature_text;
-            char num_str[16] = {0};
-            strncpy(num_str, s_simi_temperature_text, num_len);
-            
-            int num_width = ui_get_text_width(num_str, text_scale);
-            int degree_x = text_x + num_width + 1;
-            int degree_y = text_y;
-            
-            // Draw a tiny 3x3 hollow box
-            canvas_fill_rect(cv, degree_x, degree_y, 3, 1, SIMI_RGB(255, 255, 255));
-            canvas_fill_rect(cv, degree_x, degree_y + 2, 3, 1, SIMI_RGB(255, 255, 255));
-            canvas_fill_rect(cv, degree_x, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
-            canvas_fill_rect(cv, degree_x + 2, degree_y, 1, 3, SIMI_RGB(255, 255, 255));
-        }
-    }
-
     // ── Zócalo de Top-Right (e.g. Mute Timer) ──
     if (s_simi_top_right_text[0] != '\0')
     {
@@ -1811,7 +1666,7 @@ static void simi_render(const simi_face_t *f)
         int pad_top = 4;
         int pad_bottom = 4;
         
-        // Match the height of the temperature badge which includes a 16px icon
+        // Match a fixed height of 16px
         int target_icon_h = 16;
         
         int badge_w = pad_left + text_width + pad_right;

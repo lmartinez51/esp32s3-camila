@@ -2,7 +2,7 @@ import yaml
 
 build_folders_targets = [
     {"folder": "peer_demo", "targets": ["esp32", "esp32s3", "esp32s2"]},
-    {"folder": "openai_demo", "targets": ["esp32s3"]},
+    {"folder": "openai_camila", "targets": ["esp32s3"]},
     {"folder": "doorbell_demo", "targets": ["esp32s3", "esp32p4"]},
 ]
 

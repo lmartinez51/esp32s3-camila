@@ -1,7 +1,6 @@
 idf_component_register(
     SRCS
         "core/main.c"
-        "core/sensor_dock.c"
         "core/orchestrator_helpers.c"
         "core/orchestrator_tasks.c"
         "core/orchestrator_vigilante.c"
@@ -12,11 +11,9 @@ idf_component_register(
         "config/config_manager.c"
         "config/nvs_setup.c"
 
+        "sensing/esp_now_beacon.c"
+
         "hardware/board.c"
-        "hardware/aht30.c"
-        "hardware/radar.c"
-        "hardware/ir_sniffer.c"
-        "hardware/ir_action_map.c"
         "hardware/kill_switch.c"
 
         "audio/media_sys.c"
@@ -35,7 +32,6 @@ idf_component_register(
 
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"
-        "webrtc/lua_ir_bindings.c"
         "webrtc/lua_mic_bindings.c"
 
         "openai/http_client.c"

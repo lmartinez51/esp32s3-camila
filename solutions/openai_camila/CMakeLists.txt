@@ -21,4 +21,4 @@ list(APPEND EXTRA_COMPONENT_DIRS
 
 list(APPEND EXTRA_COMPONENT_DIRS "../common")
 
-project(openai_demo)
+project(openai_camila)

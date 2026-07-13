@@ -1457,149 +1457,6 @@ static class_t *build_execute_automation_trigger_class(void)
     return execute_trigger;
 }
 
-static class_t *build_ir_get_devices_class(void)
-{
-    class_t *cls = calloc(1, sizeof(class_t));
-    if (!cls) return NULL;
-
-    parameters_t params = {
-        .type = "object",
-        .properties = NULL,
-        .properties_num = 0,
-        .required = NULL,
-        .required_num = 0,
-    };
-
-    cls->type = "function";
-    cls->name = "ir_get_devices";
-    cls->desc = "Retrieves a list of all currently saved IR devices and their associated buttons.";
-    cls->parameters = params;
-    cls->attr_list = NULL;
-    cls->attr_num = 0;
-
-    return cls;
-}
-
-static class_t *build_ir_learn_button_class(void)
-{
-    class_t *cls = calloc(1, sizeof(class_t));
-    if (!cls) return NULL;
-
-    static attribute_t properties[] = {
-        {
-            .name = "device_name",
-            .desc = "The target device (e.g., 'tv', 'ac').",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
-        {
-            .name = "button_name",
-            .desc = "The button to learn (e.g., 'power', 'vol_up').",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
-    };
-
-    static const char *required[] = {"device_name", "button_name"};
-
-    parameters_t params = {
-        .type = "object",
-        .properties = properties,
-        .properties_num = ELEMS(properties),
-        .required = (char **)required,
-        .required_num = ELEMS(required),
-    };
-
-    cls->type = "function";
-    cls->name = "ir_learn_button";
-    cls->desc = "Arms the IR sniffer to learn a new button code from a physical remote.";
-    cls->parameters = params;
-    cls->attr_list = properties;
-    cls->attr_num = ELEMS(properties);
-
-    return cls;
-}
-
-static class_t *build_ir_transmit_command_class(void)
-{
-    class_t *cls = calloc(1, sizeof(class_t));
-    if (!cls) return NULL;
-
-    static attribute_t properties[] = {
-        {
-            .name = "device_name",
-            .desc = "The target device (e.g., 'tv', 'ac').",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
-        {
-            .name = "button_name",
-            .desc = "The button to transmit (e.g., 'power', 'vol_up').",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
-    };
-
-    static const char *required[] = {"device_name", "button_name"};
-
-    parameters_t params = {
-        .type = "object",
-        .properties = properties,
-        .properties_num = ELEMS(properties),
-        .required = (char **)required,
-        .required_num = ELEMS(required),
-    };
-
-    cls->type = "function";
-    cls->name = "ir_transmit_command";
-    cls->desc = "Transmits a learned IR code from the database to control a device.";
-    cls->parameters = params;
-    cls->attr_list = properties;
-    cls->attr_num = ELEMS(properties);
-
-    return cls;
-}
-
-static class_t *build_ir_delete_device_class(void)
-{
-    class_t *cls = calloc(1, sizeof(class_t));
-    if (!cls) return NULL;
-
-    static attribute_t properties[] = {
-        {
-            .name = "device_name",
-            .desc = "The name of the IR device to delete.",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
-        {
-            .name = "button_name",
-            .desc = "Optional. The specific button to delete. If omitted, the entire device is deleted.",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = false,
-        },
-    };
-
-    static const char *required[] = {"device_name"};
-
-    parameters_t params = {
-        .type = "object",
-        .properties = properties,
-        .properties_num = ELEMS(properties),
-        .required = (char **)required,
-        .required_num = ELEMS(required),
-    };
-
-    cls->type = "function";
-    cls->name = "ir_delete_device";
-    cls->desc = "Deletes a specified IR device or a specific button from the database.";
-    cls->parameters = params;
-    cls->attr_list = properties;
-    cls->attr_num = ELEMS(properties);
-
-    return cls;
-}
-
 static void add_class(class_t *cls)
 {
     if (classes == NULL)
@@ -1633,10 +1490,6 @@ static int build_classes(void)
     add_class(build_activate_mute_class());
     add_class(build_control_display_class());
     add_class(build_execute_automation_trigger_class());
-    add_class(build_ir_learn_button_class());
-    add_class(build_ir_transmit_command_class());
-    add_class(build_ir_get_devices_class());
-    add_class(build_ir_delete_device_class());
     build_once = true;
     return 0;
 }
@@ -1833,7 +1686,7 @@ static int send_session_update(void)
         "          \"properties\": {"
         "            \"sensor\": {"
         "              \"type\": \"string\","
-        "              \"description\": \"State source. Examples: 'temperature', 'humidity', 'radar_presence', 'time_24h', 'system_ram'.\""
+        "              \"description\": \"State source. Examples: 'time_24h', 'system_ram', 'battery_level'.\""
         "            },"
         "            \"op\": {"
         "              \"type\": \"string\","
@@ -1849,7 +1702,7 @@ static int send_session_update(void)
         "      },"
         "      \"actions\": {"
         "        \"type\": \"array\","
-        "        \"description\": \"Ordered array of strings representing execution endpoints using explicit dot-notation. You can now pass parameters using a colon (:). Syntax: 'device.action:parameter'. Examples: 'ac.set_temp:22', 'hue.light:red'. To introduce pauses between hardware commands, use 'sys.delay:milliseconds'. CRITICAL HARDWARE TIMING: If the sequence starts with powering on a complex device (e.g., 'tv.power'), you MUST insert a long boot delay (e.g., 'sys.delay:4000') immediately after. For sequential button presses (like navigating menus or entering multi-digit channels like 3.3), you MUST use a short delay (e.g., 'sys.delay:500') between each digit to prevent IR command overlapping or UI timeouts. Example: ['tv.num_3', 'sys.delay:500', 'tv.dash', 'sys.delay:500', 'tv.num_3'].\","
+        "        \"description\": \"Ordered array of strings representing execution endpoints using explicit dot-notation. You can now pass parameters using a colon (:). Syntax: 'device.action:parameter'. Examples: 'ac.set_temp:22', 'hue.light:red'. To introduce pauses between hardware commands, use 'sys.delay:milliseconds'.\","
         "        \"maxItems\": 16,"
         "        \"items\": {"
         "          \"type\": \"string\""
@@ -2860,88 +2713,6 @@ static int process_json(const char *json_data, int json_size)
             {
                 start_automation_task(call_id, iter->name, arguments->valuestring);
                 break; // Procesada
-            }
-            else if (strcmp(iter->name, "ir_learn_button") == 0 ||
-                     strcmp(iter->name, "ir_get_devices") == 0 ||
-                     strcmp(iter->name, "ir_transmit_command") == 0)
-            {
-                esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
-                if (req) {
-                    if (call_id) {
-                        strlcpy(req->call_id, call_id, sizeof(req->call_id));
-                    }
-                    if (strcmp(iter->name, "ir_learn_button") == 0) {
-                        strlcpy(req->trigger, "LUA_TOOL_IR_LEARN", sizeof(req->trigger));
-                    } else if (strcmp(iter->name, "ir_get_devices") == 0) {
-                        strlcpy(req->trigger, "LUA_TOOL_IR_GET_DEVICES", sizeof(req->trigger));
-                    } else {
-                        strlcpy(req->trigger, "LUA_TOOL_IR_TRANSMIT", sizeof(req->trigger));
-                    }
-                    
-                    cJSON* device_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
-                    cJSON* button_item = cJSON_GetObjectItemCaseSensitive(args_root, "button_name");
-                    
-                    if (cJSON_IsString(device_item) && device_item->valuestring &&
-                        cJSON_IsString(button_item) && button_item->valuestring) {
-                        strlcpy(req->actions[0].target, device_item->valuestring, sizeof(req->actions[0].target));
-                        strlcpy(req->actions[1].target, button_item->valuestring, sizeof(req->actions[1].target));
-                        req->num_actions = 2;
-                    }
-
-                    if (!esp_claw_is_automation_ready()) {
-                        ESP_LOGW(TAG, "IR tool '%s' rejected: automation offline.", iter->name);
-                        if (call_id) {
-                            send_function_output(call_id, "{\"error\": \"IR subsystem offline. Filesystem may be corrupted.\"}");
-                            sendEvent("response.create", NULL);
-                        }
-                        free(req);
-                        break;
-                    }
-                    esp_claw_send_rule(req);
-                    ESP_LOGI(TAG, "IR tool %s injected into IPC queue", iter->name);
-                } else {
-                    ESP_LOGE(TAG, "Failed to allocate memory for IR tool IPC payload");
-                }
-                break; // Processed
-            }
-            else if (strcmp(iter->name, "ir_delete_device") == 0)
-            {
-                esp_claw_rule_t* req = calloc(1, sizeof(esp_claw_rule_t));
-                if (req) {
-                    if (call_id) {
-                        strlcpy(req->call_id, call_id, sizeof(req->call_id));
-                    }
-                    strlcpy(req->trigger, "LUA_TOOL_IR_DELETE", sizeof(req->trigger));
-                    
-                    cJSON* device_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
-                    if (cJSON_IsString(device_item) && device_item->valuestring) {
-                        strlcpy(req->actions[0].target, device_item->valuestring, sizeof(req->actions[0].target));
-                        req->num_actions = 1;
-                        
-                        cJSON* button_item = cJSON_GetObjectItemCaseSensitive(args_root, "button_name");
-                        if (cJSON_IsString(button_item) && button_item->valuestring) {
-                            strlcpy(req->actions[1].target, button_item->valuestring, sizeof(req->actions[1].target));
-                            req->num_actions = 2;
-                            ESP_LOGI(TAG, "Deleting IR button: %s on device: %s", button_item->valuestring, device_item->valuestring);
-                        } else {
-                            ESP_LOGI(TAG, "Deleting IR device: %s (via Lua IPC)", device_item->valuestring);
-                        }
-                    }
-
-                    if (!esp_claw_is_automation_ready()) {
-                        ESP_LOGW(TAG, "IR tool '%s' rejected: automation offline.", iter->name);
-                        if (call_id) {
-                            send_function_output(call_id, "{\"error\": \"IR subsystem offline. Filesystem may be corrupted.\"}");
-                            sendEvent("response.create", NULL);
-                        }
-                        free(req);
-                        break;
-                    }
-                    esp_claw_send_rule(req);
-                } else {
-                    ESP_LOGE(TAG, "Failed to allocate memory for IR delete IPC payload");
-                }
-                break;
             }
             else
             {
