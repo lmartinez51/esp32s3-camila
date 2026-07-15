@@ -39,6 +39,26 @@ extern "C"
         // ... (aquí podríamos añadir más acciones en el futuro)
     } webrtc_action_t;
 
+    typedef enum {
+        OUTFIT_CASUAL_BLACK,
+        OUTFIT_ELEGANT_EVENING,
+        OUTFIT_LEATHER_JACKET
+    } camila_outfit_t;
+
+    typedef enum {
+        CAMILA_STATE_BOOT = 0,
+        CAMILA_STATE_IDLE,
+        CAMILA_STATE_LISTENING,
+        CAMILA_STATE_THINKING,
+        CAMILA_STATE_TALKING,
+        CAMILA_STATE_HAPPY,
+        CAMILA_STATE_MUTED,
+        CAMILA_STATE_ALERT,
+        CAMILA_STATE_SAD,
+        CAMILA_STATE_SLEEP,
+        CAMILA_STATE_MAX
+    } camila_state_t;
+
     int sendEvent(const char *type, const char *text);
     char *get_web_info(const char *request);
     int send_function_output(const char *call_id, const char *output);

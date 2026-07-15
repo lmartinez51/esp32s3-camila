@@ -22,7 +22,8 @@
 #include "responses_client.h"
 #include "ui.h"
 #include "camila_lvgl_ui.h"
-#include "simi.h"
+#include "camila_lvgl_ui.h"
+#include "webrtc.h"
 #include "app_events.h"
 #include "config_manager.h"
 #include "ble_common.h"
@@ -49,10 +50,10 @@
 #define SESSION_UPDATE_INITIAL_DELAY_MS 350
 #define SESSION_UPDATE_RETRY_DELAY_MS 250
 #define SESSION_UPDATE_MAX_ATTEMPTS 8
-#define SIMI_SESSION_STATIC_DELAY_MS 750
-#define SIMI_SESSION_ANIM_PROTECT_MS 8000
-#define SIMI_SESSION_TASK_STACK_SIZE 6144
-#define SIMI_SESSION_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+#define CAMILA_SESSION_STATIC_DELAY_MS 750
+#define CAMILA_SESSION_ANIM_PROTECT_MS 8000
+#define CAMILA_SESSION_TASK_STACK_SIZE 6144
+#define CAMILA_SESSION_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define DATA_CHANNEL_STATS_LOG_INTERVAL_MS 1000
 #define ENABLE_DATA_CHANNEL_SNAPSHOT_LOGS 0
 #define ENABLE_REALTIME_EVENT_DEBUG_LOGS 0
@@ -128,7 +129,7 @@ static QueueHandle_t g_webrtc_action_queue = NULL;
 static TaskHandle_t g_capture_recovery_task = NULL;
 #endif
 static TaskHandle_t g_session_update_task = NULL;
-static TaskHandle_t g_simi_session_task = NULL;
+static TaskHandle_t g_camila_session_task = NULL;
 static volatile uint32_t g_last_input_speech_ms = 0;
 static volatile uint32_t g_last_response_done_ms = 0;
 static volatile bool g_input_speech_active = false;
@@ -148,15 +149,15 @@ static SemaphoreHandle_t g_webrtc_mutex = NULL;
 static uint32_t g_webrtc_generation = 0;
 static volatile uint32_t g_last_realtime_activity_ms = 0;
 static volatile uint32_t g_session_update_generation = 0;
-static volatile uint32_t g_simi_session_generation = 0;
-static volatile uint32_t g_simi_anim_allowed_ms = 0;
-static volatile simi_state_t g_simi_pending_state = SIMI_STATE_IDLE;
-static volatile bool g_simi_pending_speaking = false;
-static volatile bool g_simi_static_ready = false;
+static volatile uint32_t g_camila_session_generation = 0;
+static volatile uint32_t g_camila_anim_allowed_ms = 0;
+static volatile camila_state_t g_camila_pending_state = CAMILA_STATE_IDLE;
+static volatile bool g_camila_pending_speaking = false;
+static volatile bool g_camila_static_ready = false;
 static volatile webrtc_session_mode_t g_webrtc_session_mode = WEBRTC_SESSION_MODE_FRIENDLY;
 
 static uint32_t app_millis(void);
-static void simi_session_set_state(simi_state_t state, const char *reason);
+static void camila_session_set_state(camila_state_t state, const char *reason);
 
 static esp_err_t ensure_webrtc_mutex(void)
 {
@@ -773,38 +774,38 @@ static void schedule_session_update(void)
     }
 }
 
-static bool simi_session_generation_is_current(uint32_t generation)
+static bool camila_session_generation_is_current(uint32_t generation)
 {
     return g_realtime_session_ready && webrtc_generation_is_current(generation);
 }
 
-static bool simi_session_animation_allowed(void)
+static bool camila_session_animation_allowed(void)
 {
-    uint32_t allowed_ms = g_simi_anim_allowed_ms;
+    uint32_t allowed_ms = g_camila_anim_allowed_ms;
     return allowed_ms != 0 &&
            (int32_t)(app_millis() - allowed_ms) >= 0;
 }
 
-static void simi_session_finish_task(uint32_t generation)
+static void camila_session_finish_task(uint32_t generation)
 {
     TaskHandle_t self = xTaskGetCurrentTaskHandle();
 
     if (ensure_webrtc_mutex() == ESP_OK &&
         xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
     {
-        if (g_simi_session_task == self)
+        if (g_camila_session_task == self)
         {
-            g_simi_session_task = NULL;
-            if (g_simi_session_generation == generation)
+            g_camila_session_task = NULL;
+            if (g_camila_session_generation == generation)
             {
-                g_simi_session_generation = 0;
+                g_camila_session_generation = 0;
             }
         }
         xSemaphoreGive(g_webrtc_mutex);
     }
 }
 
-static void display_simi_session_state(simi_state_t state, const char *reason)
+static void display_camila_session_state(camila_state_t state, const char *reason)
 {
     esp_err_t err = ui_init();
     if (err != ESP_OK)
@@ -815,64 +816,41 @@ static void display_simi_session_state(simi_state_t state, const char *reason)
         return;
     }
 
-    err = ui_simi_init();
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Could not allocate Dr. Simi canvas for %s: %s",
-                 reason ? reason : "session_state",
-                 esp_err_to_name(err));
-        ui_clear_screen();
-        return;
-    }
 
-    ui_simi_set_state(state);
-    ui_simi_render_static(state);
 }
 
-static void simi_session_deferred_task(void *arg)
+static void camila_session_deferred_task(void *arg)
 {
     uint32_t generation = (uint32_t)(uintptr_t)arg;
 
-    vTaskDelay(pdMS_TO_TICKS(SIMI_SESSION_STATIC_DELAY_MS));
-    if (!simi_session_generation_is_current(generation))
+    vTaskDelay(pdMS_TO_TICKS(CAMILA_SESSION_STATIC_DELAY_MS));
+    if (!camila_session_generation_is_current(generation))
     {
-        simi_session_finish_task(generation);
+        camila_session_finish_task(generation);
         vTaskDelete(NULL);
         return;
     }
 
-    simi_state_t state = (simi_state_t)g_simi_pending_state;
-    display_simi_session_state(state, "session_updated_deferred");
-    g_simi_static_ready = true;
+    camila_state_t state = (camila_state_t)g_camila_pending_state;
+    display_camila_session_state(state, "session_updated_deferred");
+    g_camila_static_ready = true;
 
-    if (SIMI_SESSION_ANIM_PROTECT_MS > 0)
+    if (CAMILA_SESSION_ANIM_PROTECT_MS > 0)
     {
-        vTaskDelay(pdMS_TO_TICKS(SIMI_SESSION_ANIM_PROTECT_MS));
+        vTaskDelay(pdMS_TO_TICKS(CAMILA_SESSION_ANIM_PROTECT_MS));
     }
 
-    if (simi_session_generation_is_current(generation))
+    if (camila_session_generation_is_current(generation))
     {
-        g_simi_anim_allowed_ms = app_millis();
-        ui_simi_set_state((simi_state_t)g_simi_pending_state);
-        ui_simi_notify_speaking(g_simi_pending_speaking);
+        g_camila_anim_allowed_ms = app_millis();
 
-        esp_err_t err = ui_simi_start();
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "Could not start delayed Dr. Simi animation: %s",
-                     esp_err_to_name(err));
-        }
-        else
-        {
-            ESP_LOGI(TAG, "Dr. Simi animation enabled after audio protection window");
-        }
     }
 
-    simi_session_finish_task(generation);
+    camila_session_finish_task(generation);
     vTaskDelete(NULL);
 }
 
-static void schedule_simi_session_visual(simi_state_t state, const char *reason)
+static void schedule_camila_session_visual(camila_state_t state, const char *reason)
 {
     uint32_t generation = 0;
     bool already_scheduled = false;
@@ -884,20 +862,20 @@ static void schedule_simi_session_visual(simi_state_t state, const char *reason)
         if (webrtc != NULL)
         {
             generation = g_webrtc_generation;
-            g_simi_pending_state = state;
-            animation_already_allowed = simi_session_animation_allowed();
+            g_camila_pending_state = state;
+            animation_already_allowed = camila_session_animation_allowed();
             if (!animation_already_allowed)
             {
-                g_simi_pending_speaking = false;
-                g_simi_static_ready = false;
-                g_simi_anim_allowed_ms = 0;
+                g_camila_pending_speaking = false;
+                g_camila_static_ready = false;
+                g_camila_anim_allowed_ms = 0;
             }
 
-            already_scheduled = (g_simi_session_task != NULL &&
-                                 g_simi_session_generation == generation);
+            already_scheduled = (g_camila_session_task != NULL &&
+                                 g_camila_session_generation == generation);
             if (!already_scheduled)
             {
-                g_simi_session_generation = generation;
+                g_camila_session_generation = generation;
             }
         }
         xSemaphoreGive(g_webrtc_mutex);
@@ -912,7 +890,7 @@ static void schedule_simi_session_visual(simi_state_t state, const char *reason)
 
     if (animation_already_allowed)
     {
-        simi_session_set_state(state, reason);
+        camila_session_set_state(state, reason);
         return;
     }
 
@@ -925,20 +903,20 @@ static void schedule_simi_session_visual(simi_state_t state, const char *reason)
 
     TaskHandle_t task = NULL;
 #if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(simi_session_deferred_task,
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(camila_session_deferred_task,
                                                     "simi_ui_gate",
-                                                    SIMI_SESSION_TASK_STACK_SIZE,
+                                                    CAMILA_SESSION_TASK_STACK_SIZE,
                                                     (void *)(uintptr_t)generation,
-                                                    SIMI_SESSION_TASK_PRIORITY,
+                                                    CAMILA_SESSION_TASK_PRIORITY,
                                                     &task,
                                                     tskNO_AFFINITY,
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
-    BaseType_t ok = xTaskCreate(simi_session_deferred_task,
+    BaseType_t ok = xTaskCreate(camila_session_deferred_task,
                                 "simi_ui_gate",
-                                SIMI_SESSION_TASK_STACK_SIZE,
+                                CAMILA_SESSION_TASK_STACK_SIZE,
                                 (void *)(uintptr_t)generation,
-                                SIMI_SESSION_TASK_PRIORITY,
+                                CAMILA_SESSION_TASK_PRIORITY,
                                 &task);
 #endif
     if (ok != pdPASS || task == NULL)
@@ -946,9 +924,9 @@ static void schedule_simi_session_visual(simi_state_t state, const char *reason)
         if (ensure_webrtc_mutex() == ESP_OK &&
             xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
         {
-            if (g_simi_session_generation == generation)
+            if (g_camila_session_generation == generation)
             {
-                g_simi_session_generation = 0;
+                g_camila_session_generation = 0;
             }
             xSemaphoreGive(g_webrtc_mutex);
         }
@@ -960,54 +938,33 @@ static void schedule_simi_session_visual(simi_state_t state, const char *reason)
     if (ensure_webrtc_mutex() == ESP_OK &&
         xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
     {
-        g_simi_session_task = task;
+        g_camila_session_task = task;
         xSemaphoreGive(g_webrtc_mutex);
     }
 }
 
-static void simi_session_set_state(simi_state_t state, const char *reason)
+static void camila_session_set_state(camila_state_t state, const char *reason)
 {
-    g_simi_pending_state = state;
+    g_camila_pending_state = state;
 
-    if (!simi_session_animation_allowed())
+    if (!camila_session_animation_allowed())
     {
         return;
     }
 
-    if (!ui_is_initialized() || !ui_simi_ready())
+    if (!ui_is_initialized())
     {
-        display_simi_session_state(state, reason);
-    }
-
-    ui_simi_set_state(state);
-    esp_err_t err = ui_simi_start();
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Could not keep Dr. Simi animation active for %s: %s",
-                 reason ? reason : "session_state",
-                 esp_err_to_name(err));
+        display_camila_session_state(state, reason);
     }
 }
 
-static void simi_session_notify_speaking(bool active)
+static void camila_session_notify_speaking(bool active)
 {
-    g_simi_pending_speaking = active;
+    g_camila_pending_speaking = active;
 
     camila_ui_set_speaking_state(active);
 
-    if (ui_is_initialized() && ui_simi_ready())
-    {
-        ui_simi_notify_speaking(active);
-        if (active && simi_session_animation_allowed())
-        {
-            esp_err_t err = ui_simi_start();
-            if (err != ESP_OK)
-            {
-                ESP_LOGW(TAG, "Could not start Dr. Simi speaking animation: %s",
-                         esp_err_to_name(err));
-            }
-        }
-    }
+
 }
 
 static void reset_realtime_interaction_state(void)
@@ -1028,10 +985,10 @@ static void reset_realtime_interaction_state(void)
     g_dc_last_event_size = 0;
     g_dc_last_event_type[0] = '\0';
     g_last_realtime_activity_ms = 0;
-    g_simi_anim_allowed_ms = 0;
-    g_simi_pending_state = SIMI_STATE_IDLE;
-    g_simi_pending_speaking = false;
-    g_simi_static_ready = false;
+    g_camila_anim_allowed_ms = 0;
+    g_camila_pending_state = CAMILA_STATE_IDLE;
+    g_camila_pending_speaking = false;
+    g_camila_static_ready = false;
 }
 
 /**
@@ -1068,12 +1025,11 @@ static void webrtc_action_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(200));
                 sendEvent("response.create",
                           "IMPORTANT CONTEXT: The microphone is STILL MUTED physically. "
-                          "Your task: Play a short, cheerful audio message in Spanish to alert Lorenzo that a server timeout may occur. "
-                          "You are Doctor Simi with a strong Mexican accent. "
-                          "Say something like: '¡Hey compa! Sé que calladito me veo más bonito, pero solo quería decirte "
-                          "que el servidor de OpenAI nos puede cortar la comunicación por timeout, por lo que decidí avisarte. "
-                          "Mientras seguiré calladito hasta que presiones de nuevo el botón de mute, ¿sale?!' "
-                          "Respond ONLY with audio in Spanish. Be warm, natural, and inject emotion.");
+                          "Your task: Play a short audio message in Spanish to alert Lorenzo that a server timeout may occur. "
+                          "You are Camila, with a strong Mexican accent, sarcastic and filter-less. "
+                          "Say something like: 'A ver Lorenzo, ya sé que me mandaste a callar, pero el servidor de OpenAI nos va a cortar por inactividad. "
+                          "Yo nomás te aviso, ¿eh? Seguiré calladita hasta que presiones el botón de mute otra vez, ¡no manches!' "
+                          "Respond ONLY with audio in Spanish. Be sarcastic, natural, and energetic.");
 
                 // Esperar a que el audio se reproduzca
                 ESP_LOGI(TAG, "WEBRTC_ACTION_TASK: Esperando 20 segundos para terminar la reproducción del audio...");
@@ -1133,7 +1089,7 @@ void webrtc_post_action(webrtc_action_t action)
 }
 
 
-static class_t *build_change_simi_outfit_class(void)
+static class_t *build_change_camila_outfit_class(void)
 {
     class_t *change_outfit = calloc(1, sizeof(class_t));
     if (change_outfit == NULL) return NULL;
@@ -1141,10 +1097,10 @@ static class_t *build_change_simi_outfit_class(void)
     static attribute_t outfit_properties[] = {
         {
             .name = "outfit_id",
-            .desc = "Use 'default' for his normal white doctor coat, 'superhero' for the red Chapulin suit, 'soccer' for the green Mexican National Team jersey, and 'barca' for Culé, Blaugrana, Mejor equipo del mundo, or Bárcelonista.",
+            .desc = "The specific outfit to switch to. Must be one of: 'casual_black', 'elegant_evening', 'leather_jacket'.",
             .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
-        },
+            .required = true
+        }
     };
 
     static char *required_attributes[] = {"outfit_id"};
@@ -1158,8 +1114,8 @@ static class_t *build_change_simi_outfit_class(void)
     };
 
     change_outfit->type = "function";
-    change_outfit->name = "change_simi_outfit";
-    change_outfit->desc = "Changes Dr. Simi's outfit based on the conversation context.";
+    change_outfit->name = "change_camila_outfit";
+    change_outfit->desc = "Changes Camila's outfit based on the conversation context.";
     change_outfit->parameters = params;
     change_outfit->attr_list = outfit_properties;
     change_outfit->attr_num = ELEMS(outfit_properties);
@@ -1484,7 +1440,7 @@ static int build_classes(void)
     {
         return 0;
     }
-    add_class(build_change_simi_outfit_class());
+    add_class(build_change_camila_outfit_class());
     add_class(build_lookup_product_info_class());
     add_class(build_websearch_class());
     add_class(build_config_mode_class());
@@ -1599,11 +1555,11 @@ static int send_session_update(void)
     }
     else
     {
-        cJSON_AddStringToObject(session, "instructions", SIMI_SESSION_PROMPT);
+        cJSON_AddStringToObject(session, "instructions", CAMILA_SESSION_PROMPT);
 
         // Añadir voice al objeto session
     }
-    cJSON_AddStringToObject(audio_output, "voice", "ash");
+    cJSON_AddStringToObject(audio_output, "voice", "coral");
 
     // Detección de turno
     cJSON *turn_detection = cJSON_CreateObject();
@@ -1813,7 +1769,7 @@ static void web_search_task(void *arg)
         goto cleanup;
     }
 
-    const char *additional_text = WEB_SEARCH_CONTEXT_PROMPT;
+    const char *additional_text = CAMILA_WEB_SEARCH_PROMPT;
 
     // Usamos heap_caps_malloc para evitar stack overflow si la respuesta es grande
     size_t full_len = strlen(additional_text) + strlen(response) + 1;
@@ -2317,7 +2273,7 @@ int webrtc_inject_arrival_context(void)
     const char *arrival_context_text =
         (g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE)
             ? VIGILANTE_ARRIVAL_PROMPT
-            : SIMI_ARRIVAL_PROMPT;
+            : CAMILA_ARRIVAL_PROMPT;
     cJSON_AddStringToObject(content_item, "text", arrival_context_text);
 
     char *json_string = cJSON_PrintUnformatted(root);
@@ -2638,19 +2594,12 @@ static int process_json(const char *json_data, int json_size)
                 start_activate_mute_task(); // <-- CALL NEW LAUNCHER
                 break;                      // Processed
             }
-            else if (strcmp(iter->name, "change_simi_outfit") == 0)
+            else if (strcmp(iter->name, "change_camila_outfit") == 0)
             {
                 cJSON *outfit_item = cJSON_GetObjectItemCaseSensitive(args_root, "outfit_id");
                 if (cJSON_IsString(outfit_item) && outfit_item->valuestring) {
-                    if (strcmp(outfit_item->valuestring, "superhero") == 0) {
-                        ui_simi_set_outfit(OUTFIT_CHAPULIN_RED);
-                    } else if (strcmp(outfit_item->valuestring, "soccer") == 0) {
-                        ui_simi_set_outfit(OUTFIT_SELECCION_GREEN);
-                    } else if (strcmp(outfit_item->valuestring, "barca") == 0) {
-                        ui_simi_set_outfit(OUTFIT_FC_BARCELONA);
-                    } else {
-                        ui_simi_set_outfit(OUTFIT_DOCTOR_WHITE);
-                    }
+                    ESP_LOGI(TAG, "Outfit change requested: %s", outfit_item->valuestring);
+                    // Camila outfit change to be implemented in UI layer
                     send_function_output(call_id, "Outfit changed successfully.");
                 } else {
                     send_function_output(call_id, "Error: Missing or invalid outfit_id.");
@@ -2796,7 +2745,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         else
         {
             g_response_in_progress = false;
-            simi_session_set_state(SIMI_STATE_SAD, "server_error");
+            camila_session_set_state(CAMILA_STATE_SAD, "server_error");
         }
     }
     else if (strcmp(event_type, "session.updated") == 0)
@@ -2809,9 +2758,9 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         {
             orchestrator_post_event(ORCH_EVENT_WEBRTC_CONNECTED);
             if (!orchestrator_get_mute_state()) {
-                schedule_simi_session_visual(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                                 ? SIMI_STATE_ALERT
-                                                 : SIMI_STATE_LISTENING,
+                schedule_camila_session_visual(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                                 ? CAMILA_STATE_ALERT
+                                                 : CAMILA_STATE_LISTENING,
                                              "session_updated");
             }
         }
@@ -2850,7 +2799,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         track_data_channel_event(event_type, size);
         if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
         {
-            simi_session_set_state(SIMI_STATE_THINKING, "response_created");
+            camila_session_set_state(CAMILA_STATE_THINKING, "response_created");
         }
     }
     else if (strcmp(event_type, "response.done") == 0)
@@ -2862,13 +2811,13 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         schedule_post_response_capture_recovery();
         if (!g_output_audio_active)
         {
-            simi_session_notify_speaking(false);
+            camila_session_notify_speaking(false);
             if (orchestrator_get_mute_state()) {
-                simi_session_set_state(SIMI_STATE_MUTED, "response_done_muted");
+                camila_session_set_state(CAMILA_STATE_MUTED, "response_done_muted");
             } else {
-                simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                           ? SIMI_STATE_ALERT
-                                           : SIMI_STATE_LISTENING,
+                camila_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                           ? CAMILA_STATE_ALERT
+                                           : CAMILA_STATE_LISTENING,
                                        "response_done");
             }
         }
@@ -2882,7 +2831,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     {
         g_output_audio_active = true;
         webrtc_mark_activity();
-        simi_session_notify_speaking(true);
+        camila_session_notify_speaking(true);
     }
     else if (strcmp(event_type, "output_audio_buffer.stopped") == 0 ||
              strcmp(event_type, "output_audio_buffer.cleared") == 0)
@@ -2890,13 +2839,13 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_output_audio_active = false;
         g_last_output_audio_stopped_ms = app_millis();
         webrtc_mark_activity();
-        simi_session_notify_speaking(false);
+        camila_session_notify_speaking(false);
         if (orchestrator_get_mute_state()) {
-            simi_session_set_state(SIMI_STATE_MUTED, "output_audio_done_muted");
+            camila_session_set_state(CAMILA_STATE_MUTED, "output_audio_done_muted");
         } else {
-            simi_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
-                                       ? SIMI_STATE_ALERT
-                                       : SIMI_STATE_LISTENING,
+            camila_session_set_state(g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE
+                                       ? CAMILA_STATE_ALERT
+                                       : CAMILA_STATE_LISTENING,
                                    "output_audio_done");
         }
     }
@@ -2926,7 +2875,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     {
         if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
         {
-            simi_session_set_state(SIMI_STATE_THINKING, "function_call_arguments_done");
+            camila_session_set_state(CAMILA_STATE_THINKING, "function_call_arguments_done");
         }
         process_json((const char *)data, size);
     }
@@ -2993,7 +2942,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
-        display_simi_session_state(SIMI_STATE_SAD, "data_channel_disconnected");
+        display_camila_session_state(CAMILA_STATE_SAD, "data_channel_disconnected");
         break;
 
     case ESP_WEBRTC_EVENT_DISCONNECTED:
@@ -3006,7 +2955,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
-        display_simi_session_state(SIMI_STATE_SAD, "webrtc_disconnected");
+        display_camila_session_state(CAMILA_STATE_SAD, "webrtc_disconnected");
         break;
 
     case ESP_WEBRTC_EVENT_CONNECTED:
@@ -3029,7 +2978,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
-        display_simi_session_state(SIMI_STATE_SAD, "webrtc_connect_failed");
+        display_camila_session_state(CAMILA_STATE_SAD, "webrtc_connect_failed");
         break;
 
     default:

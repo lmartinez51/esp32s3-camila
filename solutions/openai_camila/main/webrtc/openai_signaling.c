@@ -21,7 +21,7 @@
 #define OPENAI_REALTIME_MODEL "gpt-realtime-2.1"
 #define OPENAI_REALTIME_URL "https://api.openai.com/v1/realtime/calls"
 #define OPENAI_MULTIPART_BOUNDARY "----esp32-openai-realtime-boundary"
-#define OPENAI_SESSION_CONFIG "{\"type\":\"realtime\",\"model\":\"" OPENAI_REALTIME_MODEL "\",\"audio\":{\"output\":{\"voice\":\"ash\"}}}"
+#define OPENAI_SESSION_CONFIG "{\"type\":\"realtime\",\"model\":\"" OPENAI_REALTIME_MODEL "\",\"audio\":{\"output\":{\"voice\":\"coral\"}}}"
 
 #define SAFE_FREE(p) \
     if (p)           \

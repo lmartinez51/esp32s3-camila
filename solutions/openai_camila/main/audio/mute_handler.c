@@ -7,7 +7,7 @@
 #include "esp_rom_sys.h"
 #include <stdint.h>
 #include "ui.h"
-#include "simi.h"
+#include "camila_lvgl_ui.h"
 #include "freertos/timers.h"
 #include "mute_handler.h"
 #include "webrtc.h"
@@ -160,7 +160,6 @@ static void vIdleTimerCallback(TimerHandle_t xTimer)
         int mins = s_mute_remaining_seconds / 60;
         int secs = s_mute_remaining_seconds % 60;
         snprintf(buffer, sizeof(buffer), "Reboot:%02d:%02d", mins, secs);
-        ui_simi_set_arbiter_slot(2, buffer);
 
         if (s_mute_remaining_seconds == 120 && !s_idle_warning_sent)
         {
@@ -174,7 +173,6 @@ static void vIdleTimerCallback(TimerHandle_t xTimer)
     {
         ESP_LOGE(TAG, "¡Timer de inactividad llegó a 0! A dormir...");
         xTimerStop(g_idle_timer, 0);
-        ui_simi_set_arbiter_slot(2, "");
         orchestrator_post_event(ORCH_EVENT_AUTO_SLEEP_TIMEOUT);
     }
 }
@@ -204,6 +202,5 @@ void mute_handler_stop_idle_timer(void)
         ESP_LOGI(TAG, "Deteniendo timer de inactividad (usuario hizo unmute).");
         xTimerStop(g_idle_timer, pdMS_TO_TICKS(100));
         s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
-        ui_simi_set_arbiter_slot(2, "");
     }
 }

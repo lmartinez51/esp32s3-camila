@@ -21,7 +21,8 @@
 #include "wifi_session_state.h"
 #include "webrtc.h"  /* webrtc_get_last_activity_ms, webrtc_realtime_is_busy */
 #include "ui.h"
-#include "simi.h"
+#include "camila_lvgl_ui.h"
+#include "webrtc.h"
 #include "media_sys.h"
 #include "codec_init.h"
 #include "mute_handler.h"
@@ -182,20 +183,7 @@ esp_err_t orchestrator_ensure_ui_ready(const char *reason)
 {
     if (ui_is_initialized())
     {
-        /* Add check for Simi readiness to prevent fragmentation bugs after Sentinel mode */
-        if (!ui_simi_ready())
-        {
-            ESP_LOGI(TAG, "LCD UI is up but Simi is missing. Restoring Simi after BLE handoff: %s",
-                     reason ? reason : "");
-            orchestrator_log_heap_snapshot("ui_restore:simi_before");
-            esp_err_t err = ui_simi_init();
-            orchestrator_log_heap_snapshot((err == ESP_OK) ? "ui_restore:simi_after"
-                                                           : "ui_restore:simi_failed");
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Simi UI restore failed: %s", esp_err_to_name(err));
-            }
-            return err;
-        }
+
         return ESP_OK;
     }
 
@@ -227,15 +215,7 @@ void orchestrator_show_vigilante_alert_visual(void)
         return;
     }
 
-    err = ui_simi_init();
-    if (err == ESP_OK) {
-        ui_simi_render_static(SIMI_STATE_ALERT);
-        ESP_LOGW(TAG, "Vigilante Dr. Simi alert visual rendered");
-        return;
-    }
 
-    ESP_LOGW(TAG, "Could not allocate Dr. Simi alert canvas: %s; using text fallback",
-             esp_err_to_name(err));
     display_intruder_alert_message();
 }
 

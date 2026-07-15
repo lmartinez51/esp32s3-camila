@@ -274,7 +274,7 @@ void camila_ui_show_avatar(void)
             lv_obj_align(ui_camila_mouth, LV_ALIGN_TOP_LEFT, 148, 136); 
             
             // 4. Create the mouth animation timer (paused by default)
-            mouth_timer = lv_timer_create(mouth_anim_timer_cb, 250, NULL);
+            mouth_timer = lv_timer_create(mouth_anim_timer_cb, 350, NULL);
             lv_timer_pause(mouth_timer);
         } else {
             lv_obj_clear_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);

@@ -62,7 +62,8 @@ extern void camila_lvgl_init(void);
 #include "ble_common.h"
 #include "codec_init.h"
 #include "ui.h"
-#include "simi.h"
+#include "camila_lvgl_ui.h"
+#include "webrtc.h"
 #include "mute_handler.h"
 #include "media_sys.h"
 #include "bsp/esp-bsp.h"
@@ -369,8 +370,6 @@ void app_main(void)
 
 #if ENABLE_ONE_TIME_PROVISIONING
     const char *current_ssid = "example-ssid";
-    // nvs_provision_known_profiles();
-    // nvs_provision_hue_test_device(current_ssid);
     debug_nvs_contents(current_ssid);
     list_all_ble_devices_from_nvs();
     list_all_characteristics_from_nvs();
@@ -402,7 +401,6 @@ void app_main(void)
         return;
     }
 
-    /* 6) Radar HAL (Removed for Camila) */
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
     ESP_LOGI(TAG, "BLE Central permanece deshabilitado por defecto.");
 

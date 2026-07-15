@@ -1,12 +1,12 @@
-# 🧠 esp-drsimi (Asistente de IA para ESP32-S3-BOX3)
+# 🧠 esp32s3-camila (Asistente de IA para ESP32-S3-BOX3)
 
 *Leer en [Inglés](README.md)*
 
 Un framework WebRTC avanzado y rico en funciones para ESP32, optimizado específicamente para comunicación con IA en tiempo real. Este proyecto está construido sobre la base de [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) y la expande con muchas más funcionalidades, comportamientos proactivos e integraciones personalizadas.
 
-**Dr. SimiBot** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra detección de presencia de doble factor (radar Wi-Fi CSI + BLE), captura y reproducción de audio de baja latencia, transmisión WebRTC, aprovisionamiento vía BLE, reconexión automática de WiFi y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
+**Camila** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra detección de presencia de doble factor (radar Wi-Fi CSI + BLE), captura y reproducción de audio de baja latencia, transmisión WebRTC, aprovisionamiento vía BLE, reconexión automática de WiFi y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
 
-Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascota mexicana *Doctor Simi*. El asistente está diseñado para ser amigable, conciso y divertido, y también para comportarse de manera sensata cuando se le pide que guarde silencio — manteniendo la sesión activa y comunicándose mediante texto en la pantalla cuando es necesario.
+Camila es una asistente sarcástica y llena de energía que habla español con acento mexicano, modelada en base a la mejor amiga de Lorenzo, *Giovanna Ortiz*. El asistente está diseñado para ser amigable, conciso y divertido, y también para comportarse de manera sensata cuando se le pide que guarde silencio — manteniendo la sesión activa y comunicándose mediante texto en la pantalla cuando es necesario.
 
 ---
 
@@ -20,7 +20,7 @@ Dr. SimiBot es un personaje juguetón que habla español, inspirado en la mascot
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
-- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para el Dr. Simi (ej. Doctor, Selección Mexicana, Chapulín Colorado, FC Barcelona) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
+- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para Camila (ej. Casual Black, Elegant Evening, Leather Jacket) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
 - 🌡️ **Sensores Ambientales** — monitoreo en tiempo real de temperatura y humedad por I2C (AHT30), mostrado directamente en la pantalla LCD.
 - 🦎 **Motor Lua ESP-Claw** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, prototipado rápido de lógica y procesamiento de Infrarrojo acelerado por hardware (`lua_ir_bindings`) sin bloquear el ciclo principal en C de WebRTC.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
@@ -87,7 +87,7 @@ flowchart TD
 
 ## 🦎 Motor de Automatización ESP-Claw (Lua)
 
-Una característica clave de la arquitectura del Dr. SimiBot es su **Máquina Virtual ESP-Claw Lua 5.4** integrada, que opera en una tarea aislada de FreeRTOS. Esto permite a la IA no solo ejecutar comandos predefinidos, sino programar su propia lógica y almacenar reglas complejas de automatización directamente en la partición LittleFS del dispositivo.
+Una característica clave de la arquitectura del Camila es su **Máquina Virtual ESP-Claw Lua 5.4** integrada, que opera en una tarea aislada de FreeRTOS. Esto permite a la IA no solo ejecutar comandos predefinidos, sino programar su propia lógica y almacenar reglas complejas de automatización directamente en la partición LittleFS del dispositivo.
 
 A través del lenguaje natural, la IA traduce tus peticiones en comandos JSON que el orquestador en C intercepta y delega a la VM de Lua. Puedes interactuar con este motor de forma natural:
 
@@ -111,7 +111,7 @@ A través del lenguaje natural, la IA traduce tus peticiones en comandos JSON qu
 
 ## 🗣️ Comandos de Voz y Ejemplos de Uso
 
-Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr. Simi. A continuación, algunos ejemplos en lenguaje natural:
+Puedes controlar varias funciones del dispositivo simplemente hablando con el Camila. A continuación, algunos ejemplos en lenguaje natural:
 
 - **Silenciar Micrófono**: 
   - *"Doctor, guarde silencio por un momento."*

@@ -1,16 +1,16 @@
-# 🧠 esp-drsimi (ESP32-S3-BOX3 AI Chatbot)
+# 🧠 esp32s3-camila (ESP32-S3-BOX3 AI Chatbot)
 
 *Read this in [Spanish](README-es.md)*
 
 <p align="center">
-  <img src="assets/infographic.png" width="100%" alt="ESP32-S3-BOX3 Dr. SimiBot Infographic">
+  <img src="assets/infographic.png" width="100%" alt="ESP32-S3-BOX3 Camila Infographic">
 </p>
 
 An advanced and feature-rich WebRTC framework for ESP32, specifically optimized for real-time AI communication. This project is built upon the base of the [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) and extends it with significantly more functionality, proactive behaviors, and custom integrations.
 
-**Dr. SimiBot** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** and running on an **ESP32‑S3‑BOX3**. The project integrates two-factor presence detection (Wi-Fi CSI radar + BLE), low-latency audio capture and playback, WebRTC streaming, BLE-driven provisioning, WiFi auto-reconnect, and an on-device LCD UI into a compact embedded system.
+**Camila** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** and running on an **ESP32‑S3‑BOX3**. The project integrates two-factor presence detection (Wi-Fi CSI radar + BLE), low-latency audio capture and playback, WebRTC streaming, BLE-driven provisioning, WiFi auto-reconnect, and an on-device LCD UI into a compact embedded system.
 
-Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican mascot *Doctor Simi*. The assistant is designed to be friendly, brief, and humorous, and also to behave sensibly when asked to be silent — keeping the session alive and communicating via text on the display when necessary.
+Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican accent modeled after Lorenzo's best friend *Giovanna Ortiz*. The assistant is designed to be friendly, brief, and humorous, and also to behave sensibly when asked to be silent — keeping the session alive and communicating via text on the display when necessary.
 
 ---
 
@@ -24,7 +24,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
-- 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Dr. Simi (e.g. Doctor, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
+- 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Camila (e.g. Doctor, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
 - 🌡️ **Environmental Sensing** — real-time temperature and humidity monitoring via I2C (AHT30), rendered directly on the LCD UI.
 - 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping, and hardware-accelerated IR processing (`lua_ir_bindings`) without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
@@ -91,31 +91,31 @@ flowchart TD
 
 ## 🦎 ESP-Claw Automation Engine (Lua)
 
-A key feature of the Dr. SimiBot architecture is its embedded **ESP-Claw Lua 5.4 Virtual Machine**, operating in an isolated FreeRTOS task. It empowers the AI to not just execute hardcoded commands, but to program its own logic and store complex automation rules directly on the device's LittleFS partition.
+A key feature of the Camila architecture is its embedded **ESP-Claw Lua 5.4 Virtual Machine**, operating in an isolated FreeRTOS task. It empowers the AI to not just execute hardcoded commands, but to program its own logic and store complex automation rules directly on the device's LittleFS partition.
 
 Through natural language, the AI translates your requests into JSON commands which the C orchestrator intercepts and delegates to the Lua VM. You can interact with this engine seamlessly:
 
 - **Create**: 
   > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
-  (Dr. Simi generates the rule and confirms it instantly).
+  (Camila generates the rule and confirms it instantly).
 - **Execute**:
   > *"Doctor, ejecuta la regla 'ver ovnis'."*
   (The orchestrator queues the execution in Lua using coroutines to avoid blocking, emits the IR commands sequentially, and confirms success).
 - **Read**: 
   > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
-  (The orchestrator pauses, Lua reads the dictionary, returns "ver_ovnis" to C, and Dr. Simi speaks it out loud).
+  (The orchestrator pauses, Lua reads the dictionary, returns "ver_ovnis" to C, and Camila speaks it out loud).
 - **Delete**: 
   > *"Excelente doctor, ahora por favor borra la regla de 'ver ovnis'."*
   (Lua receives the `SYS_CMD:DELETE` command, destroys the dictionary key, and confirms the deletion).
 - **Verify**: 
   > *"Doctor, ¿qué reglas te quedan activas?"*
-  (Dr. Simi will confirm the memory is empty).
+  (Camila will confirm the memory is empty).
 
 ---
 
 ## 🗣️ Voice Commands & Usage Examples
 
-You can control various device features simply by talking to Dr. Simi. Here are some natural language examples in Mexican Spanish (with English context):
+You can control various device features simply by talking to Camila. Here are some natural language examples in Mexican Spanish (with English context):
 
 - **Mute Microphone**: 
   - *"Doctor, guarde silencio por un momento."* (Context: "Doc, mute yourself for a sec.")

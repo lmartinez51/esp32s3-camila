@@ -33,7 +33,7 @@
 #include "webrtc.h"
 #include "ui.h"
 #include "camila_lvgl_ui.h"
-#include "simi.h"
+#include "camila_lvgl_ui.h"
 #include "media_sys.h"
 #include "mute_handler.h"
 #include "ble_device_callbacks.h"
@@ -104,8 +104,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_is_muted             = false;
         // radar_hal_disable() removed
         csi_handler_stop();
-        ui_simi_stop();
-        ui_simi_deinit();
         ui_deinit_keep_last_frame();
         stop_webrtc();
         ble_device_stop_smart_task();
@@ -143,8 +141,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_webrtc_stop_started_ms  = 0;
         // radar_hal_disable() removed
         csi_handler_stop();
-        ui_simi_stop();
-        ui_simi_deinit();
         ui_deinit_keep_last_frame();
         orchestrator_show_phase("wifi_ready", "WiFi ready", "Standing by", COLOR_GREEN_BGR565);
         esp_err_t sleep_ble_err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
@@ -167,8 +163,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         // radar_hal_disable() removed
         csi_handler_stop();
-        ui_simi_stop();
-        ui_simi_deinit();
         orchestrator_show_phase("ble_prepare_status", "Checking ID", "Stay close", COLOR_YELLOW_BGR565);
         esp_err_t ui_deinit_err = ui_deinit_keep_last_frame();
         if (ui_deinit_err != ESP_OK) {
@@ -281,7 +275,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         
         if (s_is_muted) {
             ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
-            ui_simi_set_state(SIMI_STATE_MUTED);
             ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
         }
         if (orchestrator_is_vigilante_active()) {
@@ -337,8 +330,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         ESP_LOGW(TAG, "STATE_TEARING_DOWN_UI_FOR_SCAN: tearing down UI to free RAM for BLE Scan");
         // radar_hal_disable() removed
         csi_handler_stop();
-        ui_simi_stop();
-        ui_simi_deinit();
         ui_deinit_keep_last_frame();
         
         esp_timer_create_args_t timer_args = {
@@ -595,12 +586,10 @@ void app_startup_orchestrator_task(void *param)
 
                 /* Synchronize UI Canvas State & Hardware Mic */
                 if (event == ORCH_EVENT_MIC_MUTED) {
-                    ui_simi_set_state(SIMI_STATE_MUTED);
                     ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
                     media_sys_mic_mute(true); /* Físicamente apagar el micrófono (Modo Normal) */
                     mute_handler_start_idle_timer();
                 } else {
-                    ui_simi_set_state(SIMI_STATE_LISTENING);
                     ui_clear_status_message();
                     media_sys_mic_mute(false); /* Reactivar micrófono físicamente (Modo Normal) */
                     mute_handler_stop_idle_timer();
@@ -614,7 +603,6 @@ void app_startup_orchestrator_task(void *param)
                     ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
                 } else {
                     ui_clear_status_message();
-                    ui_simi_set_state(SIMI_STATE_LISTENING);
                 }
             } else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
                        !orchestrator_is_vigilante_active())
@@ -716,7 +704,6 @@ void app_startup_orchestrator_task(void *param)
                 vTaskDelay(pdMS_TO_TICKS(250));
 
                 /* Kill the animation task, freezing the overlay frame permanently on the screen */
-                ui_simi_stop();
 
                 /* 2. Forcefully stop hardware SECOND */
                 // radar_hal_disable() removed

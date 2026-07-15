@@ -28,8 +28,7 @@ idf_component_register(
 
         "ui/ui.c"
         "ui/camila_lvgl_ui.c"
-        "ui/simi_canvas.c"
-        "ui/simi.c"
+
         "ui/camila_base.c"
         "ui/boca_cerrada.c"
         "ui/boca_abierta.c"

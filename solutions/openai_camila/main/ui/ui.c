@@ -25,7 +25,7 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 
-#include "simi.h"
+
 
 // Headers para control de LCD
 #include "esp_lcd_panel_ops.h"
@@ -886,102 +886,7 @@ void display_welcome_identity(const char *name)
     ui_backlight_on();
 }
 
-#if 0
-/**
- * @brief Displays the "AI'm Camila" text on the LCD screen.
- *        Renders the chatbot's name centered on the screen with blue color.
- */
-static void display_camila_text(void)
-{
-    // Mapeo de caracteres para "AI'm Camila"
-    int camila_map[] = {0, 1, 2, 3, 4, 5, 6, 3, 8, 7, 6};
-    int num_chars = sizeof(camila_map) / sizeof(camila_map[0]);
-    int scale = 2;
 
-    // Calcular posición centrada
-    int text_height = CHAR_HEIGHT * scale;
-    int text_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int text_x = (BSP_LCD_H_RES - text_width) / 2;
-    int text_y = (BSP_LCD_V_RES - text_height) / 2;
-
-    display_text(text_x, text_y, camila_map, num_chars, COLOR_BLUE_BGR565, scale);
-}
-
-/**
- * @brief Displays the "Dr. Simi" text on the LCD screen.
- *        Renders the text centered on the screen with blue color.
- *        Uses scale 3 (larger than Camila text) since it's shorter.
- *        Position matches the vertical placement of display_camila_text().
- */
-static void display_drsimi_text(void)
-{
-    // Mapeo de caracteres para "Dr. Simi"
-    // D  r  .  (space)  S  i  m  i
-    int drsimi_map[] = {27, 17, 26, 4, 38, 8, 3, 8};
-    int num_chars = sizeof(drsimi_map) / sizeof(drsimi_map[0]);
-    int scale = 3; // Más grande que Camila (que usa escala 2)
-
-    // Calcular posición centrada
-    int text_height = CHAR_HEIGHT * scale;
-    int text_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_3X;
-    int text_x = (BSP_LCD_H_RES - text_width) / 2;
-    int text_y = (BSP_LCD_V_RES - text_height) / 2;
-
-    display_text(text_x, text_y, drsimi_map, num_chars, COLOR_WHITE_BGR565, scale);
-}
-
-/**
- * @brief Displays the welcome message on the LCD screen.
- *        Shows "Welcome!" text centered on the screen above the border area.
- */
-static void display_welcome_message(void)
-{
-    // Mapeo de caracteres para "Welcome!"
-    int welcome_map[] = {18, 14, 7, 20, 11, 3, 14, 13};
-    int num_chars = sizeof(welcome_map) / sizeof(welcome_map[0]);
-    int scale = 3;
-
-    // Calcular dimensiones y posición
-    int text_height = CHAR_HEIGHT * scale;
-    int text_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_3X;
-    int text_x = (BSP_LCD_H_RES - text_width) / 2;
-    int text_y = (BSP_LCD_V_RES - text_height) / 2;
-
-    // Ajustar posición vertical considerando el borde superior
-    int top_border_bottom_y = 4 + 2;
-    int space_above_text = text_y - top_border_bottom_y;
-    int welcome_y = top_border_bottom_y + (space_above_text - text_height) / 2;
-
-    display_text(text_x, welcome_y, welcome_map, num_chars, COLOR_CYAN_BGR565, scale);
-}
-
-#endif
-
-#if 0
-static void legacy_online_status_disabled(uint16_t color)
-{
-    ui_clear_status_message();
-    ui_clear_help_message_below_status();
-
-    // Legacy online glyph map (disabled).
-    int char_map[] = {8, 9, 4, 11, 12, 7, 8, 12, 14, 13};
-    int num_chars = sizeof(char_map) / sizeof(char_map[0]);
-    int scale = 2;
-
-    // Calcular posición centrada
-    int online_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int online_x = (BSP_LCD_H_RES - online_width) / 2;
-    int text_y_center = (BSP_LCD_V_RES - (CHAR_HEIGHT * scale)) / 2;
-    int online_y = text_y_center + (CHAR_HEIGHT * scale) + 12; // Justo debajo del texto principal
-
-    // Limpiar el área donde estaban los mensajes de WiFi
-    int clear_width = 220;
-    int clear_height = 44;
-    draw_filled_rect((BSP_LCD_H_RES - clear_width) / 2, online_y - 4, clear_width, clear_height, 0x0000);
-
-    display_text(online_x, online_y, char_map, num_chars, color, scale);
-}
-#endif
 
 /**
  * @brief Displays the WiFi credentials prompt message on the LCD screen.
@@ -1580,11 +1485,7 @@ static void draw_screen_border(uint16_t color, int thickness)
  */
 void ui_show_status_message(const char *message, uint16_t color)
 {
-    if (ui_simi_ready())
-    {
-        ui_simi_set_overlay_text(message, color);
-        return;
-    }
+
 
     ui_clear_status_message();
     if (!message)
@@ -1642,11 +1543,7 @@ void ui_show_status_message(const char *message, uint16_t color)
 
 void ui_clear_status_message(void)
 {
-    if (ui_simi_ready())
-    {
-        ui_simi_set_overlay_text(NULL, 0);
-        return;
-    }
+
 
     if (g_status_msg_w <= 0)
     {
@@ -1668,10 +1565,7 @@ void ui_clear_status_message(void)
  */
 void ui_show_help_message_below_status(const char *message, uint16_t color)
 {
-    if (ui_simi_ready())
-    {
-        return;
-    }
+
 
     ui_clear_help_message_below_status();
 
@@ -1720,10 +1614,7 @@ void ui_show_help_message_below_status(const char *message, uint16_t color)
  */
 void ui_clear_help_message_below_status(void)
 {
-    if (ui_simi_ready())
-    {
-        return;
-    }
+
 
     if (g_help_msg_w <= 0)
     {
