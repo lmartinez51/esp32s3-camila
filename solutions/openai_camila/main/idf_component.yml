@@ -14,3 +14,4 @@ dependencies:
   # espressif/button: ^2.5.0
   espressif/lua: ^5.4
   joltwallet/littlefs: '*'
+  lvgl/lvgl: ^8.3

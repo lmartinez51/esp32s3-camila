@@ -11,6 +11,8 @@
 #ifndef MAIN_UI_SIMI_H
 #define MAIN_UI_SIMI_H
 
+#include "ui_config.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
@@ -66,6 +68,8 @@ typedef struct
     int16_t bubble_radius; /**< Radius of the sleep snot bubble (0 if none). */
     uint16_t bg;         /**< Canvas background color. */
 } simi_face_t;
+
+#ifndef USE_LVGL_UI
 
 /**
  * @brief Allocates the off-screen canvas (prefers PSRAM, falls back to internal RAM).
@@ -146,6 +150,25 @@ void ui_simi_try_set_arbiter_slot(int slot, const char *text);
  * @brief Releases the canvas buffer.
  */
 void ui_simi_deinit(void);
+
+#else // LVGL fallback stubs
+
+#define ui_simi_init() (ESP_OK)
+#define ui_simi_ready() (true)
+#define simi_face_for_state(state, out) do {} while(0)
+#define ui_simi_render_static(state) do {} while(0)
+#define ui_simi_start() (ESP_OK)
+#define ui_simi_stop() do {} while(0)
+#define ui_simi_set_state(state) do {} while(0)
+#define ui_simi_set_outfit(outfit) do {} while(0)
+#define ui_simi_notify_speaking(active) do {} while(0)
+#define ui_simi_set_overlay_text(text, color) do {} while(0)
+#define ui_simi_set_top_right_text(text) do {} while(0)
+#define ui_simi_set_arbiter_slot(slot, text) do {} while(0)
+#define ui_simi_try_set_arbiter_slot(slot, text) do {} while(0)
+#define ui_simi_deinit() do {} while(0)
+
+#endif // USE_LVGL_UI
 
 #ifdef __cplusplus
 }

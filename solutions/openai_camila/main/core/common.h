@@ -23,7 +23,7 @@ extern "C"
    /**
     * @brief  Initialize board
     */
-   void init_board(void);
+   esp_err_t init_board(void);
 
    /**
     * @brief  Get OpenAI signaling implementation

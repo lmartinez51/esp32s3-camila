@@ -321,12 +321,14 @@ void orchestrator_start_webrtc_stop(void)
     }
 
     s_webrtc_stop_started_ms = orchestrator_now_ms();
-    BaseType_t rc = xTaskCreate(orchestrator_webrtc_stop_task,
-                                "webrtc_stop",
-                                WEBRTC_STOP_TASK_STACK_SIZE,
-                                NULL,
-                                WEBRTC_STOP_TASK_PRIORITY,
-                                &s_webrtc_stop_task_handle);
+    BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(orchestrator_webrtc_stop_task,
+                                                    "webrtc_stop",
+                                                    WEBRTC_STOP_TASK_STACK_SIZE,
+                                                    NULL,
+                                                    WEBRTC_STOP_TASK_PRIORITY,
+                                                    &s_webrtc_stop_task_handle,
+                                                    tskNO_AFFINITY,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (rc != pdPASS) {
         s_webrtc_stop_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create WebRTC stop task");

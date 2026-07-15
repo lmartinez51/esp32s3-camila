@@ -123,74 +123,12 @@ static void csi_consumer_task(void *param)
 
 esp_err_t csi_handler_start(void)
 {
-    if (s_csi_ringbuf == NULL) {
-        s_csi_ringbuf = xRingbufferCreateStatic(CSI_RINGBUF_STORAGE_SIZE,
-                                                RINGBUF_TYPE_NOSPLIT,
-                                                s_csi_ringbuf_storage,
-                                                &s_csi_ringbuf_struct);
-        ESP_RETURN_ON_FALSE(s_csi_ringbuf != NULL, ESP_ERR_NO_MEM, TAG,
-                            "Failed to create CSI ring buffer");
-    }
-
-    if (s_csi_consumer_task == NULL) {
-        BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(csi_consumer_task,
-                                                        "csi_consumer",
-                                                        CSI_CONSUMER_STACK_SIZE,
-                                                        NULL,
-                                                        CSI_CONSUMER_PRIORITY,
-                                                        &s_csi_consumer_task,
-                                                        CSI_CONSUMER_CORE_ID,
-                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        ESP_RETURN_ON_FALSE(ok == pdPASS, ESP_ERR_NO_MEM, TAG,
-                            "Failed to create CSI consumer task");
-    }
-
-    if (s_csi_enabled) {
-        return ESP_OK;
-    }
-
-    ei_inference_init();
-
-    const wifi_csi_config_t csi_config = {
-        .lltf_en = true,
-        .htltf_en = true,
-        .stbc_htltf2_en = true,
-        .ltf_merge_en = true,
-        .channel_filter_en = false,
-        .manu_scale = false,
-        .shift = 0,
-        .dump_ack_en = false,
-    };
-
-    ESP_RETURN_ON_ERROR(esp_wifi_set_csi_rx_cb(csi_rx_cb, NULL), TAG,
-                        "Failed to register CSI callback");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_csi_config(&csi_config), TAG,
-                        "Failed to configure CSI");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_csi(true), TAG,
-                        "Failed to enable CSI");
-
-    s_csi_dropped_frames = 0;
-    s_csi_enabled = true;
-    ESP_LOGI(TAG, "CSI capture enabled");
+    ESP_LOGI(TAG, "Device configured as Beacon-only. CSI Receiver and ML Inference are disabled.");
+    s_csi_enabled = false;
     return ESP_OK;
 }
 
 void csi_handler_stop(void)
 {
-    if (!s_csi_enabled) {
-        return;
-    }
-
-    esp_err_t err = esp_wifi_set_csi(false);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to disable CSI: %s", esp_err_to_name(err));
-    }
-
-    err = esp_wifi_set_csi_rx_cb(NULL, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to clear CSI callback: %s", esp_err_to_name(err));
-    }
-
-    s_csi_enabled = false;
-    ESP_LOGI(TAG, "CSI capture disabled");
+    // Receiver is disabled; do nothing.
 }

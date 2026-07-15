@@ -13,6 +13,9 @@
  * @platform ESP32-S3-BOX3
  */
 #include "simi.h"
+#include "ui_config.h"
+
+#ifndef USE_LVGL_UI
 #include "simi_canvas.h"
 #include "ui.h"
 
@@ -1710,3 +1713,5 @@ void ui_simi_render_static(simi_state_t state)
 
     (void)simi_blit_frame(true);
 }
+
+#endif // USE_LVGL_UI

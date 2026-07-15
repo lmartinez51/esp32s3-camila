@@ -255,7 +255,7 @@ esp_err_t orchestrator_ensure_audio_runtime_ready(void)
     }
 
     orchestrator_log_heap_snapshot("audio_runtime:before");
-    init_board();
+    unpark_i2s();
     int media_ret = media_sys_buildup();
     if (media_ret != 0) {
         ESP_LOGE(TAG, "Audio/media runtime init failed: %d", media_ret);

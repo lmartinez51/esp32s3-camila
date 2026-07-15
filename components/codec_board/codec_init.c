@@ -58,6 +58,39 @@ const audio_codec_if_t *get_in_codec_handle(void)
     return codec_res.in_codec_if;
 }
 
+void park_i2s(void)
+{
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    for (int port = 0; port < MAX_I2S_NUM; port++) {
+        if (i2s_keep[port]) {
+            if (i2s_keep[port]->tx_handle) i2s_channel_disable(i2s_keep[port]->tx_handle);
+            if (i2s_keep[port]->rx_handle) i2s_channel_disable(i2s_keep[port]->rx_handle);
+        }
+    }
+#endif
+    // Mute PA if playback handle exists
+    esp_codec_dev_handle_t pb = get_playback_handle();
+    if (pb) {
+        esp_codec_dev_set_out_mute(pb, true);
+    }
+}
+
+void unpark_i2s(void)
+{
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    for (int port = 0; port < MAX_I2S_NUM; port++) {
+        if (i2s_keep[port]) {
+            if (i2s_keep[port]->tx_handle) i2s_channel_enable(i2s_keep[port]->tx_handle);
+            if (i2s_keep[port]->rx_handle) i2s_channel_enable(i2s_keep[port]->rx_handle);
+        }
+    }
+#endif
+    esp_codec_dev_handle_t pb = get_playback_handle();
+    if (pb) {
+        esp_codec_dev_set_out_mute(pb, false);
+    }
+}
+
 // static int _i2c_init(uint8_t port)
 // {
 //     if (port >= MAX_I2C_NUM)

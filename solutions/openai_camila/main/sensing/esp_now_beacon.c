@@ -147,7 +147,12 @@ esp_err_t esp_now_beacon_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     // 3. Initialize ESP-NOW
+    size_t dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
     ESP_ERROR_CHECK(esp_now_init());
+    size_t dma_after = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    ESP_LOGI(TAG, "[HEAP] ESP-NOW init cost: %zu bytes (DMA free before: %zu, after: %zu)", 
+             (dma_before > dma_after) ? (dma_before - dma_after) : 0, 
+             dma_before, dma_after);
     
     // 4. Register Receive Callback
     ESP_ERROR_CHECK(esp_now_register_recv_cb(esp_now_recv_cb));

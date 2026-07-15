@@ -1,5 +1,7 @@
 #ifndef MAIN_UI_H
 #define MAIN_UI_H
+
+#include "ui_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <esp_err.h>
@@ -8,6 +10,8 @@
 extern "C"
 {
 #endif
+
+#ifndef USE_LVGL_UI
 
     /**
      * @brief Inicializa el LCD, configura backlight y limpia pantalla.
@@ -172,6 +176,39 @@ extern "C"
      * @brief Limpia toda la pantalla a negro.
      */
     void ui_clear_screen(void);
+
+#else // USE_LVGL_UI
+
+#define ui_init() (ESP_OK)
+#define ui_deinit() (ESP_OK)
+#define ui_deinit_keep_last_frame() (ESP_OK)
+#define ui_is_initialized() (true)
+#define display_startup_screen() do {} while(0)
+#define display_welcome_identity(name) do {} while(0)
+#define display_system_phase_message(title, subtitle, color) do {} while(0)
+#define display_wifi_creds() do {} while(0)
+#define display_error_message() do {} while(0)
+#define display_resetting_message() do {} while(0)
+#define display_disconnected_message() do {} while(0)
+#define display_api_key_error_message() do {} while(0)
+#define display_intruder_alert_message() do {} while(0)
+#define ui_backlight_off_safe() do {} while(0)
+#define display_config_mode_message() do {} while(0)
+#define ui_backlight_on() do {} while(0)
+#define ui_show_status_message(message, color) do {} while(0)
+#define ui_clear_status_message() do {} while(0)
+#define ui_show_help_message_below_status(message, color) do {} while(0)
+#define ui_clear_help_message_below_status() do {} while(0)
+#define ui_sanitize_text(text) do {} while(0)
+#define ui_draw_text_to_buffer(buffer, buffer_w, buffer_h, start_x, start_y, text, color, scale) do {} while(0)
+#define ui_get_text_width(text, scale) (0)
+#define ui_panel_lock() do {} while(0)
+#define ui_panel_unlock() do {} while(0)
+#define ui_panel_blit(x0, y0, x1, y1, pixels) do {} while(0)
+#define ui_panel_try_blit(x0, y0, x1, y1, pixels, lock_timeout_ms) (true)
+#define ui_clear_screen() do {} while(0)
+
+#endif // USE_LVGL_UI
 
 // Colores útiles en formato BGR565
 #define COLOR_GREEN_BGR565 0x001F

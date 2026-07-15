@@ -32,6 +32,7 @@
 #include "wifi_session_state.h"
 #include "webrtc.h"
 #include "ui.h"
+#include "camila_lvgl_ui.h"
 #include "simi.h"
 #include "media_sys.h"
 #include "mute_handler.h"
@@ -119,6 +120,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_SLEEP:
     {
         ESP_LOGI(TAG, "STATE_SLEEP: WiFi is up; WebRTC remains off. Starting CSI motion sensing.");
+        esp_now_beacon_init();
 
         /* ── Phase 1: Arm NVS for next boot if a Vigilante session just ended ──
          * s_active_webrtc_mode retains WEBRTC_SESSION_MODE_VIGILANTE until the
@@ -183,6 +185,9 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         // radar_hal_disable() removed
         csi_handler_stop();
+        
+        camila_ui_update_state(UI_STATE_BLE_SCAN, "CENTINELA", "Scanning for owner...");
+        
         orchestrator_start_identity_validation();
         break;
 
@@ -225,10 +230,13 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_IGNITING:
     {
         ESP_LOGI(TAG, "STATE_IGNITING: initializing audio runtime and starting WebRTC.");
+        esp_now_beacon_init();
         orchestrator_cancel_sleep_csi_cooldown();
         // radar_hal_disable() removed
         csi_handler_stop();
         s_arrival_context_sent = false;
+
+        camila_ui_update_state(UI_STATE_SUCCESS, "SYSTEM READY", "Igniting audio pipeline...");
 
         /* Reset persistent session logic to cold-boot defaults to guarantee sync with UI */
         s_is_muted = false;
@@ -268,6 +276,9 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_ACTIVE:
         ESP_LOGI(TAG, "STATE_ACTIVE: WebRTC active; injecting arrival context.");
         orchestrator_cancel_sleep_csi_cooldown();
+        
+        camila_ui_show_avatar();
+        
         if (s_is_muted) {
             ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
             ui_simi_set_state(SIMI_STATE_MUTED);
@@ -423,9 +434,6 @@ void app_startup_orchestrator_task(void *param)
             if (event == ORCH_EVENT_WIFI_CONNECTED) {
                 /* Camila Hardware Mode: DIRECTO only. Radar is physically removed. */
                 ESP_LOGI(TAG, "Camila Mode: omitiendo STATE_SLEEP (Radar retirado); salto directo a validación BLE.");
-                
-                /* Initialize ESP-NOW Receiver and CSI Beacon once Wi-Fi is connected */
-                esp_now_beacon_init();
                 
                 orchestrator_enter_state(&state, STATE_PREPARING_BLE);
                 /* ────────────────────────────────────────────────────── */

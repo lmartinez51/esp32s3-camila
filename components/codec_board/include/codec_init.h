@@ -132,6 +132,16 @@ extern "C"
      */
     void *board_get_lcd_handle(void);
 
+    /**
+     * @brief Park (disable) all initialized I2S channels and mute PA.
+     */
+    void park_i2s(void);
+
+    /**
+     * @brief Unpark (enable) all initialized I2S channels and unmute PA.
+     */
+    void unpark_i2s(void);
+
 #ifdef __cplusplus
 }
 #endif

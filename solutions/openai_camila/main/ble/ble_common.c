@@ -8,6 +8,7 @@
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "esp_bt.h"
 
 static const char *TAG = "BLE_COMMON";
 
@@ -294,6 +295,13 @@ esp_err_t ble_common_deinit(uint32_t timeout_ms)
         ESP_LOGE(TAG, "nimble_port_deinit failed: %s", esp_err_to_name(deinit_err));
         s_ble_state = BLE_COMMON_STATE_ERROR;
         return deinit_err;
+    }
+
+    esp_err_t mem_err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+    if (mem_err == ESP_OK) {
+        ESP_LOGI(TAG, "BT controller memory released successfully");
+    } else {
+        ESP_LOGE(TAG, "BT controller memory release failed: %s", esp_err_to_name(mem_err));
     }
 
     ble_common_mark_uninitialized();

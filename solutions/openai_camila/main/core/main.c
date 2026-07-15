@@ -49,6 +49,13 @@
 
 /* ── Project Modules ────────────────────────────────────────────────────── */
 #include "common.h"
+#include "ui_config.h"
+#include "camila_lvgl_ui.h"
+
+#ifdef USE_LVGL_UI
+extern void camila_lvgl_init(void);
+#endif
+
 #include "lua_benchmark.h"
 #include "esp_claw_init.h"
 #include "ble_config.h"
@@ -320,14 +327,37 @@ void app_main(void)
              g_boot_operation_mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
 
     /* 1) UI */
+#ifdef USE_LVGL_UI
+    camila_lvgl_init();
+    camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
+#endif
+
     esp_err_t err = ui_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Falló la inicialización de la UI: %s", esp_err_to_name(err));
         return;
     }
 
-    /* 2) I2C bus, media adapter, thread scheduler */
+    /* 2) I2C bus and pristine hardware allocations */
     bsp_i2c_init();
+
+    // EARLY HARDWARE ALLOCATION: I2S DMA buffers against a pristine heap
+    esp_err_t board_err = init_board();
+    if (board_err != ESP_OK) {
+        ESP_LOGE(TAG, "Hardware Init (I2S/I2C) failed! Audio will not work: %s", esp_err_to_name(board_err));
+        return; // Halt boot sequence on critical hardware failure
+    }
+    park_i2s(); // Disable clocks (and explicitly pull PA down if needed) to prevent pop/click
+    
+    // Soft Heap Budget Guard
+    // I2S TX/RX chunks take ~30KB contiguous. BLE needs ~10KB contiguous. 
+    // We will measure this on the first boot and set a soft warning threshold.
+    size_t dma_free = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    ESP_LOGI(TAG, "Early Hardware Init Complete. Largest DMA free: %zu", dma_free);
+    if (dma_free < 20480) {
+        ESP_LOGE(TAG, "DMA memory fragmentation threshold exceeded early boot budget! Proceeding with degraded safety.");
+    }
+
     kill_switch_init(); // Initialize Phase 2 Kill Switch GT911 polling
     media_lib_add_default_adapter();
     media_lib_thread_set_schedule_cb(thread_scheduler);
@@ -394,7 +424,7 @@ void app_main(void)
             ESP_LOGI(TAG, "Isolated Lua VM spawned successfully.");
         }
 
-        display_startup_screen();
+        camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "NETWORK", "Connecting to WiFi...");
         ESP_ERROR_CHECK(network_wifi_init(network_event_handler));
         wifi_connected = network_wifi_connect_main(WIFI_SSID, WIFI_PASSWORD);
     }

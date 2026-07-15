@@ -21,6 +21,7 @@
 #include "web_search.h"
 #include "responses_client.h"
 #include "ui.h"
+#include "camila_lvgl_ui.h"
 #include "simi.h"
 #include "app_events.h"
 #include "config_manager.h"
@@ -991,6 +992,8 @@ static void simi_session_set_state(simi_state_t state, const char *reason)
 static void simi_session_notify_speaking(bool active)
 {
     g_simi_pending_speaking = active;
+
+    camila_ui_set_speaking_state(active);
 
     if (ui_is_initialized() && ui_simi_ready())
     {

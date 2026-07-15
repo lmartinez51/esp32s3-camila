@@ -12,6 +12,9 @@
 
 // Cabecera principal del módulo
 #include "ui.h"
+#include "ui_config.h"
+
+#ifndef USE_LVGL_UI
 
 // Headers del sistema ESP-IDF
 #include "esp_err.h"
@@ -1734,3 +1737,5 @@ void ui_clear_help_message_below_status(void)
     g_help_msg_w = 0;
     g_help_msg_h = 0;
 }
+
+#endif // USE_LVGL_UI

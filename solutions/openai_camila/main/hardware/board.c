@@ -8,7 +8,7 @@
 
 static const char *TAG = "Board";
 
-void init_board(void)
+esp_err_t init_board(void)
 {
     ESP_LOGI(TAG, "Init board.");
     set_codec_board_type(BOARD_NAME);
@@ -19,6 +19,7 @@ void init_board(void)
         .in_use_tdm = true,
 #endif
         .reuse_dev = false};
-    init_codec(&cfg);
+    int ret = init_codec(&cfg);
     // Nota: NO inicializar el LCD aquí. Afecta buffers del WiFi.
+    return (ret == 0) ? ESP_OK : ESP_FAIL;
 }
