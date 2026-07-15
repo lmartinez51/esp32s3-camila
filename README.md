@@ -16,17 +16,15 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 
 ## ⚙️ Key Features
 
-- 📡 **Two-Factor Presence Detection (Radar/CSI + BLE)** — uses an optional hardware radar or deterministic Wi-Fi CSI DSP for motion sensing, combined with BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant.
-- 📡 **IR Sniffer Integration** — capture and map infrared remote commands to trigger internal actions (e.g., mute/unmute) when docked.
+- 📡 **Presence Detection & Beacon (BLE & ESP-NOW)** — uses BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant. It also functions as an ESP-NOW beacon, sending on-demand UDP packets to other devices.
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2.1** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
-- 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Camila (e.g. Doctor, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
-- 🌡️ **Environmental Sensing** — real-time temperature and humidity monitoring via I2C (AHT30), rendered directly on the LCD UI.
-- 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping, and hardware-accelerated IR processing (`lua_ir_bindings`) without blocking the main WebRTC C-loop.
+- 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Camila (e.g. Camila, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
+- 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
 
 ### 🧠 AI Autonomy & Background Tasks
@@ -36,14 +34,10 @@ The chatbot has access to a robust set of background functions to control the de
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
-### 🔐 Two-Factor Presence Detection (Radar/CSI + BLE)
-The system employs a highly customized, dual-layer authentication mechanism to detect presence and validate identity before waking up the assistant:
-- **Motion Detection (Hardware Radar or Wi-Fi CSI)**: The system supports an optional external I2C hardware radar (at 0x28) for high-precision presence detection. If unavailable, it falls back to a secondary ESP32-S3 acting as a Wi-Fi CSI radar beacon that captures full HT20 CSI LTF blocks (`128` bytes, `64` complex subcarriers). The firmware masks noisy edge and DC subcarriers, performs Phase Sanitization / Phase Cleaning by removing clock drift and CFO with a weighted least-squares linear phase fit, and triggers motion deterministically from normalized Correlation Drop and Phase Energy metrics.
-- **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When the primary ESP32 detects this specific UUID nearby, it confirms the owner's identity.
-
-*In short: the radar (Hardware or CSI DSP) detects that **someone moved**, and the BLE Nexus beacon confirms that it is **you**.*
-
-- **🚨 Intruder Alert (Alert Dispatcher)**: If the radar (Hardware or CSI DSP) detects physical motion but the authorized BLE Nexus beacon is **NOT** present to validate your identity, the system immediately registers an unauthorized access attempt. The `alert_dispatcher` then triggers an alert event, notifying you (or the WebRTC/OpenAI session) that an unrecognized presence was detected.
+### 🔐 Presence Detection & Beacon (BLE + ESP-NOW)
+The system employs a customized authentication mechanism to validate identity before waking up the assistant:
+- **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When Camila detects this specific UUID nearby, she confirms your identity.
+- **ESP-NOW UDP Beacon**: Camila can also function as a beacon on-demand, sending UDP packets via ESP-NOW to communicate with or wake up other devices in the ecosystem.
 
 ---
 
@@ -76,8 +70,7 @@ flowchart TD
         HC -->|Enter Config Mode| BLE[BLE Module]
         G -->|Automation Rules| LUA[ESP-Claw Lua VM]
         LUA <-->|Read/Write Rules| LFS[(LittleFS Storage)]
-        LUA -->|Emit IR| IR[IR Sniffer / TX]
-    end
+            end
 
     subgraph Connectivity & Provisioning
         BLE <-->|Receive Credentials| App[Companion App]
@@ -96,19 +89,19 @@ A key feature of the Camila architecture is its embedded **ESP-Claw Lua 5.4 Virt
 Through natural language, the AI translates your requests into JSON commands which the C orchestrator intercepts and delegates to the Lua VM. You can interact with this engine seamlessly:
 
 - **Create**: 
-  > *"Doctor, crea una regla de automatización que cuando se active el trigger 'ver ovnis', prendas la TV, pongas el canal 3.3 y le subas al volumen."*
+  > *"Camila, crea una regla de automatización que cuando se active el trigger 'luces', envíes un paquete UDP para prender las luces."*
   (Camila generates the rule and confirms it instantly).
 - **Execute**:
-  > *"Doctor, ejecuta la regla 'ver ovnis'."*
-  (The orchestrator queues the execution in Lua using coroutines to avoid blocking, emits the IR commands sequentially, and confirms success).
+  > *"Camila, ejecuta la regla 'luces'."*
+  (The orchestrator queues the execution in Lua using coroutines to avoid blocking, emits the UDP packet, and confirms success).
 - **Read**: 
-  > *"Doctor, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
-  (The orchestrator pauses, Lua reads the dictionary, returns "ver_ovnis" to C, and Camila speaks it out loud).
+  > *"Camila, ¿qué reglas de automatización tienes guardadas en la memoria ahorita?"*
+  (The orchestrator pauses, Lua reads the dictionary, returns "luces" to C, and Camila speaks it out loud).
 - **Delete**: 
-  > *"Excelente doctor, ahora por favor borra la regla de 'ver ovnis'."*
+  > *"Excelente Camila, ahora por favor borra la regla de 'luces'."*
   (Lua receives the `SYS_CMD:DELETE` command, destroys the dictionary key, and confirms the deletion).
 - **Verify**: 
-  > *"Doctor, ¿qué reglas te quedan activas?"*
+  > *"Camila, ¿qué reglas te quedan activas?"*
   (Camila will confirm the memory is empty).
 
 ---
@@ -118,39 +111,32 @@ Through natural language, the AI translates your requests into JSON commands whi
 You can control various device features simply by talking to Camila. Here are some natural language examples in Mexican Spanish (with English context):
 
 - **Mute Microphone**: 
-  - *"Doctor, guarde silencio por un momento."* (Context: "Doc, mute yourself for a sec.")
+  - *"Camila, guarde silencio por un momento."* (Context: "Camila, mute yourself for a sec.")
   - **Action**: Triggers `activate_mute`.
 - **Turn Off/On Screen**:
-  - *"Doctor, apaga la pantalla."* (Context: "Doc, turn the screen off.")
-  - *"Doctor, enciende la pantalla."* (Context: "Doc, wake the screen up.")
+  - *"Camila, apaga la pantalla."* (Context: "Camila, turn the screen off.")
+  - *"Camila, enciende la pantalla."* (Context: "Camila, wake the screen up.")
   - **Action**: Triggers `control_display`.
 - **Erase WiFi Credentials**: 
-  - *"Doctor, borre las credenciales de la memoria."* (Context: "Doc, forget all the saved Wi-Fi networks.")
+  - *"Camila, borre las credenciales de la memoria."* (Context: "Camila, forget all the saved Wi-Fi networks.")
   - **Action**: Triggers `delete_credentials`.
 - **Delete API Key**:
-  - *"Doctor, elimina tu llave de acceso."* (Context: "Doc, wipe your API key.")
+  - *"Camila, elimina tu llave de acceso."* (Context: "Camila, wipe your API key.")
   - **Action**: Triggers `delete_api_key`.
 - **Enter BLE Config Mode**:
-  - *"Doctor, ponte en modo de configuración."* (Context: "Doc, switch over to setup mode.")
+  - *"Camila, ponte en modo de configuración."* (Context: "Camila, switch over to setup mode.")
   - **Action**: Triggers `enter_config_mode`.
 - **Search the Web**:
-  - *"Doctor, búscame las noticias más recientes sobre tecnología."* (Context: "Doc, pull up the latest tech news.")
+  - *"Camila, búscame las noticias más recientes sobre tecnología."* (Context: "Camila, pull up the latest tech news.")
   - **Action**: Triggers `web_search`.
 - **Product Information Lookup**:
   - *"¿Cuánto cuesta el paracetamol?"* (Context: "How much does Tylenol usually go for?")
   - **Action**: Triggers `lookup_product_info`.
 - **Change Outfit**:
-  - *"Doctor, póngase su traje de superhéroe."* (Context: "Doc, put on your superhero suit.")
-  - *"Doctor, póngase la playera de la selección."* (Context: "Doc, put on the national team jersey.")
-  - *"Doctor, ponte la camisa del Barça."* (Context: "Doc, put on the FC Barcelona jersey.")
+  - *"Camila, ponte tu vestido elegante."* (Context: "Camila, put on your elegant dress.")
+  - *"Camila, ponte tu chaqueta de cuero."* (Context: "Camila, put on your leather jacket.")
+  - *"Camila, ponte tu ropa casual."* (Context: "Camila, put on your casual clothes.")
   - **Action**: Triggers `change_simi_outfit`.
-- **Control Electronic Devices (IR)**:
-  - *"Doctor, enciende la tele."* (Context: "Doc, turn on the TV.")
-  - *"Doctor, apréndete el botón de encendido de la tele."* (Context: "Doc, learn the TV power button.")
-  - *"Doctor, borra la tele de tus registros."* (Context: "Doc, delete the TV from your records.")
-  - *"Doctor, borra el botón de encendido de la tele."* (Context: "Doc, delete the TV power button.")
-  - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"* (Context: "Doc, what IR devices do you have registered?")
-  - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, `ir_delete_device`, or `ir_get_devices`.
 
 ---
 
@@ -173,7 +159,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 | Step | Event (client → server) | Actor / Role | Content | Notes |
 | ---: | ----------------------- | ------------ | ------- | ----- |
-| 1 | `user` message | user | "Doctor, please stay quiet." | User requests silence |
+| 1 | `user` message | user | "Camila, please stay quiet." | User requests silence |
 | 2 | Model response | assistant | "Alright, Lorenzo. I’ll stay quiet and listen for a bit." | Assistant confirms and is added to history |
 | 3 | `conversation.item.create` | device (system) | "Microphone muted successfully." | Device confirms function call / status |
 | 4 | `keep.alive` → `response.create` | device | "Inform user that microphone has been muted successfully." | Device asks model to return a short textual notice |
@@ -195,8 +181,6 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 1. **Hardware Prerequisites**:
    - **Main Device**: An ESP32-S3-BOX-3 (recommended) for AI and audio processing.
-   - **Dock Accessory**: An `ESP32-S3-BOX-3-SENSOR` dock. While not strictly required for the core voice assistant, this dock is necessary if you want to use the environmental temperature/humidity sensors (AHT30), the infrared (IR) sniffer/emitter, and the hardware presence radar.
-   - **CSI Beacon**: A second ESP32-S3 (any variant) used exclusively to collect and broadcast Wi-Fi radar data.
    - **Digital Key**: An Android smartphone running the custom "Nexus" background app for BLE validation.
 2. **Software Prerequisites**: ESP-IDF v5.4.3.
 3. **Configuration**: Use the companion Flutter app from [lmartinez51/credentials](https://github.com/lmartinez51/credentials) to provision the device. The app connects via BLE to securely send the WiFi credentials and the OpenAI API Key.
@@ -221,14 +205,13 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_camila/main
- ├── alert/                # CSI drop/motion alert dispatcher
+ ├── alert/                # Alert dispatcher
  ├── audio/                # Audio capture/playback, pipeline control, and mute logic
  ├── ble/                  # BLE central logic and provisioning
  ├── config/               # Settings manager, NVS setup
  ├── core/                 # Main app and high-level orchestration
- ├── hardware/             # Codec/I2C init, environmental (AHT30) and radar sensors, board peripherals
+ ├── hardware/             # Codec/I2C init, board peripherals
  ├── openai/               # Assistant logic, Web Search, Realtime API signaling
- ├── sensing/              # Pure DSP CSI motion detection
  ├── ui/                   # LCD rendering, charset mapping, and UI logic
  └── webrtc/               # WebRTC integration and event handling
 ```
