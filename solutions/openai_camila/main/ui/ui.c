@@ -48,7 +48,7 @@
 static const char *TAG = "UI";
 esp_lcd_panel_handle_t g_panel_handle = NULL;
 esp_lcd_panel_io_handle_t g_io_handle = NULL;
-// Mutex que serializa TODO acceso al panel (texto, rects y la tarea de Dr. Simi).
+// Mutex que serializa TODO acceso al panel LCD (texto, rects y renderizado de Camila).
 // Antes no existía: webrtc.c y main.c dibujaban sin protección (race latente).
 static SemaphoreHandle_t s_panel_mutex = NULL;
 static SemaphoreHandle_t s_panel_flush_done = NULL;
@@ -1045,6 +1045,19 @@ void display_disconnected_message(void)
 
     // Mostrar el mensaje de desconexión en rojo
     display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
+    ui_backlight_on();
+}
+
+/**
+ * @brief Displays a "NETWORK TIMEOUT" warning on the LCD screen.
+ *        Shows red border, "NETWORK TIMEOUT" status and "WiFi Signal Weak - Retrying".
+ */
+void display_network_timeout_message(void)
+{
+    clear_screen();
+    draw_screen_border(COLOR_RED_BGR565, 3);
+    ui_show_status_message("NETWORK TIMEOUT", COLOR_RED_BGR565);
+    ui_show_help_message_below_status("WiFi Signal Weak - Retrying", COLOR_YELLOW_BGR565);
     ui_backlight_on();
 }
 

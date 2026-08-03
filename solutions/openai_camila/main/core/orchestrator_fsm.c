@@ -19,7 +19,6 @@
 #include "orchestrator_helpers.h"
 #include "orchestrator_tasks.h"
 #include "orchestrator_vigilante.h"
-// Removed sensor_dock.h
 
 #include <string.h>
 #include "esp_log.h"
@@ -39,7 +38,6 @@
 #include "ble_device_callbacks.h"
 #include "ble_device_control.h"
 #include "csi_handler.h"
-// Removed radar.h
 #include "common.h"
 #include "esp_now_beacon.h"
 
@@ -102,7 +100,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         reset_vigilante_runtime_context();
         s_ble_release_to_sleep = false;
         s_is_muted             = false;
-        // radar_hal_disable() removed
         csi_handler_stop();
         ui_deinit_keep_last_frame();
         stop_webrtc();
@@ -139,7 +136,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_ble_release_to_sleep    = false;
         s_is_muted                = false;
         s_webrtc_stop_started_ms  = 0;
-        // radar_hal_disable() removed
         csi_handler_stop();
         ui_deinit_keep_last_frame();
         orchestrator_show_phase("wifi_ready", "WiFi ready", "Standing by", COLOR_GREEN_BGR565);
@@ -161,7 +157,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     {
         ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
         orchestrator_cancel_sleep_csi_cooldown();
-        // radar_hal_disable() removed
         csi_handler_stop();
         orchestrator_show_phase("ble_prepare_status", "Checking ID", "Stay close", COLOR_YELLOW_BGR565);
         esp_err_t ui_deinit_err = ui_deinit_keep_last_frame();
@@ -177,7 +172,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_VALIDATING_IDENTITY:
         ESP_LOGI(TAG, "STATE_VALIDATING_IDENTITY: BLE ready; starting identity validation scan.");
         orchestrator_cancel_sleep_csi_cooldown();
-        // radar_hal_disable() removed
         csi_handler_stop();
         
         camila_ui_update_state(UI_STATE_BLE_SCAN, "CENTINELA", "Scanning for owner...");
@@ -188,7 +182,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_RELEASING_BLE:
         ESP_LOGI(TAG, "STATE_RELEASING_BLE: releasing NimBLE before audio ignition.");
         orchestrator_cancel_sleep_csi_cooldown();
-        // radar_hal_disable() removed
         csi_handler_stop();
         orchestrator_start_ble_release();
         break;
@@ -197,7 +190,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     {
         ESP_LOGW(TAG, "STATE_DISPATCHING_ALERT: dispatching emergency alert after BLE release.");
         orchestrator_cancel_sleep_csi_cooldown();
-        // radar_hal_disable() removed
         csi_handler_stop();
         orchestrator_show_vigilante_alert_visual();
         if (!s_alert_dispatch_pending) {
@@ -226,7 +218,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         ESP_LOGI(TAG, "STATE_IGNITING: initializing audio runtime and starting WebRTC.");
         esp_now_beacon_init();
         orchestrator_cancel_sleep_csi_cooldown();
-        // radar_hal_disable() removed
         csi_handler_stop();
         s_arrival_context_sent = false;
 
@@ -259,10 +250,19 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         int ret = start_webrtc(ignition_mode);
         s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
         if (ret != 0) {
+            ESP_LOGE(TAG, "STATE_IGNITING: WebRTC start failed (ret=%d). Triggering UI warning & explicit recovery.", ret);
+            camila_ui_update_state(UI_STATE_ERROR, "NETWORK TIMEOUT", "WiFi Signal Weak / Retrying...");
+            vTaskDelay(pdMS_TO_TICKS(1500));
+
             EventBits_t bits = xEventGroupGetBits(app_startup_event_group);
-            orchestrator_post_event((bits & WEBRTC_API_ERROR_BIT)
-                                        ? ORCH_EVENT_WEBRTC_API_ERROR
-                                        : ORCH_EVENT_WEBRTC_DISCONNECTED);
+            bool wifi_online = (bits & WIFI_CONNECTED_BIT) != 0;
+            if (wifi_online) {
+                ESP_LOGI(TAG, "STATE_IGNITING recovery: Wi-Fi L2 still connected; transitioning to STATE_SLEEP");
+                orchestrator_enter_state(state, STATE_SLEEP);
+            } else {
+                ESP_LOGW(TAG, "STATE_IGNITING recovery: Wi-Fi L2 disconnected; transitioning to STATE_WAIT_WIFI");
+                orchestrator_enter_state(state, STATE_WAIT_WIFI);
+            }
         }
         break;
     }
@@ -288,7 +288,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
                          esp_err_to_name(csi_err));
             }
         } else {
-            // radar_hal_disable() removed
             csi_handler_stop();
         }
         if (!s_arrival_context_sent) {
@@ -305,7 +304,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         ESP_LOGI(TAG, "STATE_AUTO_SLEEPING: preparing deterministic WebRTC shutdown.");
         orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
-        // radar_hal_disable() removed
         csi_handler_stop();
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
@@ -317,7 +315,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         media_sys_set_vigilante_mute(false);
         orchestrator_cancel_sleep_csi_cooldown();
         s_arrival_context_sent = false;
-        // radar_hal_disable() removed
         csi_handler_stop();
         xEventGroupClearBits(app_startup_event_group,
                              WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT |
@@ -328,7 +325,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_TEARING_DOWN_UI_FOR_SCAN:
     {
         ESP_LOGW(TAG, "STATE_TEARING_DOWN_UI_FOR_SCAN: tearing down UI to free RAM for BLE Scan");
-        // radar_hal_disable() removed
+        // STATE_TEARING_DOWN_UI_FOR_SCAN
         csi_handler_stop();
         ui_deinit_keep_last_frame();
         
@@ -402,7 +399,6 @@ void app_startup_orchestrator_task(void *param)
             }
             else
             {
-                // AHT30 polling removed
                 continue;
             }
         }
@@ -706,7 +702,6 @@ void app_startup_orchestrator_task(void *param)
                 /* Kill the animation task, freezing the overlay frame permanently on the screen */
 
                 /* 2. Forcefully stop hardware SECOND */
-                // radar_hal_disable() removed
                 csi_handler_stop();
                 media_sys_teardown();
 

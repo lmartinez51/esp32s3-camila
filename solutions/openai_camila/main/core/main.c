@@ -9,7 +9,6 @@
  *   4. Running the idle main-loop that queries WebRTC status.
  *
  * All orchestrator logic is split across the sibling modules in core/:
- *   - sensor_dock.c       — AHT30 sensor and dock detection
  *   - orchestrator_helpers.c — shared state, heap logging, UI/audio helpers
  *   - orchestrator_tasks.c   — async FreeRTOS tasks (BLE, alert, WebRTC stop)
  *   - orchestrator_vigilante.c — Vigilante-mode presence monitor

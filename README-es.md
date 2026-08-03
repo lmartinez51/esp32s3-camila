@@ -166,6 +166,8 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 ## 🔧 Aspectos Destacados de la Implementación
 
 - **Manejo de silenciar/desilenciar**: Cuando el hardware silencia el micrófono, la tubería de audio se apaga de forma segura. Al desilenciar, se reinicia la tubería de captura.
+- **Señalización WebRTC Resiliente y Recuperación de Red**: Reintentos automáticos HTTP POST para señalización SDP de WebRTC y recuperación inteligente del autómata de estados (`STATE_IGNITING` advierte problemas en pantalla LCD y realiza un fallback limpio a suspensión o reconexión si la red falla).
+- **Renderizado de UI y Lip-Sync Optimizado**: Overlay de boca (`boca_abierta`) con alternancia de visibilidad mediante flags para reducir la huella de memoria Flash y RAM, manteniendo la animación de sincronización labial fluida a 350ms en la pantalla LCD.
 - **Botón Alternador**: El botón físico funciona como un interruptor. El manejador elimina rebotes y coordina el hardware, el estado del códec y el reinicio de WebRTC si es necesario.
 - **IDs de Llamada (Call IDs) y Funciones**: Cuando ocurren operaciones tipo función, el dispositivo guarda un `call_id` y lo adjunta a los eventos `conversation.item.create`.
 - **Sanitización de UI**: La fuente de la pantalla LCD es un mapa de bits limitado de 8×8. El firmware desinfecta el texto UTF-8 proveniente del modelo, mapeando los caracteres que la pantalla no puede renderizar.

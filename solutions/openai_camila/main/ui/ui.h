@@ -76,6 +76,11 @@ extern "C"
     void display_disconnected_message(void);
 
     /**
+     * @brief Muestra alerta de error por timeout de red/Wi-Fi en la pantalla LCD.
+     */
+    void display_network_timeout_message(void);
+
+    /**
      * @brief Muestra un mensaje de error de clave API en la pantalla LCD.
      * Indica que la clave API es inválida o falta.
      */
@@ -190,6 +195,7 @@ extern "C"
 #define display_error_message() do {} while(0)
 #define display_resetting_message() do {} while(0)
 #define display_disconnected_message() do {} while(0)
+#define display_network_timeout_message() do {} while(0)
 #define display_api_key_error_message() do {} while(0)
 #define display_intruder_alert_message() do {} while(0)
 #define ui_backlight_off_safe() do {} while(0)

@@ -16,7 +16,6 @@
 #include "lualib.h"
 #include "lauxlib.h"
 #include "esp_littlefs.h"
-// removed lua_ir_bindings.h
 #include "lua_mic_bindings.h"
 #include "app_events.h"
 #include "driver/gpio.h"
@@ -403,7 +402,6 @@ static void lua_worker_task(void *arg) {
     lua_register(L, "c_inject_webrtc_message", l_inject_webrtc_message);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
 
-    // IR bindings removed for Camila
     ESP_LOGI(TAG, "Lua initialized. Waiting for LUA_SAFE_TO_START_BIT...");
     xEventGroupWaitBits(s_claw_event_group, LUA_SAFE_TO_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
@@ -568,9 +566,12 @@ esp_err_t esp_claw_init(void) {
     return ESP_OK;
 }
 
+/**
+ * @deprecated Legacy direct command dispatch API. Use esp_claw_send_rule() for the JSON Rule Engine.
+ */
 esp_err_t esp_claw_send_command(const char* device, const char* action) {
     if (s_test_queue == NULL) return ESP_ERR_INVALID_STATE;
-    ESP_LOGW(TAG, "esp_claw_send_command is temporarily disabled during JSON Rule Engine migration.");
+    ESP_LOGW(TAG, "esp_claw_send_command is deprecated in favor of esp_claw_send_rule.");
     return ESP_OK;
 }
 

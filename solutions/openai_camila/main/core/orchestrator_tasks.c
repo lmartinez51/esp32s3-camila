@@ -29,7 +29,6 @@
 #include "alert_dispatcher.h"
 #include "webrtc.h"
 #include "csi_handler.h"
-// Removed radar.h and sensor_dock.h
 #include "common.h"
 #include "ui.h"     /* COLOR_*_BGR565 constants */
 

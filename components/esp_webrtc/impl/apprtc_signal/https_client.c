@@ -24,6 +24,8 @@
 
 #include <sys/param.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "https_client.h"
 #include "esp_tls.h"
@@ -31,7 +33,7 @@
 #include "esp_http_client.h"
 
 static const char *TAG = "HTTPS_CLIENT";
-#define HTTPS_CLIENT_TIMEOUT_MS 5000
+#define HTTPS_CLIENT_TIMEOUT_MS 4000
 
 typedef struct {
     http_body_t body;
@@ -154,13 +156,21 @@ int https_send_request(const char *method, char **headers, const char *url, char
         }
         esp_http_client_set_post_field(client, data, strlen(data));
     }
-    err = esp_http_client_perform(client);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "HTTP POST Status = %d, content_length = %lld",
-                 esp_http_client_get_status_code(client),
-                 esp_http_client_get_content_length(client));
-    } else {
-        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+    int attempts = 0;
+    while (attempts < 2) {
+        attempts++;
+        err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "HTTP POST Status = %d, content_length = %lld",
+                     esp_http_client_get_status_code(client),
+                     esp_http_client_get_content_length(client));
+            break;
+        } else {
+            ESP_LOGE(TAG, "HTTP POST attempt %d/2 failed: %s", attempts, esp_err_to_name(err));
+            if (attempts < 2) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
     }
 _exit:
     esp_http_client_cleanup(client);

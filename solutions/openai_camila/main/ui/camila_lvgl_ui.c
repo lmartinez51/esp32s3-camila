@@ -23,7 +23,6 @@ static esp_lcd_panel_io_handle_t s_io_handle = NULL;
 
 // External image declarations (placed here to keep the header clean for main.c)
 LV_IMG_DECLARE(camila_base);
-LV_IMG_DECLARE(boca_cerrada);
 LV_IMG_DECLARE(boca_abierta);
 
 static lv_obj_t *ui_indicator_box = NULL;
@@ -240,9 +239,9 @@ static void mouth_anim_timer_cb(lv_timer_t * timer)
     mouth_is_open = !mouth_is_open;
     
     if (mouth_is_open) {
-        lv_img_set_src(ui_camila_mouth, &boca_abierta);
+        lv_obj_clear_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_img_set_src(ui_camila_mouth, &boca_cerrada);
+        lv_obj_add_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -269,15 +268,16 @@ void camila_ui_show_avatar(void)
         // 3. Instantiate the Mouth Sprite overlay
         if (ui_camila_mouth == NULL) {
             ui_camila_mouth = lv_img_create(lv_scr_act());
-            lv_img_set_src(ui_camila_mouth, &boca_cerrada);
-            // Placeholder coordinates: X=148, Y=136
-            lv_obj_align(ui_camila_mouth, LV_ALIGN_TOP_LEFT, 148, 136); 
+            lv_img_set_src(ui_camila_mouth, &boca_abierta);
+            lv_obj_add_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
+            // Updated coordinates: X=184, Y=168
+            lv_obj_align(ui_camila_mouth, LV_ALIGN_TOP_LEFT, 147, 143); 
             
             // 4. Create the mouth animation timer (paused by default)
             mouth_timer = lv_timer_create(mouth_anim_timer_cb, 350, NULL);
             lv_timer_pause(mouth_timer);
         } else {
-            lv_obj_clear_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
         }
 
         xSemaphoreGive(g_lvgl_mutex);
@@ -297,7 +297,7 @@ void camila_ui_set_speaking_state(bool is_speaking)
             // Pause the animation and force the mouth closed
             lv_timer_pause(mouth_timer);
             mouth_is_open = false;
-            lv_img_set_src(ui_camila_mouth, &boca_cerrada);
+            lv_obj_add_flag(ui_camila_mouth, LV_OBJ_FLAG_HIDDEN);
         }
 
         xSemaphoreGive(g_lvgl_mutex);

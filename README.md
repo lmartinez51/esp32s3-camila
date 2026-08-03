@@ -170,6 +170,8 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 ## 🔧 Implementation Highlights
 
 - **Mute/unmute handling**: The central orchestrator manages the global mute state, safely shutting down the pipeline when muting and seamlessly restarting it upon unmuting, while keeping the WebRTC session informed.
+- **Resilient WebRTC Signaling & Network Timeout Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling and intelligent state machine recovery (`STATE_IGNITING` UI warnings and graceful sleep/reconnect fallback when network signals degrade).
+- **Optimized Lip-Sync UI Rendering**: Single-sprite mouth overlay (`boca_abierta`) with visibility toggling to reduce flash/RAM memory footprint while preserving smooth 350ms frame rate lip-sync animations on the LCD.
 - **Toggle Button**: The physical push button acts as a toggle. The handler debounces and coordinates hardware and codec state, delegating UI and WebRTC restart synchronization to the orchestrator.
 - **Call IDs & Function Calls**: When function-like operations occur, the device stores a `call_id` and attaches it to the `conversation.item.create` events.
 - **UI sanitization**: The LCD font set is a limited 8×8 bitmap. The firmware sanitizes UTF-8 text from the model, mapping characters the display can't render.

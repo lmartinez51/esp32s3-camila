@@ -30,7 +30,6 @@ idf_component_register(
         "ui/camila_lvgl_ui.c"
 
         "ui/camila_base.c"
-        "ui/boca_cerrada.c"
         "ui/boca_abierta.c"
 
         "webrtc/webrtc.c"
