@@ -37,3 +37,4 @@ coverage_report/
 
 .vscode
 .claude/
+.codegraph/
