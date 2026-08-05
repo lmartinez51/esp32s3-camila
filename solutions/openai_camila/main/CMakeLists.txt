@@ -29,9 +29,6 @@ idf_component_register(
         "ui/ui.c"
         "ui/camila_lvgl_ui.c"
 
-        "ui/camila_base.c"
-        "ui/boca_abierta.c"
-
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"
         "webrtc/lua_mic_bindings.c"

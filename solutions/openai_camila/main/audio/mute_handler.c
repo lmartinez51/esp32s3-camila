@@ -161,6 +161,8 @@ static void vIdleTimerCallback(TimerHandle_t xTimer)
         int secs = s_mute_remaining_seconds % 60;
         snprintf(buffer, sizeof(buffer), "Reboot:%02d:%02d", mins, secs);
 
+        camila_ui_update_mute_countdown(s_mute_remaining_seconds);
+
         if (s_mute_remaining_seconds == 120 && !s_idle_warning_sent)
         {
             ESP_LOGW(TAG, "Quedan 2 minutos. Avisando al usuario...");

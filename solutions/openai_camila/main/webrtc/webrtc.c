@@ -1773,7 +1773,7 @@ static void web_search_task(void *arg)
 
     // Usamos heap_caps_malloc para evitar stack overflow si la respuesta es grande
     size_t full_len = strlen(additional_text) + strlen(response) + 1;
-    char *formatted = heap_caps_malloc(full_len, MALLOC_CAP_INTERNAL);
+    char *formatted = heap_caps_malloc(full_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!formatted)
     {
         ESP_LOGE(TAG, "WEB_SEARCH_TASK: fallo malloc formatted");
@@ -2821,6 +2821,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
                                        "response_done");
             }
         }
+        if (g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE && !g_output_audio_active) {
+            ESP_LOGW(TAG, "Vigilante warning speech finished (response.done); requesting reboot...");
+            orchestrator_post_event(ORCH_EVENT_VIGILANTE_TIMEOUT);
+        }
     }
     else if (strcmp(event_type, "response.audio.done") == 0 ||
              strcmp(event_type, "response.output_audio.done") == 0)
@@ -2847,6 +2851,10 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
                                        ? CAMILA_STATE_ALERT
                                        : CAMILA_STATE_LISTENING,
                                    "output_audio_done");
+        }
+        if (g_webrtc_session_mode == WEBRTC_SESSION_MODE_VIGILANTE && !g_response_in_progress) {
+            ESP_LOGW(TAG, "Vigilante warning speech finished (output_audio_buffer.stopped); requesting reboot...");
+            orchestrator_post_event(ORCH_EVENT_VIGILANTE_TIMEOUT);
         }
     }
     else if (strcmp(event_type, "conversation.item.input_audio_transcription.completed") == 0 ||

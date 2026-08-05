@@ -326,6 +326,10 @@ void app_main(void)
     ESP_LOGI(TAG, "Boot mode leído de NVS: %s",
              g_boot_operation_mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
 
+    // Suppress internal audio buffer manager log spam
+    esp_log_level_set("BUF_MNGR", ESP_LOG_WARN);
+    esp_log_level_set("CAPTURE_SIMP", ESP_LOG_WARN);
+
     /* 1) UI */
 #ifdef USE_LVGL_UI
     camila_lvgl_init();

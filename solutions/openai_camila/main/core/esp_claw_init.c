@@ -557,8 +557,8 @@ esp_err_t esp_claw_init(void) {
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 16KB)");
-    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 16384, NULL, 3, NULL, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 8KB)");
+    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 8192, NULL, 3, NULL, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }

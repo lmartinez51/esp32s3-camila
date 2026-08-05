@@ -23,7 +23,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
-- 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Camila (e.g. Camila, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
+- 📺 **On-device LCD UI** with a tailored character map, responsive 7-bar equalizer audio spectrum visualizer, live countdown timer for mute auto-reset, dynamic state color indicators, and hardware-accelerated rendering optimizations.
 - 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
 
@@ -171,7 +171,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 - **Mute/unmute handling**: The central orchestrator manages the global mute state, safely shutting down the pipeline when muting and seamlessly restarting it upon unmuting, while keeping the WebRTC session informed.
 - **Resilient WebRTC Signaling & Network Timeout Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling and intelligent state machine recovery (`STATE_IGNITING` UI warnings and graceful sleep/reconnect fallback when network signals degrade).
-- **Optimized Lip-Sync UI Rendering**: Single-sprite mouth overlay (`boca_abierta`) with visibility toggling to reduce flash/RAM memory footprint while preserving smooth 350ms frame rate lip-sync animations on the LCD.
+- **Dynamic LVGL Visualizer & Countdown UI**: Responsive 7-bar audio spectrum equalizer animation for active speech synthesis, coupled with a thread-safe live countdown subtitle for auto-mute reset management.
 - **Toggle Button**: The physical push button acts as a toggle. The handler debounces and coordinates hardware and codec state, delegating UI and WebRTC restart synchronization to the orchestrator.
 - **Call IDs & Function Calls**: When function-like operations occur, the device stores a `call_id` and attaches it to the `conversation.item.create` events.
 - **UI sanitization**: The LCD font set is a limited 8×8 bitmap. The firmware sanitizes UTF-8 text from the model, mapping characters the display can't render.

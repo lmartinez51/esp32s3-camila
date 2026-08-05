@@ -41,6 +41,13 @@ void camila_ui_show_avatar(void);
  */
 void camila_ui_set_speaking_state(bool is_speaking);
 
+/**
+ * @brief Thread-safe non-blocking update for mute countdown timer subtitle.
+ * 
+ * @param remaining_seconds Seconds remaining before auto-reset.
+ */
+void camila_ui_update_mute_countdown(int remaining_seconds);
+
 #ifdef __cplusplus
 }
 #endif

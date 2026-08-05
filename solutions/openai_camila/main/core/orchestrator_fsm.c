@@ -124,9 +124,12 @@ void orchestrator_enter_state(orchestrator_state_t *state,
          * starts in the armed path automatically.
          * The write is idempotent — if CENTINELA is already stored, no harm.   */
         if (s_active_webrtc_mode == WEBRTC_SESSION_MODE_VIGILANTE) {
-            ESP_LOGW(TAG, "STATE_SLEEP: Sesión Vigilante concluida. "
-                          "Escribiendo CENTINELA en NVS para el próximo arranque.");
+            ESP_LOGE(TAG, "STATE_SLEEP: Sesión Vigilante concluida. Reiniciando hardware en modo CENTINELA...");
             nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+            camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Armed CENTINELA...");
+            fflush(stdout);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
         }
         /* ────────────────────────────────────────────────────────────────── */
 
@@ -271,7 +274,11 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         ESP_LOGI(TAG, "STATE_ACTIVE: WebRTC active; injecting arrival context.");
         orchestrator_cancel_sleep_csi_cooldown();
         
-        camila_ui_show_avatar();
+        if (orchestrator_is_vigilante_active()) {
+            camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "CENTINELA", "Security Alert: Access Denied");
+        } else {
+            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "Camila AI", "Listening for your voice...");
+        }
         
         if (s_is_muted) {
             ESP_LOGI(TAG, "STATE_ACTIVE: Re-applying persisted mute state.");
@@ -582,37 +589,32 @@ void app_startup_orchestrator_task(void *param)
 
                 /* Synchronize UI Canvas State & Hardware Mic */
                 if (event == ORCH_EVENT_MIC_MUTED) {
-                    ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
+                    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "MUTED", "Microphone Disabled");
                     media_sys_mic_mute(true); /* Físicamente apagar el micrófono (Modo Normal) */
                     mute_handler_start_idle_timer();
                 } else {
-                    ui_clear_status_message();
+                    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Active Session / Listening");
                     media_sys_mic_mute(false); /* Reactivar micrófono físicamente (Modo Normal) */
                     mute_handler_stop_idle_timer();
                     webrtc_post_action(WEBRTC_ACTION_NOTIFY_UNMUTE);
                 }
-            } else if (event == ORCH_EVENT_IDLE_ALERT_START) {
-                ui_clear_status_message();
-                ui_show_status_message("You there?", COLOR_YELLOW_BGR565);
-            } else if (event == ORCH_EVENT_IDLE_ALERT_END) {
-                if (s_is_muted) {
-                    ui_show_status_message("Muted / Dozing", COLOR_RED_BGR565);
-                } else {
-                    ui_clear_status_message();
-                }
             } else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
                        !orchestrator_is_vigilante_active())
             {
-                s_teardown_ui_pending = true;
-                orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
-                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
+                ESP_LOGE(TAG, "14-minute Mute/Idle Timeout reached! Executing clean hardware reboot...");
+                camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Idle timeout (14m)...");
+                fflush(stdout);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                esp_restart();
             } else if (event == ORCH_EVENT_VIGILANTE_ROOM_VACATED ||
                        event == ORCH_EVENT_VIGILANTE_TIMEOUT)
             {
-                ESP_LOGW(TAG, "Vigilante lifecycle ended by %s", orchestrator_event_name(event));
-                reset_alert_context();
-                orchestrator_enter_state(&state, STATE_AUTO_SLEEPING);
-                orchestrator_enter_state(&state, STATE_STOPPING_WEBRTC);
+                ESP_LOGE(TAG, "Vigilante lifecycle ended by %s. Re-arming CENTINELA mode and rebooting...", orchestrator_event_name(event));
+                nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+                camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Armed CENTINELA...");
+                fflush(stdout);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
             } else if (event == ORCH_EVENT_WEBRTC_DISCONNECTED ||
                        event == ORCH_EVENT_WEBRTC_API_ERROR)
             {
