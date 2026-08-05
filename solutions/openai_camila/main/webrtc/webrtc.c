@@ -659,6 +659,24 @@ static void post_response_capture_recovery_task(void *arg)
 }
 #endif
 
+static BaseType_t create_psram_task(TaskFunction_t task_fn,
+                                    const char *name,
+                                    uint32_t stack_size,
+                                    void *param,
+                                    UBaseType_t priority,
+                                    TaskHandle_t *task_handle,
+                                    BaseType_t core_id)
+{
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    return xTaskCreatePinnedToCoreWithCaps(task_fn, name, stack_size, param,
+                                           priority, task_handle, core_id,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreatePinnedToCore(task_fn, name, stack_size, param,
+                                   priority, task_handle, core_id);
+#endif
+}
+
 static void schedule_post_response_capture_recovery(void)
 {
     g_last_response_done_ms = app_millis();
@@ -669,13 +687,13 @@ static void schedule_post_response_capture_recovery(void)
         return;
     }
 
-    BaseType_t ok = xTaskCreatePinnedToCore(post_response_capture_recovery_task,
-                                            "cap_recover",
-                                            3072,
-                                            NULL,
-                                            5,
-                                            &g_capture_recovery_task,
-                                            1);
+    BaseType_t ok = create_psram_task(post_response_capture_recovery_task,
+                                           "cap_recover",
+                                           3072,
+                                           NULL,
+                                           5,
+                                           &g_capture_recovery_task,
+                                           1);
     if (ok != pdPASS)
     {
         g_capture_recovery_task = NULL;
@@ -1061,7 +1079,7 @@ void webrtc_init_action_queue(void)
         return;
     }
 
-    if (xTaskCreatePinnedToCore(webrtc_action_task, "webrtc_action_task", 4096, NULL, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(webrtc_action_task, "webrtc_action_task", 4096, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea webrtc_action_task");
     }
@@ -1833,7 +1851,7 @@ void start_web_search_task(const char *user, const char *query, const char *call
         return;
     }
 
-    if (xTaskCreatePinnedToCore(web_search_task, "web_search_task", WEB_SEARCH_TASK_STACK_SIZE, ctx, WEB_SEARCH_TASK_PRIORITY, NULL, APP_CPU_NUM) != pdPASS)
+    if (create_psram_task(web_search_task, "web_search_task", WEB_SEARCH_TASK_STACK_SIZE, ctx, WEB_SEARCH_TASK_PRIORITY, NULL, APP_CPU_NUM) != pdPASS)
     {
         ESP_LOGE(TAG, "start_web_search_task: fallo al crear tarea");
         free(ctx->user);
@@ -1878,7 +1896,7 @@ static void config_mode_task(void *arg)
 void start_config_mode_task(void)
 {
     // Esta tarea no necesita pasar argumentos complejos, así que el contexto es NULL.
-    BaseType_t ok = xTaskCreatePinnedToCore(
+    BaseType_t ok = create_psram_task(
         config_mode_task,
         "config_mode_task",
         4096, // Stack suficiente para operaciones de red y sistema
@@ -1940,7 +1958,7 @@ static void delete_api_key_task(void *arg)
  */
 void start_delete_api_key_task(void)
 {
-    if (xTaskCreatePinnedToCore(delete_api_key_task, "del_apikey_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(delete_api_key_task, "del_apikey_task", 3072, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_api_key_task");
     }
@@ -1995,7 +2013,7 @@ static void delete_credentials_task(void *arg)
 void start_delete_credentials_task(void)
 {
     // Usamos un stack similar al de borrar API key, 3k debería ser suficiente
-    if (xTaskCreatePinnedToCore(delete_credentials_task, "del_creds_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(delete_credentials_task, "del_creds_task", 3072, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_credentials_task");
         // Opcional: Enviar un error de vuelta a OpenAI si la tarea no se pudo crear
@@ -2035,7 +2053,7 @@ static void activate_mute_task(void *arg)
  */
 void start_activate_mute_task(void)
 {
-    if (xTaskCreatePinnedToCore(activate_mute_task, "activate_mute_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(activate_mute_task, "activate_mute_task", 3072, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create activate_mute_task");
         // Optional: Send an error back to OpenAI if the task could not be created
@@ -2121,7 +2139,7 @@ void start_control_display_task(const char *state)
     }
 
     // Tarea simple, 3k de stack es suficiente
-    if (xTaskCreatePinnedToCore(control_display_task, "display_task", 3072, ctx, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(control_display_task, "display_task", 3072, ctx, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea control_display_task");
         free(ctx->state);
@@ -2492,7 +2510,7 @@ static void start_automation_task(const char* call_id, const char* function_name
     }
 
     // Task Stack: 6144 bytes for native JSON parsing without IDLE starvation
-    if (xTaskCreatePinnedToCore(automation_handler_task, "auto_handler", 6144, ctx, 5, NULL, 1) != pdPASS)
+    if (create_psram_task(automation_handler_task, "auto_handler", 6144, ctx, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create automation_handler_task");
         if (ctx->args_json) free(ctx->args_json);

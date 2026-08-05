@@ -41,6 +41,11 @@ const char *config_manager_get_cached_api_key(void)
 
 const char *config_manager_get_current_api_key(void)
 {
+    if (g_cached_api_key[0] != '\0')
+    {
+        return g_cached_api_key;
+    }
+
     esp_err_t err;
     switch (s_current_key_source)
     {
@@ -52,7 +57,8 @@ const char *config_manager_get_current_api_key(void)
             return config_manager_get_current_api_key();
         }
         ESP_LOGI(TAG, "Proporcionando API Key HARDCODEADA.");
-        return OPENAI_API_KEY; // Devuelve la llave de settings.h
+        strncpy(g_cached_api_key, OPENAI_API_KEY, sizeof(g_cached_api_key) - 1);
+        return g_cached_api_key;
 
     case KEY_SOURCE_NVS:
         ESP_LOGI(TAG, "Intentando leer API Key desde la NVS...");
@@ -62,7 +68,8 @@ const char *config_manager_get_current_api_key(void)
         if (err == ESP_OK)
         {
             ESP_LOGI(TAG, "✅ API Key de NVS cargada exitosamente");
-            return s_nvs_api_key;
+            strncpy(g_cached_api_key, s_nvs_api_key, sizeof(g_cached_api_key) - 1);
+            return g_cached_api_key;
         }
         else
         {
@@ -100,6 +107,7 @@ const char *config_manager_get_current_api_key(void)
  */
 void config_manager_on_api_key_failure(void)
 {
+    g_cached_api_key[0] = '\0';
     if (s_current_key_source == KEY_SOURCE_HARDCODED)
     {
         ESP_LOGW(TAG, "⚠️ Falló la API Key HARDCODEADA.");

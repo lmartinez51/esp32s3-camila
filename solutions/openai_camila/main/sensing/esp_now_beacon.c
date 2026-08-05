@@ -157,9 +157,11 @@ esp_err_t esp_now_beacon_init(void)
     // 4. Register Receive Callback
     ESP_ERROR_CHECK(esp_now_register_recv_cb(esp_now_recv_cb));
 
-    // 5. Spawn the CSI Beacon Task on Core 1 (APP_CPU) to leave Core 0 for Wi-Fi
-    // Priority 4 (assuming WebRTC audio is higher priority)
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    xTaskCreatePinnedToCoreWithCaps(csi_beacon_task, "csi_beacon", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     xTaskCreatePinnedToCore(csi_beacon_task, "csi_beacon", 4096, NULL, 4, NULL, 1);
+#endif
 
     is_initialized = true;
     ESP_LOGI(TAG, "ESP-NOW CSI Beacon Initialized Successfully.");
