@@ -31,7 +31,7 @@ static void lookup_product_task(void *pvParameters)
         if (xQueueReceive(s_http_queue, &msg, portMAX_DELAY) == pdTRUE)
         {
             ESP_LOGI(TAG, "LOOKUP_PRODUCT_TASK: Query = '%s'", msg.query);
-            ui_show_status_message("Consulting...", COLOR_WHITE_BGR565);
+            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CONSULTING", "Getting info...");
             char *post_data = NULL;
 
             // Construir el payload JSON de búsqueda estricta
@@ -141,7 +141,7 @@ static void lookup_product_task(void *pvParameters)
             }
 
         cleanup_msg:
-            ui_clear_status_message();
+            camila_ui_show_avatar();
             if (post_data) free(post_data);
         }
     }

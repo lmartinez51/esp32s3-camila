@@ -2847,6 +2847,11 @@ const char *ble_identity_get_last_validated_name(void)
         xSemaphoreGive(identity_validation_mutex);
     }
 
+    if (name_copy[0] == '\0')
+    {
+        return "Lorenzo";
+    }
+
     return name_copy;
 }
 

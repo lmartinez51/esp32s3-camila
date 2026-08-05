@@ -15,6 +15,7 @@
 #include "freertos/semphr.h"
 #include "lvgl.h"
 #include "camila_lvgl_ui.h"
+#include "ble_device_control.h"
 
 static const char *TAG = "LVGL_UI";
 
@@ -401,7 +402,14 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
 
 void camila_ui_show_avatar(void)
 {
-    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "Camila AI", "Listening for your voice...");
+    const char *owner_name = ble_identity_get_last_validated_name();
+    char subtitle_buf[64];
+    if (owner_name && strlen(owner_name) > 0) {
+        snprintf(subtitle_buf, sizeof(subtitle_buf), "Spill it, %s...", owner_name);
+    } else {
+        snprintf(subtitle_buf, sizeof(subtitle_buf), "Spill it...");
+    }
+    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "Camila AI", subtitle_buf);
 }
 
 void camila_ui_set_speaking_state(bool is_speaking)

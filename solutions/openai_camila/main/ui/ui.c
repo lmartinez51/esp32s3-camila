@@ -1,122 +1,12 @@
 /**
  * @file ui.c
- * @brief User Interface implementation for the ESP32-S3-BOX3 AI Chatbot using OpenAI Realtime API.
- *        Provides LCD display management, text rendering with custom 8x8 font, and various UI states
- *        including startup screens, WiFi connection status, and error messages.
- *
- * @author Lorenzo Martínez
- * @date 2025
- * @version 1.0
- * @platform ESP32-S3-BOX3
+ * @brief Legacy UI module stub. LVGL UI engine is implemented in camila_lvgl_ui.c.
  */
 
-// Cabecera principal del módulo
 #include "ui.h"
-#include "ui_config.h"
 
+// All active UI operations are handled by LVGL in camila_lvgl_ui.c
 #ifndef USE_LVGL_UI
-
-// Headers del sistema ESP-IDF
-#include "esp_err.h"
-#include "esp_log.h"
-#include "esp_attr.h"
-
-// Headers de la Board Support Package (BSP)
-#include "bsp/esp-bsp.h"
-#include "bsp/display.h"
-
-
-
-// Headers para control de LCD
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_io.h"
-#include "driver/spi_master.h"
-#include "driver/gpio.h"
-
-// Headers de FreeRTOS (mutex de acceso al panel)
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "freertos/task.h"
-
-// Headers de la biblioteca estándar C
-#include <string.h> // Para memset()
-#include <stdlib.h> // Para malloc() y free()
-#include <stdio.h>
-
-
-
-static const char *TAG = "UI";
-esp_lcd_panel_handle_t g_panel_handle = NULL;
-esp_lcd_panel_io_handle_t g_io_handle = NULL;
-// Mutex que serializa TODO acceso al panel LCD (texto, rects y renderizado de Camila).
-// Antes no existía: webrtc.c y main.c dibujaban sin protección (race latente).
-static SemaphoreHandle_t s_panel_mutex = NULL;
-static SemaphoreHandle_t s_panel_flush_done = NULL;
-static int s_backlight_percent = -1;
-// Variables para recordar la posición y tamaño del último mensaje de estado
-static int g_status_msg_x = 0;
-static int g_status_msg_y = 0;
-static int g_status_msg_w = 0;
-static int g_status_msg_h = 0;
-// Variables globales para rastrear el área del mensaje de ayuda
-static int g_help_msg_x = 0;
-static int g_help_msg_y = 0;
-static int g_help_msg_w = 0;
-static int g_help_msg_h = 0;
-
-// Definiciones de tamaño de caracteres y escala para el sistema de fuentes
-#define CHAR_WIDTH 8
-#define CHAR_HEIGHT 8
-#define CHAR_SPACING_SCALE_1X 1 // Espaciado entre caracteres para escala 1x
-#define CHAR_SPACING_SCALE_2X 4 // Espaciado entre caracteres para escala 2x
-#define CHAR_SPACING_SCALE_3X 6 // Espaciado entre caracteres para escala 3x
-
-// Prototipos de funciones privadas
-static void display_text(int start_x, int start_y, const int *char_map, int num_chars, uint16_t color, int scale);
-static void draw_char_to_buffer(uint16_t *target_buffer, int buffer_width, int buffer_height, int offset_x, int offset_y, int char_index, uint16_t color, int scale);
-static void clear_screen(void);
-static void draw_filled_rect(int x, int y, int width, int height, uint16_t color);
-static void draw_screen_border(uint16_t color, int thickness);
-static int convert_string_to_char_map(const char *str, int *map_buffer, int max_len);
-static void ui_backlight_set_if_changed(int brightness_percent);
-
-static bool IRAM_ATTR ui_panel_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
-                                                   esp_lcd_panel_io_event_data_t *edata,
-                                                   void *user_ctx)
-{
-    (void)panel_io;
-    (void)edata;
-
-    BaseType_t high_task_woken = pdFALSE;
-    SemaphoreHandle_t done = (SemaphoreHandle_t)user_ctx;
-    if (done != NULL)
-    {
-        xSemaphoreGiveFromISR(done, &high_task_woken);
-    }
-    return high_task_woken == pdTRUE;
-}
-
-static esp_err_t ui_register_panel_callbacks(void)
-{
-    if (g_io_handle == NULL)
-    {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (s_panel_flush_done == NULL)
-    {
-        s_panel_flush_done = xSemaphoreCreateBinary();
-        if (s_panel_flush_done == NULL)
-        {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    const esp_lcd_panel_io_callbacks_t cbs = {
-        .on_color_trans_done = ui_panel_color_trans_done_cb,
-    };
-    return esp_lcd_panel_io_register_event_callbacks(g_io_handle, &cbs, s_panel_flush_done);
-}
 
 /**
  * @brief Custom 8x8 pixel font definition for LCD display.
@@ -196,12 +86,6 @@ static const uint8_t font_8x8[][8] = {
     {0x00, 0xC0, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x00}, // 67 '\'
     {0x00, 0x1C, 0x30, 0x60, 0x60, 0x60, 0x30, 0x1C}, // 68 '('
     {0x00, 0x38, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x38}, // 69 ')'
-    // {0x06, 0x00, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00}, // 62 í (i con tilde)
-    // {0x00, 0x18, 0x00, 0x18, 0x30, 0x60, 0x66, 0x3C}, // 63 '¿' (final, vertical + horizontal mirror)
-    // {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00}, // 64 ?
-    // {0x36, 0x6C, 0x00, 0x6C, 0x76, 0x66, 0x66, 0x00}, // 65 ñ
-    // {0x36, 0x6C, 0x00, 0x66, 0x76, 0x7E, 0x6E, 0x66}, // 66 Ñ
-
 };
 
 /**

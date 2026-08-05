@@ -202,21 +202,14 @@ void orchestrator_show_phase(const char *reason,
                              const char *subtitle,
                              uint16_t    color)
 {
-    if (orchestrator_ensure_ui_ready(reason) == ESP_OK)
-    {
-        display_system_phase_message(title, subtitle, color);
-    }
+    (void)reason;
+    (void)color;
+    camila_ui_update_state(UI_STATE_BOOT, title, subtitle);
 }
 
 void orchestrator_show_vigilante_alert_visual(void)
 {
-    esp_err_t err = orchestrator_ensure_ui_ready("dispatching_alert");
-    if (err != ESP_OK) {
-        return;
-    }
-
-
-    display_intruder_alert_message();
+    camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "CENTINELA", "Security Alert: Access Denied");
 }
 
 /**

@@ -266,7 +266,7 @@ static int gatt_svr_chr_write_sys_cmd(struct os_mbuf *om)
     if (strcmp(received_data, "CMD:ERASE_NVS") == 0)
     {
         ESP_LOGW(TAG, "Ejecutando comando: Borrar NVS y reiniciar...");
-        display_resetting_message();     // Muestra el mensaje "Resetting..."
+        camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Erasing NVS & restarting...");
         vTaskDelay(pdMS_TO_TICKS(2000)); // Pausa para ACK de BLE y que se vea el mensaje
         erase_nvs();
         return 0;

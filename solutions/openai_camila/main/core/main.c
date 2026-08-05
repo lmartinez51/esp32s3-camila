@@ -336,12 +336,6 @@ void app_main(void)
     camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
 #endif
 
-    esp_err_t err = ui_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Falló la inicialización de la UI: %s", esp_err_to_name(err));
-        return;
-    }
-
     /* 2) I2C bus and pristine hardware allocations */
     bsp_i2c_init();
 
@@ -415,7 +409,7 @@ void app_main(void)
     if (boot_to_provisioning)
     {
         ESP_LOGW(TAG, "Mostrando pantalla de Modo Configuración en arranque.");
-        display_config_mode_message();
+        camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "CONFIG MODE", "Provisioning Active...");
     }
     else
     {
@@ -439,7 +433,7 @@ void app_main(void)
         if (!boot_to_provisioning)
         {
             ESP_LOGI(TAG, "WiFi no conectado (fallo normal). Mostrando pantalla de credenciales WiFi.");
-            display_wifi_creds();
+            camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "PROVISIONING", "Enter WiFi credentials via BLE");
         }
         else
         {

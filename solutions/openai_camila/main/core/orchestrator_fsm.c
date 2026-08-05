@@ -101,7 +101,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_ble_release_to_sleep = false;
         s_is_muted             = false;
         csi_handler_stop();
-        ui_deinit_keep_last_frame();
         stop_webrtc();
         ble_device_stop_smart_task();
         ble_device_control_stop();
@@ -109,7 +108,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
                              WIFI_CONNECTED_BIT | WEBRTC_CONNECTED_BIT |
                                  WEBRTC_DISCONNECTED_BIT | WEBRTC_API_ERROR_BIT);
         xEventGroupSetBits(app_startup_event_group, WIFI_DISCONNECTED_BIT);
-        display_disconnected_message();
+        camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "NETWORK", "Connecting to WiFi...");
         break;
 
     case STATE_SLEEP:
@@ -140,7 +139,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_is_muted                = false;
         s_webrtc_stop_started_ms  = 0;
         csi_handler_stop();
-        ui_deinit_keep_last_frame();
         orchestrator_show_phase("wifi_ready", "WiFi ready", "Standing by", COLOR_GREEN_BGR565);
         esp_err_t sleep_ble_err = ble_device_full_release(BLE_RELEASE_TIMEOUT_MS);
         if (sleep_ble_err != ESP_OK) {
@@ -162,11 +160,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
         orchestrator_show_phase("ble_prepare_status", "Checking ID", "Stay close", COLOR_YELLOW_BGR565);
-        esp_err_t ui_deinit_err = ui_deinit_keep_last_frame();
-        if (ui_deinit_err != ESP_OK) {
-            ESP_LOGW(TAG, "STATE_PREPARING_BLE: LCD release returned %s",
-                     esp_err_to_name(ui_deinit_err));
-        }
         orchestrator_log_heap_snapshot("ble_prepare:after_ui_release");
         orchestrator_start_ble_prepare();
         break;
@@ -224,8 +217,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         csi_handler_stop();
         s_arrival_context_sent = false;
 
-        camila_ui_update_state(UI_STATE_SUCCESS, "SYSTEM READY", "Igniting audio pipeline...");
-
         /* Reset persistent session logic to cold-boot defaults to guarantee sync with UI */
         s_is_muted = false;
         mute_handler_stop_idle_timer();
@@ -237,7 +228,14 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         /* Ensure UI is ready and show Welcome Screen before audio loads */
         if (orchestrator_ensure_ui_ready("igniting") == ESP_OK) {
             if (ignition_mode != WEBRTC_SESSION_MODE_VIGILANTE) {
-                display_welcome_identity(ble_identity_get_last_validated_name());
+                const char *owner_name = ble_identity_get_last_validated_name();
+                char subtitle_buf[64];
+                if (owner_name && strlen(owner_name) > 0) {
+                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Owner: %s", owner_name);
+                } else {
+                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Igniting audio pipeline...");
+                }
+                camila_ui_update_state(UI_STATE_SUCCESS, "SYSTEM READY", subtitle_buf);
             }
         }
 
@@ -277,7 +275,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         if (orchestrator_is_vigilante_active()) {
             camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "CENTINELA", "Security Alert: Access Denied");
         } else {
-            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "Camila AI", "Listening for your voice...");
+            camila_ui_show_avatar();
         }
         
         if (s_is_muted) {
@@ -593,7 +591,7 @@ void app_startup_orchestrator_task(void *param)
                     media_sys_mic_mute(true); /* Físicamente apagar el micrófono (Modo Normal) */
                     mute_handler_start_idle_timer();
                 } else {
-                    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Active Session / Listening");
+                    camila_ui_show_avatar();
                     media_sys_mic_mute(false); /* Reactivar micrófono físicamente (Modo Normal) */
                     mute_handler_stop_idle_timer();
                     webrtc_post_action(WEBRTC_ACTION_NOTIFY_UNMUTE);
@@ -695,8 +693,7 @@ void app_startup_orchestrator_task(void *param)
                 ESP_LOGE(TAG, "Executing Fatal Error Teardown...");
 
                 /* 1. Update UI FIRST */
-                /* Send text through the normal pipeline while Simi is ALIVE (triggers Delegation Trap) */
-                ui_show_status_message("API Error 429", COLOR_RED_BGR565);
+                camila_ui_update_state(UI_STATE_ERROR, "API ERROR 429", "Quota Exceeded / Rate Limit");
 
                 /* Allow the Simi task time to render and flush the overlay frame to the LCD */
                 vTaskDelay(pdMS_TO_TICKS(250));

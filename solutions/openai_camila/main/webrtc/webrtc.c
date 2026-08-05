@@ -1750,10 +1750,8 @@ static void web_search_task(void *arg)
     web_search_task_ctx_t *ctx = (web_search_task_ctx_t *)arg;
     ESP_LOGI(TAG, "WEB_SEARCH_TASK: Iniciada para user='%s'", ctx->user);
 
-    // --- INICIO DE LA CORRECCIÓN ---
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    ui_show_status_message("Getting info..", COLOR_WHITE_BGR565);
-    // --- FIN DE LA CORRECCIÓN ---
+    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CONSULTING", "Searching Google...");
 
     char *response = get_web_info(ctx->query);
     if (!response)
@@ -1796,11 +1794,7 @@ static void web_search_task(void *arg)
 
 cleanup:
     // 5) Limpiar y terminar la tarea
-    // --- INICIO DE LA CORRECCIÓN ---
-    // 2. Limpiar el mensaje de estado ANTES de que la tarea termine.
-    //    Al estar aquí, se ejecutará siempre, tanto si hay éxito como si hay fallo.
-    ui_clear_status_message();
-    // --- FIN DE LA CORRECCIÓN ---
+    camila_ui_show_avatar();
     free((void *)ctx->user);
     free((void *)ctx->query);
     free(ctx->call_id);
@@ -1868,7 +1862,7 @@ static void config_mode_task(void *arg)
     nvs_set_boot_to_provisioning_flag();
 
     // 2. Notificar al usuario en la pantalla.
-    ui_show_status_message("Restarting...", COLOR_BLUE_BGR565);
+    camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Restarting system...");
 
     // 3. Pausa para que el mensaje sea visible.
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1906,11 +1900,11 @@ void start_config_mode_task(void)
 static void delete_api_key_task(void *arg)
 {
     ESP_LOGI(TAG, "DELETE_API_KEY_TASK: Iniciando borrado de API Key...");
-    ui_show_status_message("Erasing Key...", COLOR_YELLOW_BGR565);
+    camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Erasing API Key...");
 
     esp_err_t err = nvs_delete_api_key();
     vTaskDelay(pdMS_TO_TICKS(300)); // Pausa breve para UX
-    ui_clear_status_message();
+    camila_ui_show_avatar();
 
     const char *status_msg = NULL;
     const char *response_msg = NULL;
@@ -1958,11 +1952,11 @@ void start_delete_api_key_task(void)
 static void delete_credentials_task(void *arg)
 {
     ESP_LOGI(TAG, "DELETE_CREDS_TASK: Iniciando borrado de credenciales WiFi...");
-    ui_show_status_message("Erasing WiFi..", COLOR_YELLOW_BGR565);
+    camila_ui_update_state(UI_STATE_BOOT, "REBOOTING", "Erasing Wi-Fi creds...");
 
     esp_err_t err = network_delete_all_wifi_credentials();
     vTaskDelay(pdMS_TO_TICKS(300)); // breve pausa visual
-    ui_clear_status_message();
+    camila_ui_show_avatar();
 
     const char *status_msg = NULL;
     const char *response_msg = NULL;
