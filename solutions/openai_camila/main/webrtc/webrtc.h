@@ -39,11 +39,6 @@ extern "C"
         // ... (aquí podríamos añadir más acciones en el futuro)
     } webrtc_action_t;
 
-    typedef enum {
-        OUTFIT_CASUAL_BLACK,
-        OUTFIT_ELEGANT_EVENING,
-        OUTFIT_LEATHER_JACKET
-    } camila_outfit_t;
 
     typedef enum {
         CAMILA_STATE_BOOT = 0,

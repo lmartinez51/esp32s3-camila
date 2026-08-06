@@ -1107,39 +1107,7 @@ void webrtc_post_action(webrtc_action_t action)
 }
 
 
-static class_t *build_change_camila_outfit_class(void)
-{
-    class_t *change_outfit = calloc(1, sizeof(class_t));
-    if (change_outfit == NULL) return NULL;
 
-    static attribute_t outfit_properties[] = {
-        {
-            .name = "outfit_id",
-            .desc = "The specific outfit to switch to. Must be one of: 'casual_black', 'elegant_evening', 'leather_jacket'.",
-            .type = ATTRIBUTE_TYPE_STRING,
-            .required = true
-        }
-    };
-
-    static char *required_attributes[] = {"outfit_id"};
-
-    parameters_t params = {
-        .type = "object",
-        .properties = outfit_properties,
-        .properties_num = ELEMS(outfit_properties),
-        .required = required_attributes,
-        .required_num = ELEMS(required_attributes),
-    };
-
-    change_outfit->type = "function";
-    change_outfit->name = "change_camila_outfit";
-    change_outfit->desc = "Changes Camila's outfit based on the conversation context.";
-    change_outfit->parameters = params;
-    change_outfit->attr_list = outfit_properties;
-    change_outfit->attr_num = ELEMS(outfit_properties);
-
-    return change_outfit;
-}
 
 static class_t *build_lookup_product_info_class(void)
 {
@@ -1458,7 +1426,7 @@ static int build_classes(void)
     {
         return 0;
     }
-    add_class(build_change_camila_outfit_class());
+
     add_class(build_lookup_product_info_class());
     add_class(build_websearch_class());
     add_class(build_config_mode_class());
@@ -2606,18 +2574,7 @@ static int process_json(const char *json_data, int json_size)
                 start_activate_mute_task(); // <-- CALL NEW LAUNCHER
                 break;                      // Processed
             }
-            else if (strcmp(iter->name, "change_camila_outfit") == 0)
-            {
-                cJSON *outfit_item = cJSON_GetObjectItemCaseSensitive(args_root, "outfit_id");
-                if (cJSON_IsString(outfit_item) && outfit_item->valuestring) {
-                    ESP_LOGI(TAG, "Outfit change requested: %s", outfit_item->valuestring);
-                    // Camila outfit change to be implemented in UI layer
-                    send_function_output(call_id, "Outfit changed successfully.");
-                } else {
-                    send_function_output(call_id, "Error: Missing or invalid outfit_id.");
-                }
-                break;
-            }
+
             // --- MANEJO DE FUNCIONES CON PARÁMETROS ---
             // Si llegamos aquí, la función SÍ espera parámetros.
     

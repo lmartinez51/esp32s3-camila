@@ -19,7 +19,7 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
-- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, atuendos procedurales dinámicos para Camila (ej. Casual Black, Elegant Evening, Leather Jacket) y optimizaciones de renderizado acelerado por hardware (dirty rect restore).
+- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, ecualizador visual de espectro de audio de 7 barras en LVGL, subtítulo de cuenta regresiva en tiempo real para silenciado automático, indicadores dinámicos por estado y optimizaciones de renderizado.
 - 🦎 **Motor Lua ESP-Claw** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, prototipado rápido de lógica sin bloquear el ciclo principal en C de WebRTC.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
 
@@ -128,11 +128,6 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con Camil
 - **Búsqueda de Información de Productos**:
   - *"¿Cuánto cuesta el paracetamol?"*
   - **Acción**: Ejecuta `lookup_product_info`.
-- **Cambiar Atuendo**:
-  - *"Camila, ponte tu vestido elegante."*
-  - *"Camila, ponte tu chaqueta de cuero."*
-  - *"Camila, ponte tu ropa casual."*
-  - **Acción**: Ejecuta `change_simi_outfit`.
 
 ---
 
@@ -167,11 +162,13 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 
 - **Manejo de silenciar/desilenciar**: Cuando el hardware silencia el micrófono, la tubería de audio se apaga de forma segura. Al desilenciar, se reinicia la tubería de captura.
 - **Señalización WebRTC Resiliente y Recuperación de Red**: Reintentos automáticos HTTP POST para señalización SDP de WebRTC y recuperación inteligente del autómata de estados (`STATE_IGNITING` advierte problemas en pantalla LCD y realiza un fallback limpio a suspensión o reconexión si la red falla).
-- **Renderizado de UI y Lip-Sync Optimizado**: Overlay de boca (`boca_abierta`) con alternancia de visibilidad mediante flags para reducir la huella de memoria Flash y RAM, manteniendo la animación de sincronización labial fluida a 350ms en la pantalla LCD.
+- **Interfaz Dinámica LVGL y Cuenta Regresiva**: Animación reactiva de espectro de audio de 7 barras para la síntesis de voz, junto con un subtítulo de cuenta regresiva en vivo thread-safe para la gestión de auto-reseteo del modo silencio.
 - **Botón Alternador**: El botón físico funciona como un interruptor. El manejador elimina rebotes y coordina el hardware, el estado del códec y el reinicio de WebRTC si es necesario.
 - **IDs de Llamada (Call IDs) y Funciones**: Cuando ocurren operaciones tipo función, el dispositivo guarda un `call_id` y lo adjunta a los eventos `conversation.item.create`.
 - **Sanitización de UI**: La fuente de la pantalla LCD es un mapa de bits limitado de 8×8. El firmware desinfecta el texto UTF-8 proveniente del modelo, mapeando los caracteres que la pantalla no puede renderizar.
-- **Inicialización Segura de Medios y Liberación de Recursos**: Para prevenir la corrupción de memoria y el agotamiento del heap, NimBLE se apaga explícitamente en un estado dedicado (`STATE_RELEASING_BLE`) antes de iniciar los entornos de ejecución de WebRTC y audio. El firmware también protege todas las interacciones de audio con estrictas comprobaciones `media_sys_is_ready()` para evitar fallos por condiciones de carrera.
+- **Inicialización Segura de Medios y Liberación de Recursos**: Para prevenir la corrupción de memoria y el agotamiento del heap, NimBLE se apaga explícitamente en un estado dedicado (`STATE_RELEASING_BLE`) before iniciar los entornos de ejecución de WebRTC y audio. El firmware también protege todas las interacciones de audio con estrictas comprobaciones `media_sys_is_ready()` para evitar fallos por condiciones de carrera.
+- **Asignación de Tareas en PSRAM Externa**: Las tareas en segundo plano de FreeRTOS (cola WebRTC, búsqueda web, configuración BLE, automatización, recuperación) asignan automáticamente sus stacks en PSRAM externa (`MALLOC_CAP_SPIRAM`), maximizando la memoria DRAM interna disponible para los buffers DMA de audio en tiempo real.
+- **Pre-generación en Segundo Plano de Certificado DTLS RSA**: Genera el certificado DTLS RSA de WebRTC de forma asíncrona en una tarea dedicada de FreeRTOS durante el arranque del sistema (`dtls_pre_gen_cert_task`), eliminando la latencia de negociación durante la ignición de la sesión.
 
 ---
 

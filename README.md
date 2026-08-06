@@ -132,11 +132,6 @@ You can control various device features simply by talking to Camila. Here are so
 - **Product Information Lookup**:
   - *"¿Cuánto cuesta el paracetamol?"* (Context: "How much does Tylenol usually go for?")
   - **Action**: Triggers `lookup_product_info`.
-- **Change Outfit**:
-  - *"Camila, ponte tu vestido elegante."* (Context: "Camila, put on your elegant dress.")
-  - *"Camila, ponte tu chaqueta de cuero."* (Context: "Camila, put on your leather jacket.")
-  - *"Camila, ponte tu ropa casual."* (Context: "Camila, put on your casual clothes.")
-  - **Action**: Triggers `change_simi_outfit`.
 
 ---
 
@@ -177,6 +172,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 - **UI sanitization**: The LCD font set is a limited 8×8 bitmap. The firmware sanitizes UTF-8 text from the model, mapping characters the display can't render.
 - **Safe Media Initialization & Resource Teardown**: To prevent memory corruption and heap exhaustion, NimBLE is explicitly shut down in a dedicated state (`STATE_RELEASING_BLE`) before igniting the WebRTC and audio runtimes. The firmware also guards all audio interactions with strict `media_sys_is_ready()` checks to avoid crashing during race conditions.
 - **External PSRAM Task Allocation**: Background FreeRTOS tasks (WebRTC action queue, Web Search, BLE configuration, automation handler, recovery) automatically allocate their task stacks in external PSRAM (`MALLOC_CAP_SPIRAM`), maximizing internal DRAM availability for real-time audio DMA buffers.
+- **Background DTLS RSA Certificate Pre-generation**: Asynchronously pre-generates the WebRTC DTLS RSA certificate in a dedicated FreeRTOS background task during system boot (`dtls_pre_gen_cert_task`), eliminating key generation latency during session ignition.
 
 ---
 

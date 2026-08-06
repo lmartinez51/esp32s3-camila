@@ -87,6 +87,19 @@ extern void camila_lvgl_init(void);
 #include "orchestrator_vigilante.h"
 #include "orchestrator_fsm.h"
 #include "kill_switch.h"
+#include "esp_peer.h"
+
+static void dtls_pre_gen_cert_task(void *pvParameters)
+{
+    ESP_LOGI("MAIN", "Pre-generando certificado DTLS RSA en segundo plano...");
+    int res = esp_peer_pre_generate_cert();
+    if (res == 0) {
+        ESP_LOGI("MAIN", "✅ Certificado DTLS RSA pre-generado y listo en caché.");
+    } else {
+        ESP_LOGE("MAIN", "❌ Error pre-generando certificado DTLS: %d", res);
+    }
+    vTaskDelete(NULL);
+}
 
 static const char *TAG = "MAIN";
 
@@ -384,6 +397,12 @@ void app_main(void)
     config_manager_init();
     http_worker_init();
     webrtc_init_action_queue();
+
+#if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    xTaskCreatePinnedToCoreWithCaps(dtls_pre_gen_cert_task, "dtls_pregen", 4096, NULL, 3, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    xTaskCreatePinnedToCore(dtls_pre_gen_cert_task, "dtls_pregen", 4096, NULL, 3, NULL, 1);
+#endif
 
     /* 5) Synchronization primitives */
     app_startup_event_group   = xEventGroupCreate();
