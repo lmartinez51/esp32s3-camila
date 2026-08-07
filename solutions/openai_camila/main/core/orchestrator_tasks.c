@@ -107,12 +107,14 @@ void orchestrator_start_ble_prepare(void)
         return;
     }
 
-    BaseType_t rc = orchestrator_create_external_stack_task(orchestrator_ble_prepare_task,
-                                                            "ble_prepare",
-                                                            6144,
-                                                            NULL,
-                                                            6,
-                                                            &s_ble_prepare_task_handle);
+    BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(orchestrator_ble_prepare_task,
+                                                    "ble_prepare",
+                                                    6144,
+                                                    NULL,
+                                                    6,
+                                                    &s_ble_prepare_task_handle,
+                                                    tskNO_AFFINITY,
+                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (rc != pdPASS) {
         s_ble_prepare_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create BLE prepare task");
@@ -327,7 +329,7 @@ void orchestrator_start_webrtc_stop(void)
                                                     WEBRTC_STOP_TASK_PRIORITY,
                                                     &s_webrtc_stop_task_handle,
                                                     tskNO_AFFINITY,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (rc != pdPASS) {
         s_webrtc_stop_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create WebRTC stop task");

@@ -169,6 +169,7 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 - **Inicialización Segura de Medios y Liberación de Recursos**: Para prevenir la corrupción de memoria y el agotamiento del heap, NimBLE se apaga explícitamente en un estado dedicado (`STATE_RELEASING_BLE`) before iniciar los entornos de ejecución de WebRTC y audio. El firmware también protege todas las interacciones de audio con estrictas comprobaciones `media_sys_is_ready()` para evitar fallos por condiciones de carrera.
 - **Asignación de Tareas en PSRAM Externa**: Las tareas en segundo plano de FreeRTOS (cola WebRTC, búsqueda web, configuración BLE, automatización, recuperación) asignan automáticamente sus stacks en PSRAM externa (`MALLOC_CAP_SPIRAM`), maximizando la memoria DRAM interna disponible para los buffers DMA de audio en tiempo real.
 - **Pre-generación en Segundo Plano de Certificado DTLS RSA**: Genera el certificado DTLS RSA de WebRTC de forma asíncrona en una tarea dedicada de FreeRTOS durante el arranque del sistema (`dtls_pre_gen_cert_task`), eliminando la latencia de negociación durante la ignición de la sesión.
+- **Resiliencia de UI en LVGL y Reserva Temprana de DMA**: Asigna el buffer de dibujo DMA de LVGL al arrancar el sistema para evitar la fragmentación de la SRAM interna, registra `lvgl_task` en el Task Watchdog (TWDT) y aplica tiempos de espera acotados de 500 ms en los cerrojos de mutex para garantizar cero bloqueos en la pantalla.
 
 ---
 

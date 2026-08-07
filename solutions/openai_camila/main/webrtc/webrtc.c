@@ -37,6 +37,7 @@
 
 #include "esp_claw_init.h"
 #include "media_sys.h"
+#include "orchestrator_helpers.h"
 
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
 #define TAG "OPENAI_APP"
@@ -1735,6 +1736,7 @@ static void web_search_task(void *arg)
 {
     web_search_task_ctx_t *ctx = (web_search_task_ctx_t *)arg;
     ESP_LOGI(TAG, "WEB_SEARCH_TASK: Iniciada para user='%s'", ctx->user);
+    orchestrator_log_heap_snapshot("active_session:tool_call");
 
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
     camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CONSULTING", "Searching Google...");
@@ -1926,7 +1928,8 @@ static void delete_api_key_task(void *arg)
  */
 void start_delete_api_key_task(void)
 {
-    if (create_psram_task(delete_api_key_task, "del_apikey_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (xTaskCreatePinnedToCoreWithCaps(delete_api_key_task, "del_apikey_task", 3072, NULL, 5, NULL, 1,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_api_key_task");
     }
@@ -1981,7 +1984,8 @@ static void delete_credentials_task(void *arg)
 void start_delete_credentials_task(void)
 {
     // Usamos un stack similar al de borrar API key, 3k debería ser suficiente
-    if (create_psram_task(delete_credentials_task, "del_creds_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (xTaskCreatePinnedToCoreWithCaps(delete_credentials_task, "del_creds_task", 3072, NULL, 5, NULL, 1,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_credentials_task");
         // Opcional: Enviar un error de vuelta a OpenAI si la tarea no se pudo crear

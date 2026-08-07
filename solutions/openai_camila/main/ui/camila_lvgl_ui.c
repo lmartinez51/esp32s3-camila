@@ -16,8 +16,12 @@
 #include "lvgl.h"
 #include "camila_lvgl_ui.h"
 #include "ble_device_control.h"
+#include "esp_task_wdt.h"
 
 static const char *TAG = "LVGL_UI";
+
+/** Draw buffer allocated at boot in camila_lvgl_init(), consumed by camila_lvgl_task(). */
+static lv_color_t *s_draw_buf_ptr = NULL;
 
 SemaphoreHandle_t g_lvgl_mutex = NULL;
 static esp_lcd_panel_handle_t s_panel_handle = NULL;
@@ -56,12 +60,31 @@ IRAM_ATTR bool camila_lvgl_flush_ready_cb(esp_lcd_panel_io_handle_t panel_io, es
  */
 void camila_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
+    /* Escalating backoff counter: 0 = no errors, resets on every successful flush. */
+    static uint8_t s_flush_fail_count = 0;
+
     esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)drv->user_data;
-    esp_err_t err = esp_lcd_panel_draw_bitmap(panel_handle, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
+    esp_err_t err = esp_lcd_panel_draw_bitmap(panel_handle,
+                                               area->x1, area->y1,
+                                               area->x2 + 1, area->y2 + 1,
+                                               color_map);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "LCD draw_bitmap failed (%s), backing off...", esp_err_to_name(err));
-        lv_disp_flush_ready(drv);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        s_flush_fail_count++;
+        /* Escalating delay: 10 ms → 50 ms → 200 ms (held from 3rd failure onward). */
+        TickType_t delay_ms;
+        if (s_flush_fail_count == 1) {
+            delay_ms = 10;
+        } else if (s_flush_fail_count == 2) {
+            delay_ms = 50;
+        } else {
+            delay_ms = 200;
+        }
+        ESP_LOGW(TAG, "LCD draw_bitmap failed (%s), backoff %lu ms (attempt %u)",
+                 esp_err_to_name(err), (unsigned long)delay_ms, s_flush_fail_count);
+        lv_disp_flush_ready(drv); /* unblock LVGL so the engine does not deadlock */
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    } else {
+        s_flush_fail_count = 0; /* reset on success */
     }
 }
 
@@ -123,18 +146,26 @@ static void camila_lvgl_task(void *arg)
 {
     ESP_LOGI(TAG, "Starting LVGL UI Task...");
 
+    /* Register this task with the task watchdog so a genuine deadlock
+     * (e.g. SPI DMA stall, mutex contention) is detected directly. */
+    esp_task_wdt_add(NULL);
+
     // 1. Create LVGL Mutex
     g_lvgl_mutex = xSemaphoreCreateMutex();
     if (!g_lvgl_mutex) {
         ESP_LOGE(TAG, "Failed to create LVGL mutex");
+        esp_task_wdt_delete(NULL);
         vTaskDelete(NULL);
         return;
     }
 
-    // 2. Allocate Internal DMA SRAM draw buffer (320 * 10 lines = 6.4 KB)
-    lv_color_t *draw_buf_ptr = heap_caps_malloc(320 * 10 * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    // 2. Draw buffer was allocated at boot by camila_lvgl_init() into s_draw_buf_ptr.
+    //    If it is NULL here the system boot path already logged the error and
+    //    should not have spawned this task — treat it as a fatal misconfiguration.
+    lv_color_t *draw_buf_ptr = s_draw_buf_ptr;
     if (!draw_buf_ptr) {
-        ESP_LOGE(TAG, "Failed to allocate LVGL draw buffer in DMA SRAM");
+        ESP_LOGE(TAG, "LVGL draw buffer not allocated — aborting task");
+        esp_task_wdt_delete(NULL);
         vTaskDelete(NULL);
         return;
     }
@@ -166,7 +197,7 @@ static void camila_lvgl_task(void *arg)
     // =========================================================
     // Static UI Object Initialization (Created once at startup)
     // =========================================================
-    if (xSemaphoreTake(g_lvgl_mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
         // 1. Base Canvas (Black)
         lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x000000), 0);
 
@@ -247,16 +278,27 @@ static void camila_lvgl_task(void *arg)
         lv_timer_pause(eq_anim_timer);
 
         xSemaphoreGive(g_lvgl_mutex);
+    } else {
+        ESP_LOGW(TAG, "LVGL mutex timeout during static UI init — skipping static UI setup");
     }
     ESP_LOGI(TAG, "LVGL Static UI Initialized (Equalizer OFF during startup).");
 
     // Handler Loop
     while (1) {
+        esp_task_wdt_reset(); /* feed the watchdog once per cycle */
+
         lv_tick_inc(10);
-        if (xSemaphoreTake(g_lvgl_mutex, portMAX_DELAY) == pdTRUE) {
+
+        /* Bounded mutex wait: if the lock is held for more than 500 ms something
+         * has gone wrong upstream. Skip this cycle and keep the WDT fed rather
+         * than blocking forever on portMAX_DELAY. */
+        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
             lv_timer_handler();
             xSemaphoreGive(g_lvgl_mutex);
+        } else {
+            ESP_LOGW(TAG, "LVGL mutex timeout — skipping cycle");
         }
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -268,10 +310,28 @@ void camila_lvgl_init(void)
 {
     ESP_LOGI(TAG, "Synchronous Hardware Init (bsp_display_new)");
 
+    /* max_transfer_sz must stay in sync with the draw buffer size below:
+     * 320 columns × 10 rows × 2 bytes/pixel = 6400 bytes. */
     const bsp_display_config_t disp_cfg = {.max_transfer_sz = 320 * 10 * sizeof(uint16_t)};
     esp_err_t err = bsp_display_new(&disp_cfg, &s_panel_handle, &s_io_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init LCD synchronously: %s", esp_err_to_name(err));
+        return;
+    }
+
+    /* Allocate the LVGL draw buffer here, at boot, before any other dynamic
+     * allocation has a chance to fragment the DMA-capable Internal SRAM pool.
+     * Keeping this in MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL means the SPI
+     * driver can DMA directly from the buffer with no bounce copy. */
+    s_draw_buf_ptr = heap_caps_malloc(320 * 10 * sizeof(lv_color_t),
+                                      MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    ESP_LOGW(TAG, "[HEAP] lvgl_draw_buf:after | INTERNAL free=%u largest=%u | DMA free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    if (!s_draw_buf_ptr) {
+        ESP_LOGE(TAG, "LVGL draw buffer alloc failed — not spawning lvgl_task (fail-closed)");
         return;
     }
 
@@ -284,7 +344,7 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
         return;
     }
 
-    if (xSemaphoreTake(g_lvgl_mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
         s_current_ui_state = state;
 
         if (title != NULL) {
@@ -397,6 +457,8 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
         }
 
         xSemaphoreGive(g_lvgl_mutex);
+    } else {
+        ESP_LOGW(TAG, "LVGL mutex timeout in camila_ui_update_state — skipping UI update");
     }
 }
 
@@ -416,7 +478,7 @@ void camila_ui_set_speaking_state(bool is_speaking)
 {
     if (g_lvgl_mutex == NULL) return;
 
-    if (xSemaphoreTake(g_lvgl_mutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
         s_is_speaking = is_speaking;
         if (is_speaking) {
             if (ui_eq_container) lv_obj_clear_flag(ui_eq_container, LV_OBJ_FLAG_HIDDEN);
@@ -431,6 +493,8 @@ void camila_ui_set_speaking_state(bool is_speaking)
             }
         }
         xSemaphoreGive(g_lvgl_mutex);
+    } else {
+        ESP_LOGW(TAG, "LVGL mutex timeout in camila_ui_set_speaking_state — skipping UI update");
     }
 }
 

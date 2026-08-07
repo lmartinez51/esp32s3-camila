@@ -558,10 +558,21 @@ esp_err_t esp_claw_init(void) {
     }
 
     ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 8KB)");
-    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 8192, NULL, 3, NULL, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGW(TAG, "[HEAP] lua_worker:before | INTERNAL free=%u largest=%u | PSRAM free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 8192, NULL, 3, NULL, 1,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }
+    ESP_LOGW(TAG, "[HEAP] lua_worker:after  | INTERNAL free=%u largest=%u | PSRAM free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     return ESP_OK;
 }
