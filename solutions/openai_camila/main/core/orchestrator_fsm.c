@@ -493,7 +493,12 @@ void app_startup_orchestrator_task(void *param)
                 s_pending_webrtc_mode     = WEBRTC_SESSION_MODE_FRIENDLY;
                 s_ignition_webrtc_mode    = WEBRTC_SESSION_MODE_FRIENDLY;
                 s_ble_release_to_sleep    = false;
-                orchestrator_enter_state(&state, STATE_RELEASING_BLE);
+                ESP_LOGI(TAG, "BLE CENTRAL: Identity validated! Starting dedicated initial BLE discovery phase before WebRTC ignition...");
+                camila_ui_update_state(UI_STATE_BLE_SCAN, "SEARCHING BLE", "Scanning bluetooth devices...");
+                orchestrator_start_initial_ble_discovery(5000);
+            } else if (event == ORCH_EVENT_DISCOVERY_COMPLETE) {
+                ESP_LOGI(TAG, "BLE CENTRAL: Dedicated discovery phase complete. Proceeding to STATE_IGNITING.");
+                orchestrator_enter_state(&state, STATE_IGNITING);
             } else if (event == ORCH_EVENT_IDENTITY_REJECTED) {
                 if (s_alert_timestamp_ms == 0) {
                     s_alert_timestamp_ms = orchestrator_now_ms();

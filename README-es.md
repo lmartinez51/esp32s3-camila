@@ -13,6 +13,7 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 ## ⚙️ Características Principales
 
 - 📡 **Detección de Presencia y Baliza (BLE & ESP-NOW)** — utiliza la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar a la asistente. También funciona como una baliza (beacon) ESP-NOW, enviando paquetes UDP bajo demanda a otros dispositivos.
+- 🤖 **Control en Lenguaje Natural de Dispositivos BLE y Robótica** — descubrimiento en tiempo real de dispositivos Bluetooth cercanos, asignación de apodos personalizados guardados en NVS (ej. renombrar ELEGOO BT16 a 'Carro') y comandos de voz en lenguaje natural sobre WebRTC para controlar movimiento (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180) y periféricos inteligentes.
 - 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2.1**).
 - 🎧 **Control dinámico de audio** — activa o desactiva el silencio con una estrategia robusta de reinicio de la tubería de audio.
 - 🤫 **Modo Silencio Inteligente** — cuando el usuario pide al asistente que guarde silencio, este silencia el micrófono pero mantiene activa la sesión, pudiendo enviar mensajes cortos de solo texto a la pantalla.
@@ -27,6 +28,7 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 El asistente cuenta con un conjunto robusto de funciones en segundo plano para controlar el dispositivo y obtener datos:
 - **Búsqueda Web**: Capacidades de búsqueda en la web en tiempo real para obtener información actualizada.
 - **Búsqueda de Productos**: Consulta una API externa para obtener información detallada y precios sobre productos específicos (`lookup_product_info`).
+- **Descubrimiento y Control de Dispositivos BLE**: Consulta dispositivos Bluetooth cercanos (`get_discovered_ble_devices`), asigna apodos amigables guardados en NVS (`set_ble_device_alias`), y envía comandos de movimiento o impulsos a dispositivos inteligentes y robots (`control_ble_device`).
 - **Configuración del Dispositivo**: La IA puede poner el dispositivo en modo de configuración BLE si se le solicita (`enter_config_mode`).
 - **Gestión de Memoria**: La IA puede borrar de forma segura las credenciales WiFi (`delete_credentials`) y la clave API de OpenAI (`delete_api_key`) de la memoria persistente del dispositivo (NVS).
 
@@ -128,6 +130,15 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con Camil
 - **Búsqueda de Información de Productos**:
   - *"¿Cuánto cuesta el paracetamol?"*
   - **Acción**: Ejecuta `lookup_product_info`.
+- **Descubrimiento de Dispositivos BLE**:
+  - *"Camila, ¿qué dispositivos Bluetooth tienes cerca?"*
+  - **Acción**: Ejecuta `get_discovered_ble_devices`.
+- **Asignar Apodo a Dispositivo BLE**:
+  - *"Camila, ponle de apodo 'Carro' al dispositivo ELEGOO BT16."*
+  - **Acción**: Ejecuta `set_ble_device_alias`.
+- **Controlar Robot / Dispositivo BLE**:
+  - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."*
+  - **Acción**: Ejecuta `control_ble_device`.
 
 ---
 
@@ -170,6 +181,7 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 - **Asignación de Tareas en PSRAM Externa**: Las tareas en segundo plano de FreeRTOS (cola WebRTC, búsqueda web, configuración BLE, automatización, recuperación) asignan automáticamente sus stacks en PSRAM externa (`MALLOC_CAP_SPIRAM`), maximizando la memoria DRAM interna disponible para los buffers DMA de audio en tiempo real.
 - **Pre-generación en Segundo Plano de Certificado DTLS RSA**: Genera el certificado DTLS RSA de WebRTC de forma asíncrona en una tarea dedicada de FreeRTOS durante el arranque del sistema (`dtls_pre_gen_cert_task`), eliminando la latencia de negociación durante la ignición de la sesión.
 - **Resiliencia de UI en LVGL y Reserva Temprana de DMA**: Asigna el buffer de dibujo DMA de LVGL al arrancar el sistema para evitar la fragmentación de la SRAM interna, registra `lvgl_task` en el Task Watchdog (TWDT) y aplica tiempos de espera acotados de 500 ms en los cerrojos de mutex para garantizar cero bloqueos en la pantalla.
+- **Control Central BLE en Tiempo Real y Persistencia de Apodos NVS**: Escaneo y clasificación automática en segundo plano de periféricos BLE GATT con almacenamiento thread-safe de apodos en NVS, exponiendo herramientas de control por voz en lenguaje natural (`get_discovered_ble_devices`, `set_ble_device_alias`, `control_ble_device`) sobre OpenAI WebRTC.
 
 ---
 

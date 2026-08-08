@@ -31,6 +31,7 @@ extern "C"
     {
         ble_addr_t addr; // dirección BLE (NimBLE)
         char name[BLE_DEVICE_MAX_NAME_LEN];
+        char alias[BLE_DEVICE_MAX_NAME_LEN]; // Alias amigable asignado por usuario (ej: "Foco Sala")
         uint8_t device_type;        // << en NVS guardamos un byte, no un enum
         ble_uuid128_t service_uuid; // si prefieres bytes: uint8_t service_uuid[16]
         ble_uuid128_t char_uuid;    // idem

@@ -1704,6 +1704,78 @@ static int send_session_update(void)
         cJSON_AddItemToArray(tools, delete_tool_cjson);
     }
 
+    const char* ble_summary_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"get_discovered_ble_devices\","
+        "  \"description\": \"Use this tool whenever the user asks what Bluetooth devices are discovered, saved, ready, or nearby. Returns a categorized JSON object listing controllable ready devices, offline configured devices, and raw unprofiled devices.\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {}"
+        "  }"
+        "}";
+        
+    cJSON *ble_summary_tool_cjson = cJSON_Parse(ble_summary_tool_json);
+    if (ble_summary_tool_cjson) {
+        cJSON_AddItemToArray(tools, ble_summary_tool_cjson);
+    }
+
+    const char* ble_control_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"control_ble_device\","
+        "  \"description\": \"Use this tool to move or control a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD (avanzar), BACKWARD (retroceder), LEFT (izquierda), RIGHT (derecha), STOP (detener), SPIN_180 (dar vuelta 180 grados).\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {"
+        "      \"device_name\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"Name or alias of the BLE device/robot (e.g., 'ELEGOO BT16', 'Carro').\""
+        "      },"
+        "      \"action\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180'.\""
+        "      },"
+        "      \"duration_ms\": {"
+        "        \"type\": \"integer\","
+        "        \"description\": \"Optional pulse duration in milliseconds. Default 1000ms for movement, 650ms for 180 turn.\""
+        "      }"
+        "    },"
+        "    \"required\": [\"device_name\", \"action\"]"
+        "  }"
+        "}";
+
+    cJSON *ble_control_tool_cjson = cJSON_Parse(ble_control_tool_json);
+    if (ble_control_tool_cjson) {
+        cJSON_AddItemToArray(tools, ble_control_tool_cjson);
+    }
+
+    const char* ble_alias_tool_json = 
+        "{"
+        "  \"type\": \"function\","
+        "  \"name\": \"set_ble_device_alias\","
+        "  \"description\": \"Use this tool when the user asks to assign a friendly name/alias to a discovered Bluetooth device (e.g., rename ELEGOO BT16 to 'Carro').\","
+        "  \"parameters\": {"
+        "    \"type\": \"object\","
+        "    \"properties\": {"
+        "      \"device_name\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"Current name or MAC of the device (e.g., 'ELEGOO BT16').\""
+        "      },"
+        "      \"new_alias\": {"
+        "        \"type\": \"string\","
+        "        \"description\": \"New user-assigned friendly name (e.g., 'Carro', 'Foco Sala').\""
+        "      }"
+        "    },"
+        "    \"required\": [\"device_name\", \"new_alias\"]"
+        "  }"
+        "}";
+
+    cJSON *ble_alias_tool_cjson = cJSON_Parse(ble_alias_tool_json);
+    if (ble_alias_tool_cjson) {
+        cJSON_AddItemToArray(tools, ble_alias_tool_cjson);
+    }
+
     // Convertir a JSON sin formato (más eficiente)
     char *json_string = cJSON_PrintUnformatted(root);
     int ret = -1;
@@ -2652,9 +2724,59 @@ static int process_json(const char *json_data, int json_size)
 
     if (!class_found)
     {
-        if (strcmp(name->valuestring, "list_automation_rules") == 0 ||
-            strcmp(name->valuestring, "create_automation_rule") == 0 ||
-            strcmp(name->valuestring, "delete_automation_rule") == 0)
+        if (strcmp(name->valuestring, "get_discovered_ble_devices") == 0)
+        {
+            ESP_LOGI(TAG, "Llamada a función detectada! Generando resumen de dispositivos BLE para Chatbot...");
+            char summary_json[1024] = {0};
+            ble_device_get_summary_for_chatbot(summary_json, sizeof(summary_json));
+            send_function_output(call_id, summary_json);
+            sendEvent("response.create", NULL);
+            class_found = true;
+        }
+        else if (strcmp(name->valuestring, "control_ble_device") == 0)
+        {
+            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
+            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
+            cJSON *dur_item = cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms");
+
+            const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "ELEGOO BT16";
+            const char *act_str = (cJSON_IsString(act_item) && act_item->valuestring) ? act_item->valuestring : "FORWARD";
+            uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint : 0;
+
+            ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
+                     dev_str, act_str, dur_val);
+
+            esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
+            if (ctrl_err == ESP_OK) {
+                send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
+            } else {
+                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"No se pudo enviar el comando al dispositivo BLE\"}");
+            }
+            sendEvent("response.create", NULL);
+            class_found = true;
+        }
+        else if (strcmp(name->valuestring, "set_ble_device_alias") == 0)
+        {
+            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
+            cJSON *alias_item = cJSON_GetObjectItemCaseSensitive(args_root, "new_alias");
+
+            const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "";
+            const char *alias_str = (cJSON_IsString(alias_item) && alias_item->valuestring) ? alias_item->valuestring : "";
+
+            ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
+
+            esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
+            if (alias_err == ESP_OK) {
+                send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
+            } else {
+                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
+            }
+            sendEvent("response.create", NULL);
+            class_found = true;
+        }
+        else if (strcmp(name->valuestring, "list_automation_rules") == 0 ||
+                 strcmp(name->valuestring, "create_automation_rule") == 0 ||
+                 strcmp(name->valuestring, "delete_automation_rule") == 0)
         {
             start_automation_task(call_id, name->valuestring, arguments->valuestring);
             class_found = true;

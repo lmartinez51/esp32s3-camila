@@ -150,6 +150,59 @@ void orchestrator_start_identity_validation(void)
     orchestrator_log_heap_snapshot("identity_validation:scheduled");
 }
 
+/* ── Initial BLE Device Discovery Phase ─────────────────────────────────── */
+
+static TaskHandle_t s_initial_discovery_task_handle = NULL;
+
+static void orchestrator_initial_ble_discovery_task(void *param)
+{
+    uint32_t duration_ms = (uint32_t)(uintptr_t)param;
+    if (duration_ms == 0) duration_ms = 8000;
+
+    ESP_LOGI(TAG, "=======================================================");
+    ESP_LOGI(TAG, "🔍 INICIANDO FASE DEDICADA DE DESCUBRIMIENTO BLE (%lu ms)", duration_ms);
+    ESP_LOGI(TAG, "   Escaneando dispositivos cercanos antes de iniciar WebRTC...");
+    ESP_LOGI(TAG, "=======================================================");
+
+    esp_err_t disc_err = ble_device_start_smart_task();
+    if (disc_err != ESP_OK) {
+        ESP_LOGW(TAG, "ble_device_start_smart_task returned: %s", esp_err_to_name(disc_err));
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+
+    ESP_LOGI(TAG, "=======================================================");
+    ESP_LOGI(TAG, "✅ FASE DEDICADA DE DESCUBRIMIENTO BLE COMPLETADA");
+    ESP_LOGI(TAG, "   Dispositivos registrados en memoria. Iniciando WebRTC...");
+    ESP_LOGI(TAG, "=======================================================");
+
+    s_initial_discovery_task_handle = NULL;
+    orchestrator_post_event(ORCH_EVENT_DISCOVERY_COMPLETE);
+    vTaskDelete(NULL);
+}
+
+void orchestrator_start_initial_ble_discovery(uint32_t duration_ms)
+{
+    if (s_initial_discovery_task_handle != NULL) {
+        ESP_LOGW(TAG, "Initial BLE discovery task already running");
+        return;
+    }
+
+    BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(orchestrator_initial_ble_discovery_task,
+                                                    "initial_ble_disc",
+                                                    4096,
+                                                    (void *)(uintptr_t)duration_ms,
+                                                    5,
+                                                    &s_initial_discovery_task_handle,
+                                                    tskNO_AFFINITY,
+                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (rc != pdPASS) {
+        s_initial_discovery_task_handle = NULL;
+        ESP_LOGE(TAG, "Failed to create initial BLE discovery task — proceeding directly to ignition");
+        orchestrator_post_event(ORCH_EVENT_DISCOVERY_COMPLETE);
+    }
+}
+
 /* ── BLE Release Task ───────────────────────────────────────────────────── */
 
 static TaskHandle_t s_ble_release_task_handle = NULL;

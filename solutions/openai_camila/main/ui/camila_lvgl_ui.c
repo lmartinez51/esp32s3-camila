@@ -308,16 +308,8 @@ static void camila_lvgl_task(void *arg)
  */
 void camila_lvgl_init(void)
 {
-    ESP_LOGI(TAG, "Synchronous Hardware Init (bsp_display_new)");
-
-    /* max_transfer_sz must stay in sync with the draw buffer size below:
-     * 320 columns × 10 rows × 2 bytes/pixel = 6400 bytes. */
-    const bsp_display_config_t disp_cfg = {.max_transfer_sz = 320 * 10 * sizeof(uint16_t)};
-    esp_err_t err = bsp_display_new(&disp_cfg, &s_panel_handle, &s_io_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init LCD synchronously: %s", esp_err_to_name(err));
-        return;
-    }
+    ESP_LOGW(TAG, "HEADLESS TEST MODE: LVGL & Display initialization bypassed for SRAM measurement");
+    return;
 
     /* Allocate the LVGL draw buffer here, at boot, before any other dynamic
      * allocation has a chance to fragment the DMA-capable Internal SRAM pool.

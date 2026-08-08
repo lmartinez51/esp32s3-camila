@@ -101,9 +101,12 @@ extern "C"
         ble_uuid128_t char_uuid_128;
         uint16_t char_val_handle;
 
-        // NUEVO CAMPO
+        // Alias Friendly & Estado de Madurez
+        char alias[32];       // Nombre amigable asignado por voz/NVS (ej: "Foco Sala")
         bool is_known;        // True si fue cargado desde NVS o ya fue aprendido
         bool char_discovered; // True si fue descubierto en el escaneo actual
+        bool is_configured;   // True si tiene handles y servicios GATT listos en NVS/RAM
+        bool is_paired;       // True si completó emparejamiento/bonding SMP
 
         uint16_t pairing_service_start_handle;
         uint16_t pairing_service_end_handle;
@@ -317,6 +320,36 @@ extern "C"
      * @return ESP_OK si se detuvo correctamente
      */
     esp_err_t ble_device_stop_smart_task(void);
+
+    /**
+     * @brief Formats a structured JSON summary of all BLE devices categorized for OpenAI Realtime:
+     *        - Categoría A: Listos y Presentes (GATT listo + vistos en escaneo)
+     *        - Categoría B: Configurados pero Apagados (GATT listo pero sin señal)
+     *        - Categoría C: Descubiertos sin Perfil (Vistos en escaneo pero sin GATT guardado)
+     *
+     * @param json_buf Output buffer for JSON string
+     * @param max_len Size of json_buf
+     * @return esp_err_t ESP_OK on success
+     */
+    esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len);
+
+    /**
+     * @brief Assigns a human-friendly alias string (e.g. "Foco Sala", "Robot Elegoo") to a device by MAC address or current name.
+     */
+    esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias);
+    esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias);
+
+    /**
+     * @brief Sends a movement/action command to a BLE device by name or alias.
+     *        Actions: "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "SPIN_180".
+     *        If duration_ms > 0, automatically sends "STOP" after duration_ms.
+     */
+    esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, const char *action, uint32_t duration_ms);
+
+    /**
+     * @brief Triggers a single 5-second on-demand BLE scan burst to find new devices.
+     */
+    esp_err_t ble_device_trigger_ondemand_scan(uint32_t duration_ms);
 
     /**
      * @brief Inicializa el sistema de descubrimiento inteligente

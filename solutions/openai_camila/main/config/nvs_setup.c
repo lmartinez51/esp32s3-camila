@@ -251,6 +251,7 @@ esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device)
 
     device_profile_nvs_t profile = {0};
     strlcpy(profile.name, device->name, sizeof(profile.name));
+    strlcpy(profile.alias, device->alias, sizeof(profile.alias));
     memcpy(profile.addr.val, device->addr, sizeof(profile.addr.val));
     profile.addr.type = device->addr_type;
     profile.device_type = device->type;

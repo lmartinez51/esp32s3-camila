@@ -17,6 +17,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 ## ⚙️ Key Features
 
 - 📡 **Presence Detection & Beacon (BLE & ESP-NOW)** — uses BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant. It also functions as an ESP-NOW beacon, sending on-demand UDP packets to other devices.
+- 🤖 **BLE Device & Robotics Natural Language Control** — real-time discovery of nearby Bluetooth devices, custom persistent NVS alias assignment (e.g. renaming ELEGOO BT16 to 'Carro'), and natural language voice commands over WebRTC to control movement (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180) and smart peripherals.
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2.1** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
@@ -31,6 +32,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 The chatbot has access to a robust set of background functions to control the device and fetch data:
 - **Web Search**: Real-time web search capabilities for fetching up-to-date information.
 - **Product Lookup**: Consults an external API to retrieve detailed information and prices about specific products (`lookup_product_info`).
+- **BLE Device Discovery & Control**: Queries surrounding Bluetooth devices (`get_discovered_ble_devices`), assigns friendly aliases saved to NVS (`set_ble_device_alias`), and dispatches motion/pulse commands to smart devices and robots (`control_ble_device`).
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
@@ -132,6 +134,15 @@ You can control various device features simply by talking to Camila. Here are so
 - **Product Information Lookup**:
   - *"¿Cuánto cuesta el paracetamol?"* (Context: "How much does Tylenol usually go for?")
   - **Action**: Triggers `lookup_product_info`.
+- **BLE Device Discovery**:
+  - *"Camila, ¿qué dispositivos Bluetooth tienes cerca?"* (Context: "Camila, what Bluetooth devices are nearby?")
+  - **Action**: Triggers `get_discovered_ble_devices`.
+- **Set BLE Device Alias**:
+  - *"Camila, ponle de apodo 'Carro' al dispositivo ELEGOO BT16."* (Context: "Camila, rename ELEGOO BT16 to 'Carro'.")
+  - **Action**: Triggers `set_ble_device_alias`.
+- **Control BLE Robot / Device**:
+  - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."* (Context: "Camila, drive the car forward for 2 seconds then turn left.")
+  - **Action**: Triggers `control_ble_device`.
 
 ---
 
@@ -174,6 +185,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 - **External PSRAM Task Allocation**: Background FreeRTOS tasks (WebRTC action queue, Web Search, BLE configuration, automation handler, recovery) automatically allocate their task stacks in external PSRAM (`MALLOC_CAP_SPIRAM`), maximizing internal DRAM availability for real-time audio DMA buffers.
 - **Background DTLS RSA Certificate Pre-generation**: Asynchronously pre-generates the WebRTC DTLS RSA certificate in a dedicated FreeRTOS background task during system boot (`dtls_pre_gen_cert_task`), eliminating key generation latency during session ignition.
 - **LVGL UI Resilience & Early DMA Allocation**: Allocates LVGL DMA draw buffers early at boot to prevent internal SRAM pool fragmentation, registers `lvgl_task` with the Task Watchdog (TWDT), and enforces 500 ms bounded timeouts on UI mutex locks to guarantee zero display deadlocks.
+- **Realtime BLE Central Control & NVS Alias Persistence**: Autonomous background scanning and classification of surrounding BLE GATT peripherals with thread-safe NVS alias key storage, exposing direct natural language voice control tools (`get_discovered_ble_devices`, `set_ble_device_alias`, `control_ble_device`) over OpenAI WebRTC.
 
 ---
 

@@ -30,6 +30,13 @@ void orchestrator_start_ble_prepare(void);
 void orchestrator_start_identity_validation(void);
 
 /**
+ * @brief Run a bounded initial BLE device discovery phase before WebRTC ignition.
+ *
+ * Posts ORCH_EVENT_DISCOVERY_COMPLETE when the initial discovery window finishes.
+ */
+void orchestrator_start_initial_ble_discovery(uint32_t duration_ms);
+
+/**
  * @brief Release all BLE resources asynchronously.
  *
  * Posts ORCH_EVENT_BLE_RELEASE_COMPLETE or ORCH_EVENT_BLE_RELEASE_FAILED.
