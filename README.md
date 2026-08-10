@@ -175,17 +175,17 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 ## 🔧 Implementation Highlights
 
-- **Mute/unmute handling**: The central orchestrator manages the global mute state, safely shutting down the pipeline when muting and seamlessly restarting it upon unmuting, while keeping the WebRTC session informed.
-- **Resilient WebRTC Signaling & Network Timeout Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling and intelligent state machine recovery (`STATE_IGNITING` UI warnings and graceful sleep/reconnect fallback when network signals degrade).
-- **Dynamic LVGL Visualizer & Countdown UI**: Responsive 7-bar audio spectrum equalizer animation for active speech synthesis, coupled with a thread-safe live countdown subtitle for auto-mute reset management.
-- **Toggle Button**: The physical push button acts as a toggle. The handler debounces and coordinates hardware and codec state, delegating UI and WebRTC restart synchronization to the orchestrator.
-- **Call IDs & Function Calls**: When function-like operations occur, the device stores a `call_id` and attaches it to the `conversation.item.create` events.
-- **UI sanitization**: The LCD font set is a limited 8×8 bitmap. The firmware sanitizes UTF-8 text from the model, mapping characters the display can't render.
-- **Safe Media Initialization & Resource Teardown**: To prevent memory corruption and heap exhaustion, NimBLE is explicitly shut down in a dedicated state (`STATE_RELEASING_BLE`) before igniting the WebRTC and audio runtimes. The firmware also guards all audio interactions with strict `media_sys_is_ready()` checks to avoid crashing during race conditions.
-- **External PSRAM Task Allocation**: Background FreeRTOS tasks (WebRTC action queue, Web Search, BLE configuration, automation handler, recovery) automatically allocate their task stacks in external PSRAM (`MALLOC_CAP_SPIRAM`), maximizing internal DRAM availability for real-time audio DMA buffers.
-- **Background DTLS RSA Certificate Pre-generation**: Asynchronously pre-generates the WebRTC DTLS RSA certificate in a dedicated FreeRTOS background task during system boot (`dtls_pre_gen_cert_task`), eliminating key generation latency during session ignition.
-- **LVGL UI Resilience & Early DMA Allocation**: Allocates LVGL DMA draw buffers early at boot to prevent internal SRAM pool fragmentation, registers `lvgl_task` with the Task Watchdog (TWDT), and enforces 500 ms bounded timeouts on UI mutex locks to guarantee zero display deadlocks.
+- **Mute/Unmute Pipeline Orchestration**: The central FSM manages global mute states, gracefully stopping audio capture pipelines while keeping the OpenAI WebRTC session active and synchronized via text channel notices.
+- **Resilient WebRTC SDP Signaling & Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling coupled with state machine fallback (`STATE_IGNITING` UI warnings, sleep, and auto-reconnect logic) during network degradation.
+- **Vigilante Mode & Wi-Fi CSI Radar Security**: Integrates Wi-Fi Channel State Information (CSI) variance analysis for autonomous intruder detection, triggering automated WebRTC warning announcements and alert events upon motion detection.
+- **Dynamic LVGL Visualizer & Countdown UI**: Responsive 7-bar audio spectrum equalizer animation for active speech synthesis, thread-safe mute countdown subtitles, and execution status banners rendered on the LCD screen.
+- **LVGL UI Resilience & Early DMA Allocation**: Allocates LVGL DMA draw buffers at boot to prevent internal SRAM pool fragmentation, registers `lvgl_task` with the Task Watchdog (TWDT), and enforces 500 ms bounded timeouts on UI mutex locks to guarantee zero display deadlocks.
+- **ESP-Claw Lua 5.4 Automation VM**: An isolated FreeRTOS task running Lua 5.4 to interpret, execute, and store persistent home automation rules on LittleFS using non-blocking coroutines and UDP packet dispatching.
+- **Proactive BLE Proximity Identification & Arrival Context**: Continuously scans for the owner's smartphone BLE UUID ("Nexus" digital key), dynamically injecting personalized arrival context into the OpenAI Realtime API session upon owner presence.
 - **Realtime BLE Central Control & NVS Alias Persistence**: Autonomous background scanning and classification of surrounding BLE GATT peripherals with thread-safe NVS alias key storage, exposing direct natural language voice control tools (`get_discovered_ble_devices`, `set_ble_device_alias`, `control_ble_device`) over OpenAI WebRTC.
+- **External PSRAM Task Allocation**: Background FreeRTOS tasks (WebRTC action queue, Web Search, BLE configuration, automation handler, recovery) automatically allocate task stacks in external PSRAM (`MALLOC_CAP_SPIRAM`), maximizing internal DRAM for real-time audio DMA buffers.
+- **Background DTLS RSA Certificate Pre-generation**: Asynchronously pre-generates the WebRTC DTLS RSA certificate in a dedicated FreeRTOS task during boot (`dtls_pre_gen_cert_task`), eliminating key generation latency during session ignition.
+- **Safe Media Initialization & Resource Teardown**: Explicitly shuts down NimBLE in a dedicated state (`STATE_RELEASING_BLE`) before igniting WebRTC and audio runtimes, while guarding all audio calls with `media_sys_is_ready()` checks to eliminate race conditions.
 
 ---
 
