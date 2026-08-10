@@ -42,15 +42,11 @@ extern "C"
 
     typedef enum {
         CAMILA_STATE_BOOT = 0,
-        CAMILA_STATE_IDLE,
         CAMILA_STATE_LISTENING,
-        CAMILA_STATE_THINKING,
         CAMILA_STATE_TALKING,
-        CAMILA_STATE_HAPPY,
         CAMILA_STATE_MUTED,
         CAMILA_STATE_ALERT,
         CAMILA_STATE_SAD,
-        CAMILA_STATE_SLEEP,
         CAMILA_STATE_MAX
     } camila_state_t;
 

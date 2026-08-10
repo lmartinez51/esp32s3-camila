@@ -10,9 +10,10 @@ extern "C" {
 typedef enum {
     UI_STATE_BOOT = 0,          // System booting. Color: Neon Violet (#8A2BE2).
     UI_STATE_WIFI_CONNECTING,   // Network connection. Color: Sunset Orange (#FF8C00).
-    UI_STATE_BLE_SCAN,          // Identity validation. Color: Electric Cyan (#00FFFF) [Pulsing].
+    UI_STATE_BLE_SCAN,          // Identity validation. Color: Electric Cyan (#00FFFF).
+    UI_STATE_BLE_DISCOVERY,     // Dedicated BLE Device Discovery phase. Color: Cyan (#00FFFF).
     UI_STATE_SUCCESS,           // Handshake complete. Color: Emerald Green (#50C878).
-    UI_STATE_ACTIVE_WEBRTC,     // Active session. Color: Soft White (#F5F5F5) [Breathing].
+    UI_STATE_ACTIVE_WEBRTC,     // Active session. Color: Soft White (#F5F5F5).
     UI_STATE_ALERT_VIGILANTE,   // Security alert / Killswitch. Color: Crimson Red (#DC143C).
     UI_STATE_ERROR              // System failure. Color: Flashing Red.
 } ui_state_t;
@@ -43,7 +44,7 @@ void camila_ui_show_avatar(void);
  * @param is_speaking True for open mouth, False for closed mouth.
  */
 void camila_ui_set_speaking_state(bool is_speaking);
-
+ 
 /**
  * @brief Thread-safe non-blocking update for mute countdown timer subtitle.
  * 

@@ -1,6 +1,6 @@
 #include "ui_config.h"
 
-#ifdef USE_LVGL_UI
+#if USE_LVGL_UI
 
 #include <string.h>
 #include "esp_lcd_panel_io.h"
@@ -308,8 +308,11 @@ static void camila_lvgl_task(void *arg)
  */
 void camila_lvgl_init(void)
 {
-    ESP_LOGW(TAG, "HEADLESS TEST MODE: LVGL & Display initialization bypassed for SRAM measurement");
-    return;
+    /* NOTE: "HEADLESS TEST MODE" bypass has been removed — it was causing
+     * the orchestrator task to block indefinitely inside clear_screen() because
+     * the legacy ui.c path uses portMAX_DELAY SPI blits from a non-DMA-capable
+     * buffer. LVGL must be initialized normally so that camila_ui_update_state()
+     * takes the safe LVGL path (mutex-guarded, no blocking SPI calls). */
 
     /* Allocate the LVGL draw buffer here, at boot, before any other dynamic
      * allocation has a chance to fragment the DMA-capable Internal SRAM pool.
@@ -323,7 +326,7 @@ void camila_lvgl_init(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     if (!s_draw_buf_ptr) {
-        ESP_LOGE(TAG, "LVGL draw buffer alloc failed — not spawning lvgl_task (fail-closed)");
+        ESP_LOGE(TAG, "LVGL draw buffer alloc failed -- not spawning lvgl_task (fail-closed)");
         return;
     }
 
@@ -354,9 +357,11 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
                                   (subtitle && strstr(subtitle, "Consulting")) || 
                                   (subtitle && strstr(subtitle, "Getting info")) || 
                                   (subtitle && strstr(subtitle, "Searching"));
+        bool is_executing_text = (title && strstr(title, "EXECUTING")) || 
+                                 (subtitle && strstr(subtitle, "Executing"));
 
         s_is_muted = is_muted_text;
-        s_is_consulting = is_consulting_text;
+        s_is_consulting = is_consulting_text || is_executing_text;
 
         if (is_muted_text) {
             // Modern MUTE MODE: Frameless, 7 flat 4px red bars, Red Accent Line (#DC143C)
@@ -379,6 +384,19 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
             if (ui_accent_line) {
                 lv_obj_clear_flag(ui_accent_line, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_set_style_bg_color(ui_accent_line, lv_color_hex(0xDC143C), 0);
+            }
+
+        } else if (is_executing_text) {
+            // Modern EXECUTING MODE: Frameless, Emerald Green Accent Line (#00FF7F)
+            lv_obj_set_style_border_width(ui_indicator_box, 0, 0);
+            if (ui_help_label) lv_obj_add_flag(ui_help_label, LV_OBJ_FLAG_HIDDEN);
+
+            if (ui_eq_container) lv_obj_clear_flag(ui_eq_container, LV_OBJ_FLAG_HIDDEN);
+            if (eq_anim_timer) lv_timer_resume(eq_anim_timer);
+
+            if (ui_accent_line) {
+                lv_obj_clear_flag(ui_accent_line, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_style_bg_color(ui_accent_line, lv_color_hex(0x00FF7F), 0);
             }
 
         } else if (is_consulting_text) {

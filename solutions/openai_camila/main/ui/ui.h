@@ -14,28 +14,32 @@ extern "C"
 {
 #endif
 
-// Safe NOP macros & helpers for legacy calls
-#define ui_init() (ESP_OK)
-#define ui_deinit() (ESP_OK)
-#define ui_deinit_keep_last_frame() (ESP_OK)
-#define ui_is_initialized() (true)
-#define display_startup_screen() do {} while(0)
-#define display_welcome_identity(name) do {} while(0)
-#define display_system_phase_message(title, subtitle, color) do {} while(0)
-#define display_wifi_creds() do {} while(0)
-#define display_error_message() do {} while(0)
-#define display_resetting_message() do {} while(0)
-#define display_disconnected_message() do {} while(0)
-#define display_network_timeout_message() do {} while(0)
-#define display_api_key_error_message() do {} while(0)
-#define display_intruder_alert_message() do {} while(0)
-#define display_config_mode_message() do {} while(0)
-#define ui_show_status_message(msg, color) do {} while(0)
-#define ui_clear_status_message() do {} while(0)
-#define ui_show_help_message_below_status(msg, color) do {} while(0)
-#define ui_clear_help_message_below_status() do {} while(0)
-#define ui_backlight_off_safe() bsp_display_brightness_set(0)
-#define ui_backlight_on() bsp_display_brightness_set(100)
+// Zero-LVGL UI Prototypes and declarations
+esp_err_t ui_init(void);
+esp_err_t ui_deinit(void);
+esp_err_t ui_deinit_keep_last_frame(void);
+bool ui_is_initialized(void);
+void display_startup_screen(void);
+void display_welcome_identity(const char *name);
+void display_system_phase_message(const char *title, const char *subtitle, uint16_t color);
+void display_wifi_creds(void);
+void display_error_message(void);
+void display_resetting_message(void);
+void display_disconnected_message(void);
+void display_network_timeout_message(void);
+void display_api_key_error_message(void);
+void display_intruder_alert_message(void);
+void display_config_mode_message(void);
+void ui_show_status_message(const char *msg, uint16_t color);
+void ui_clear_status_message(void);
+void ui_show_help_message_below_status(const char *msg, uint16_t color);
+void ui_clear_help_message_below_status(void);
+void camila_ui_update_state(ui_state_t state, const char* title, const char* subtitle);
+void camila_ui_show_avatar(void);
+void camila_ui_set_speaking_state(bool is_speaking);
+void camila_ui_update_mute_countdown(int remaining_seconds);
+void ui_backlight_off_safe(void);
+void ui_backlight_on(void);
 #define COLOR_GREEN_BGR565 0x001F
 #define COLOR_RED_BGR565 0x07E0
 #define COLOR_BLUE_BGR565 0x0F800

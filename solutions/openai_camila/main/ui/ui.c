@@ -6,7 +6,42 @@
 #include "ui.h"
 
 // All active UI operations are handled by LVGL in camila_lvgl_ui.c
-#ifndef USE_LVGL_UI
+#if !USE_LVGL_UI
+
+#include <string.h>
+#include "esp_log.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+static const char *TAG = "UI";
+
+static void clear_screen(void);
+static void ui_panel_lock(void);
+static void ui_panel_unlock(void);
+
+#define CHAR_WIDTH 8
+#define CHAR_HEIGHT 8
+#define CHAR_SPACING_SCALE_1X 1
+#define CHAR_SPACING_SCALE_2X 2
+#define CHAR_SPACING_SCALE_3X 3
+
+static esp_lcd_panel_handle_t g_panel_handle = NULL;
+static esp_lcd_panel_io_handle_t g_io_handle = NULL;
+static SemaphoreHandle_t s_panel_mutex = NULL;
+static SemaphoreHandle_t s_panel_flush_done = NULL;
+static int s_backlight_percent = -1;
+
+static int g_status_msg_x = 0;
+static int g_status_msg_y = 0;
+static int g_status_msg_w = 0;
+static int g_status_msg_h = 0;
+
+static int g_help_msg_x = 0;
+static int g_help_msg_y = 0;
+static int g_help_msg_w = 0;
+static int g_help_msg_h = 0;
 
 /**
  * @brief Custom 8x8 pixel font definition for LCD display.
@@ -75,7 +110,7 @@ static const uint8_t font_8x8[][8] = {
     {0x3C, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x3C, 0x00}, // 56: '9'
     {0x00, 0x00, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x00}, // 57 'x' (minúscula)
     {0xC3, 0x66, 0x3C, 0x18, 0x18, 0x3C, 0x66, 0xC3}, // 58 'X' (mayúscula)
-    {0x00, 0x00, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x00}, // 59 'Y' (mayúscula)
+    {0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x00}, // 59 'Y' (mayúscula - alineada arriba)
     {0x00, 0x00, 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x06}, // 60 'q' (minúscula)
     {0x3C, 0x66, 0x66, 0x66, 0x6E, 0x3C, 0x0C, 0x00}, // 61 'Q' (mayúscula)
     {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00}, // 62 '?'
@@ -86,6 +121,7 @@ static const uint8_t font_8x8[][8] = {
     {0x00, 0xC0, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x00}, // 67 '\'
     {0x00, 0x1C, 0x30, 0x60, 0x60, 0x60, 0x30, 0x1C}, // 68 '('
     {0x00, 0x38, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x38}, // 69 ')'
+    {0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00}, // 70 'B' (mayúscula)
 };
 
 /**
@@ -115,6 +151,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case '9': map_buffer[count++] = 56; break;
         /* ── Mayúsculas ── */
         case 'A': map_buffer[count++] = 0;  break;
+        case 'B': map_buffer[count++] = 70; break;
         case 'C': map_buffer[count++] = 5;  break;  // Antes faltaba
         case 'D': map_buffer[count++] = 27; break;
         case 'E': map_buffer[count++] = 15; break;  // Antes faltaba
@@ -178,6 +215,46 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
     }
     return count;
 }
+
+static bool IRAM_ATTR ui_panel_color_trans_done_cb(esp_lcd_panel_io_handle_t panel_io,
+                                                   esp_lcd_panel_io_event_data_t *edata,
+                                                   void *user_ctx)
+{
+    (void)panel_io;
+    (void)edata;
+
+    BaseType_t high_task_woken = pdFALSE;
+    SemaphoreHandle_t done = (SemaphoreHandle_t)user_ctx;
+    if (done != NULL)
+    {
+        xSemaphoreGiveFromISR(done, &high_task_woken);
+    }
+    return high_task_woken == pdTRUE;
+}
+
+static esp_err_t ui_register_panel_callbacks(void)
+{
+    if (g_io_handle == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_panel_flush_done == NULL)
+    {
+        s_panel_flush_done = xSemaphoreCreateBinary();
+        if (s_panel_flush_done == NULL)
+        {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    const esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = ui_panel_color_trans_done_cb,
+    };
+    return esp_lcd_panel_io_register_event_callbacks(g_io_handle, &cbs, s_panel_flush_done);
+}
+
+static void ui_backlight_set_if_changed(int brightness_percent);
 
 /**
  * @brief Sanitizes a text string by removing or replacing unsupported UTF-8 characters.
@@ -268,6 +345,8 @@ void ui_sanitize_text(char *text)
         p++;
     }
 }
+
+
 
 /**
  * @brief Initializes the UI system and LCD panel.
@@ -528,8 +607,12 @@ bool ui_panel_try_blit(int x0, int y0, int x1, int y1,
 static void clear_screen(void)
 {
 #define CLEAR_CHUNK_LINES 20
-    /* Buffer estático: 20 × 320 × 2 = 12 800 bytes en DRAM */
-    static uint16_t clear_buf[CLEAR_CHUNK_LINES * BSP_LCD_H_RES];
+    /* Buffer forzado a DRAM interna con DRAM_ATTR para garantizar que el SPI DMA
+     * puede acceder directamente. Sin este atributo el linker puede colocarlo en
+     * PSRAM (si CONFIG_SPIRAM_ALLOW_BSS_SEG=y), donde el DMA no puede operar
+     * directamente y el driver queda bloqueado esperando un bounce-copy indefinido.
+     * 20 x 320 x 2 = 12 800 bytes. */
+    static DRAM_ATTR uint16_t clear_buf[CLEAR_CHUNK_LINES * BSP_LCD_H_RES];
     memset(clear_buf, 0x00, sizeof(clear_buf));
 
     int lines_sent = 0;
@@ -538,9 +621,15 @@ static void clear_screen(void)
         int chunk = ((lines_sent + CLEAR_CHUNK_LINES) <= BSP_LCD_V_RES)
                         ? CLEAR_CHUNK_LINES
                         : (BSP_LCD_V_RES - lines_sent);
-        ui_panel_blit(0, lines_sent,
-                      BSP_LCD_H_RES, lines_sent + chunk,
-                      clear_buf);
+        /* ui_panel_try_blit con timeout de 2 s evita que el orchestrator
+         * se bloquee indefinidamente si el bus SPI esta congestionado. */
+        if (!ui_panel_try_blit(0, lines_sent,
+                               BSP_LCD_H_RES, lines_sent + chunk,
+                               clear_buf, 2000))
+        {
+            ESP_LOGW(TAG, "clear_screen: blit timeout at line %d -- aborting", lines_sent);
+            break;
+        }
         lines_sent += chunk;
     }
 #undef CLEAR_CHUNK_LINES
@@ -677,26 +766,83 @@ void ui_draw_text_to_buffer(uint16_t *buffer, int buffer_w, int buffer_h,
     }
 }
 
-int ui_get_text_width(const char *text, int scale)
+static void draw_filled_rect(int x, int y, int width, int height, uint16_t color)
 {
-    if (!text) return 0;
-    int char_map[32];
-    int num_chars = convert_string_to_char_map(text, char_map, 32);
-    if (num_chars == 0) return 0;
-    
-    int display_char_width = CHAR_WIDTH * scale;
-    int char_spacing = (scale == 3) ? CHAR_SPACING_SCALE_3X : CHAR_SPACING_SCALE_2X;
-    return num_chars * display_char_width + (num_chars - 1) * char_spacing;
+    if (!g_panel_handle || width <= 0 || height <= 0)
+        return;
+
+    if (x >= BSP_LCD_H_RES || y >= BSP_LCD_V_RES)
+        return;
+
+    if (x + width  > BSP_LCD_H_RES) width  = BSP_LCD_H_RES - x;
+    if (y + height > BSP_LCD_V_RES) height = BSP_LCD_V_RES - y;
+
+    uint16_t row_buf[BSP_LCD_H_RES];
+    for (int i = 0; i < width; i++)
+        row_buf[i] = color;
+
+    for (int row = 0; row < height; row++)
+    {
+        ui_panel_blit(x,         y + row,
+                      x + width, y + row + 1,
+                      row_buf);
+    }
+}
+
+static void draw_screen_border(uint16_t color, int thickness)
+{
+    const int margin_x = 8;
+    const int margin_y = 6;
+
+    int x0 = margin_x;
+    int y0 = margin_y;
+    int x1 = BSP_LCD_H_RES - margin_x;
+    int y1 = BSP_LCD_V_RES - margin_y;
+
+    draw_filled_rect(x0, y0, x1 - x0, thickness, color);
+    draw_filled_rect(x0, y1 - thickness, x1 - x0, thickness, color);
+    draw_filled_rect(x0, y0, thickness, y1 - y0, color);
+    draw_filled_rect(x1 - thickness, y0, thickness, y1 - y0, color);
 }
 
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
 {
     int title_map[32];
-    int subtitle_map[32];
     int title_chars = title ? convert_string_to_char_map(title, title_map, 32) : 0;
-    int subtitle_chars = subtitle ? convert_string_to_char_map(subtitle, subtitle_map, 32) : 0;
 
-    if (title_chars <= 0 && subtitle_chars <= 0)
+    // División inteligente multilínea para subtítulos largos
+    char sub_line1[32] = {0};
+    char sub_line2[32] = {0};
+    bool has_sub2 = false;
+
+    if (subtitle && strlen(subtitle) > 0) {
+        if (strlen(subtitle) <= 16) {
+            strncpy(sub_line1, subtitle, sizeof(sub_line1) - 1);
+        } else {
+            // Buscar espacio cerca del caracter 16
+            int split_idx = 16;
+            for (int i = 16; i >= 6; i--) {
+                if (subtitle[i] == ' ') {
+                    split_idx = i;
+                    break;
+                }
+            }
+            strncpy(sub_line1, subtitle, split_idx);
+            sub_line1[split_idx] = '\0';
+            const char *rest = subtitle + split_idx + (subtitle[split_idx] == ' ' ? 1 : 0);
+            strncpy(sub_line2, rest, sizeof(sub_line2) - 1);
+            if (strlen(sub_line2) > 0) {
+                has_sub2 = true;
+            }
+        }
+    }
+
+    int sub1_map[32];
+    int sub2_map[32];
+    int sub1_chars = sub_line1[0] != '\0' ? convert_string_to_char_map(sub_line1, sub1_map, 32) : 0;
+    int sub2_chars = has_sub2 ? convert_string_to_char_map(sub_line2, sub2_map, 32) : 0;
+
+    if (title_chars <= 0 && sub1_chars <= 0 && sub2_chars <= 0)
     {
         ESP_LOGW(TAG, "System phase message skipped: no supported glyphs");
         return;
@@ -705,16 +851,16 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
     const int scale = 2;
     const int spacing = CHAR_SPACING_SCALE_2X;
     const int char_h = CHAR_HEIGHT * scale;
-    const int line_gap = 16;
-    const bool has_title = title_chars > 0;
-    const bool has_subtitle = subtitle_chars > 0;
-    const int total_h = (has_title && has_subtitle) ? (char_h * 2 + line_gap) : char_h;
+    const int line_gap = 12;
+
+    int total_lines = (title_chars > 0 ? 1 : 0) + (sub1_chars > 0 ? 1 : 0) + (sub2_chars > 0 ? 1 : 0);
+    int total_h = total_lines * char_h + (total_lines - 1) * line_gap;
     int y = (BSP_LCD_V_RES - total_h) / 2;
 
     clear_screen();
     draw_screen_border(color, 2);
 
-    if (has_title)
+    if (title_chars > 0)
     {
         int title_w = title_chars * (CHAR_WIDTH * scale) + (title_chars - 1) * spacing;
         int x = (BSP_LCD_H_RES - title_w) / 2;
@@ -722,11 +868,19 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         y += char_h + line_gap;
     }
 
-    if (has_subtitle)
+    if (sub1_chars > 0)
     {
-        int subtitle_w = subtitle_chars * (CHAR_WIDTH * scale) + (subtitle_chars - 1) * spacing;
-        int x = (BSP_LCD_H_RES - subtitle_w) / 2;
-        display_text(x, y, subtitle_map, subtitle_chars, COLOR_WHITE_BGR565, scale);
+        int sub1_w = sub1_chars * (CHAR_WIDTH * scale) + (sub1_chars - 1) * spacing;
+        int x = (BSP_LCD_H_RES - sub1_w) / 2;
+        display_text(x, y, sub1_map, sub1_chars, COLOR_WHITE_BGR565, scale);
+        y += char_h + line_gap;
+    }
+
+    if (sub2_chars > 0)
+    {
+        int sub2_w = sub2_chars * (CHAR_WIDTH * scale) + (sub2_chars - 1) * spacing;
+        int x = (BSP_LCD_H_RES - sub2_w) / 2;
+        display_text(x, y, sub2_map, sub2_chars, COLOR_WHITE_BGR565, scale);
     }
 
     ui_backlight_on();
@@ -742,32 +896,133 @@ void display_startup_screen(void)
 void display_welcome_identity(const char *name)
 {
     const char *identity_name = (name && name[0] != '\0') ? name : "Lorenzo";
-    int welcome_map[16];
-    int name_map[32];
-    int welcome_chars = convert_string_to_char_map("Welcome", welcome_map, 16);
-    int name_chars = convert_string_to_char_map(identity_name, name_map, 32);
-    if (welcome_chars == 0 || name_chars == 0)
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Spill it, %s...", identity_name);
+    display_system_phase_message("Camila AI", buf, COLOR_WHITE_BGR565);
+}
+
+static char s_camila_overlay_text[64] = {0};
+static uint16_t s_camila_overlay_color = COLOR_WHITE_BGR565;
+static SemaphoreHandle_t s_camila_overlay_mutex = NULL;
+
+void ui_show_status_message(const char *msg, uint16_t color)
+{
+    if (s_camila_overlay_mutex == NULL)
     {
-        return;
+        s_camila_overlay_mutex = xSemaphoreCreateMutex();
     }
 
-    const int scale = 3;
-    const int char_h = CHAR_HEIGHT * scale;
-    const int line_spacing = 16;
-    const int total_h = (char_h * 2) + line_spacing;
-    const int start_y = (BSP_LCD_V_RES - total_h) / 2;
+    if (xSemaphoreTake(s_camila_overlay_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
+        if (msg && msg[0] != '\0')
+        {
+            strncpy(s_camila_overlay_text, msg, sizeof(s_camila_overlay_text) - 1);
+            s_camila_overlay_text[sizeof(s_camila_overlay_text) - 1] = '\0';
+            s_camila_overlay_color = color;
 
-    int welcome_w = welcome_chars * (CHAR_WIDTH * scale) + (welcome_chars - 1) * CHAR_SPACING_SCALE_3X;
-    int name_w = name_chars * (CHAR_WIDTH * scale) + (name_chars - 1) * CHAR_SPACING_SCALE_3X;
+            draw_filled_rect(12, 190, 296, 35, COLOR_BLACK_BGR565);
+            int text_map[32];
+            int num_chars = convert_string_to_char_map(s_camila_overlay_text, text_map, 32);
+            if (num_chars > 0)
+            {
+                int scale = 2;
+                int char_spacing = CHAR_SPACING_SCALE_2X;
+                int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+                if (text_w > 296)
+                {
+                    scale = 1;
+                    char_spacing = CHAR_SPACING_SCALE_1X;
+                    text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+                    if (text_w > 296)
+                    {
+                        num_chars = (296 + char_spacing) / (CHAR_WIDTH * scale + char_spacing);
+                        if (num_chars < 1) num_chars = 1;
+                        text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+                    }
+                }
+                int x = (BSP_LCD_H_RES - text_w) / 2;
+                if (x < 12) x = 12;
+                int y = (scale == 2) ? 195 : 200;
+                display_text(x, y, text_map, num_chars, s_camila_overlay_color, scale);
+            }
+        }
+        else
+        {
+            if (s_camila_overlay_text[0] != '\0')
+            {
+                s_camila_overlay_text[0] = '\0';
+                draw_filled_rect(12, 190, 296, 35, COLOR_BLACK_BGR565);
+            }
+        }
+        xSemaphoreGive(s_camila_overlay_mutex);
+    }
+}
 
-    ui_backlight_set_if_changed(0);
-    clear_screen();
-    draw_screen_border(COLOR_CYAN_BGR565, 2);
-    display_text((BSP_LCD_H_RES - welcome_w) / 2, start_y,
-                 welcome_map, welcome_chars, COLOR_CYAN_BGR565, scale);
-    display_text((BSP_LCD_H_RES - name_w) / 2, start_y + char_h + line_spacing,
-                 name_map, name_chars, COLOR_WHITE_BGR565, scale);
-    ui_backlight_on();
+void ui_clear_status_message(void)
+{
+    ui_show_status_message(NULL, 0);
+}
+
+void ui_show_help_message_below_status(const char *msg, uint16_t color)
+{
+    ui_show_status_message(msg, color);
+}
+
+void ui_clear_help_message_below_status(void)
+{
+    ui_clear_status_message();
+}
+
+void camila_ui_update_state(ui_state_t state, const char *title, const char *subtitle)
+{
+    uint16_t color;
+    switch (state) {
+        case UI_STATE_BOOT:
+            color = COLOR_MAGENTA_BGR565;
+            break;
+        case UI_STATE_WIFI_CONNECTING:
+            color = COLOR_YELLOW_BGR565;
+            break;
+        case UI_STATE_BLE_SCAN:
+        case UI_STATE_BLE_DISCOVERY:
+            color = COLOR_CYAN_BGR565;
+            break;
+        case UI_STATE_SUCCESS:
+            color = COLOR_GREEN_BGR565;
+            break;
+        case UI_STATE_ACTIVE_WEBRTC:
+            color = COLOR_WHITE_BGR565;
+            break;
+        case UI_STATE_ALERT_VIGILANTE:
+        case UI_STATE_ERROR:
+            color = COLOR_RED_BGR565;
+            break;
+        default:
+            color = COLOR_CYAN_BGR565;
+            break;
+    }
+
+    const char *title_str = title ? title : "Camila AI";
+    const char *sub_str = subtitle ? subtitle : "Active";
+
+    display_system_phase_message(title_str, sub_str, color);
+}
+
+void camila_ui_show_avatar(void)
+{
+    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Ready and listening");
+}
+
+void camila_ui_set_speaking_state(bool is_speaking)
+{
+    (void)is_speaking;
+}
+
+void camila_ui_update_mute_countdown(int remaining_seconds)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Muted (%ds)", remaining_seconds);
+    camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "MUTED", buf);
 }
 
 
@@ -1309,221 +1564,6 @@ void ui_backlight_on(void)
     ui_backlight_set_if_changed(50); // Restaurar brillo al 50%
 }
 
-/**
- * @brief Draws a filled rectangle on the LCD screen.
- *        Renders a solid rectangle with the specified color and dimensions.
- *        Includes bounds checking to prevent drawing outside screen boundaries.
- * @param x X position of the rectangle's top-left corner.
- * @param y Y position of the rectangle's top-left corner.
- * @param width Width of the rectangle in pixels.
- * @param height Height of the rectangle in pixels.
- * @param color Fill color in BGR565 format.
- */
-/**
- * @brief Dibuja un rectángulo sólido en el LCD.
- *        Usa un buffer de fila en el stack (máx 320×2 = 640 bytes):
- *        no tiene estado estático, elimina la race condition y el leak del buffer anterior.
- */
-static void draw_filled_rect(int x, int y, int width, int height, uint16_t color)
-{
-    if (!g_panel_handle || width <= 0 || height <= 0)
-        return;
 
-    if (x >= BSP_LCD_H_RES || y >= BSP_LCD_V_RES)
-        return;
-
-    if (x + width  > BSP_LCD_H_RES) width  = BSP_LCD_H_RES - x;
-    if (y + height > BSP_LCD_V_RES) height = BSP_LCD_V_RES - y;
-
-    /* Buffer de fila en stack: BSP_LCD_H_RES × 2 = 640 bytes máx — seguro para ESP32-S3 */
-    uint16_t row_buf[BSP_LCD_H_RES];
-    for (int i = 0; i < width; i++)
-        row_buf[i] = color;
-
-    for (int row = 0; row < height; row++)
-    {
-        ui_panel_blit(x,         y + row,
-                      x + width, y + row + 1,
-                      row_buf);
-    }
-}
-
-/**
- * @brief Draws a border around the LCD screen edges.
- *        Creates a decorative border with specified color and thickness,
- *        leaving a margin from the actual screen edges.
- * @param color Border color in BGR565 format.
- * @param thickness Border thickness in pixels.
- */
-static void draw_screen_border(uint16_t color, int thickness)
-{
-    const int margin = 4; // Margen desde los bordes de la pantalla
-
-    // Calcular coordenadas del borde
-    int x0 = margin;
-    int y0 = margin;
-    int x1 = BSP_LCD_H_RES - margin;
-    int y1 = BSP_LCD_V_RES - margin;
-
-    // Dibujar los cuatro lados del borde
-    draw_filled_rect(x0, y0, x1 - x0, thickness, color);                   // Borde superior
-    draw_filled_rect(x0, y1 - thickness, x1 - x0, thickness, color);       // Borde inferior
-    draw_filled_rect(x0 - 3, y0, thickness, y1 - y0, color);               // Borde izquierdo
-    draw_filled_rect((x1 - thickness) - 1, y0, thickness, y1 - y0, color); // Borde derecho
-}
-
-/**
- * @brief Muestra un mensaje de estado dinámico en la pantalla con color personalizado.
- *        Posiciona el mensaje debajo del área de WebRTC status.
- *        Permite reutilización con diferentes mensajes y colores.
- *
- * @param message Mensaje a mostrar (ej: "Getting info...", "Muted", etc.)
- * @param color Color del texto en formato BGR565
- */
-void ui_show_status_message(const char *message, uint16_t color)
-{
-
-
-    ui_clear_status_message();
-    if (!message)
-        return;
-
-    int char_map[32];
-    int num_chars = convert_string_to_char_map(message, char_map, 32);
-    if (num_chars == 0)
-        return;
-
-    int32_t safe_h_res = (int32_t)BSP_LCD_H_RES;
-    int scale = 2;
-    int char_spacing = CHAR_SPACING_SCALE_2X;
-    int32_t status_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-
-    // Dynamic Downscale: prevent text from spilling out of bounds
-    if (status_width >= (safe_h_res - 12))
-    {
-        scale = 1;
-        char_spacing = CHAR_SPACING_SCALE_1X;
-        status_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-    }
-
-    // Keep vertical layout anchored to scale=2 so it doesn't jump
-    int layout_scale = 2;
-    int online_text_y_center = (BSP_LCD_V_RES - (CHAR_HEIGHT * layout_scale)) / 2;
-    int online_text_y = online_text_y_center + (CHAR_HEIGHT * layout_scale) + 12;
-    int online_text_height = CHAR_HEIGHT * layout_scale;
-    int status_y = online_text_y + online_text_height + 20;
-
-    int32_t status_x = (safe_h_res - status_width) / 2;
-    // Safety Clamp: strictly signed math comparison
-    if (status_x < 6)
-    {
-        status_x = 6;
-    }
-    
-    int status_height = CHAR_HEIGHT * scale;
-
-    // ⭐ ÁREA DE LIMPIEZA: TODO EL ANCHO (respetando bordes de la pantalla)
-    int border_width = 6;                                            // Los bordes ocupan ~6px (doble línea azul + cian)
-    int extended_height = status_height + 8 + (CHAR_HEIGHT * 1) + 4; // Main + separación + ayuda + margen
-
-    g_status_msg_x = border_width; // ⭐ Desde el borde interno
-    g_status_msg_y = status_y - 2;
-    g_status_msg_w = BSP_LCD_H_RES - (border_width * 2); // ⭐ Todo el ancho menos bordes
-    g_status_msg_h = extended_height + 4;
-
-    // ESP_LOGI(TAG, "Mostrando mensaje de estado: '%s' (área limpieza: %dx%d px)", message, g_status_msg_w, g_status_msg_h);
-
-    display_text(status_x, status_y, char_map, num_chars, color, scale);
-}
-
-
-
-void ui_clear_status_message(void)
-{
-
-
-    if (g_status_msg_w <= 0)
-    {
-        return;
-    }
-
-    // ESP_LOGI(TAG, "Limpiando mensaje de estado (área: %dx%d px).", g_status_msg_w, g_status_msg_h);
-    draw_filled_rect(g_status_msg_x, g_status_msg_y, g_status_msg_w, g_status_msg_h, COLOR_BLACK_BGR565);
-
-    g_status_msg_w = 0;
-    g_status_msg_h = 0;
-}
-
-/**
- * @brief Displays a help message below the status message on the LCD screen.
- *        Centers the message horizontally and positions it below the status area.
- * @param message Help message to display.
- * @param color Text color in BGR565 format.
- */
-void ui_show_help_message_below_status(const char *message, uint16_t color)
-{
-
-
-    ui_clear_help_message_below_status();
-
-    if (!message)
-        return;
-
-    // --- 1️⃣ Crear copia segura y sanitizar ---
-    char sanitized[128];
-    strncpy(sanitized, message, sizeof(sanitized) - 1);
-    sanitized[sizeof(sanitized) - 1] = '\0';
-    ui_sanitize_text(sanitized);
-
-    int char_map[32];
-    int num_chars = convert_string_to_char_map(sanitized, char_map, 32);
-    if (num_chars == 0)
-        return;
-
-    int scale = 1;
-
-    int online_text_y_center = (BSP_LCD_V_RES - (CHAR_HEIGHT * 2)) / 2;
-    int online_text_y = online_text_y_center + (CHAR_HEIGHT * 2) + 12;
-    int online_text_height = CHAR_HEIGHT * 2;
-    int status_y = online_text_y + online_text_height + 20;
-    int status_height = CHAR_HEIGHT * 2;
-
-    int help_y = status_y + status_height + 8;
-
-    int help_width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_1X;
-    int help_x = (BSP_LCD_H_RES - help_width) / 2;
-
-    // ⭐ GUARDAR ÁREA DE LIMPIEZA (de borde a borde)
-    int border_width = 6; // Respetar bordes de pantalla
-
-    g_help_msg_x = border_width;                       // Desde el borde interno
-    g_help_msg_y = help_y - 2;                         // Con margen superior
-    g_help_msg_w = BSP_LCD_H_RES - (border_width * 2); // Todo el ancho menos bordes
-    g_help_msg_h = (CHAR_HEIGHT * scale) + 4;          // Alto del mensaje + margen
-
-    // ESP_LOGI(TAG, "Mostrando mensaje de ayuda: '%s' (ancho: %d px)", message, help_width);
-    display_text(help_x, help_y, char_map, num_chars, color, scale);
-}
-
-/**
- * @brief Clears the help message area below the status message.
- *        Resets the area to black and clears stored dimensions.
- */
-void ui_clear_help_message_below_status(void)
-{
-
-
-    if (g_help_msg_w <= 0)
-    {
-        return;
-    }
-
-    // ESP_LOGI(TAG, "Limpiando mensaje de ayuda (área: %dx%d px).", g_help_msg_w, g_help_msg_h);
-    draw_filled_rect(g_help_msg_x, g_help_msg_y, g_help_msg_w, g_help_msg_h, COLOR_BLACK_BGR565);
-
-    // Resetear dimensiones
-    g_help_msg_w = 0;
-    g_help_msg_h = 0;
-}
 
 #endif // USE_LVGL_UI

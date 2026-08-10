@@ -225,17 +225,10 @@ void orchestrator_enter_state(orchestrator_state_t *state,
 
         orchestrator_log_heap_snapshot("igniting:before_audio");
 
-        /* Ensure UI is ready and show Welcome Screen before audio loads */
+        /* Ensure UI is ready and show WebRTC Init Screen before audio loads */
         if (orchestrator_ensure_ui_ready("igniting") == ESP_OK) {
             if (ignition_mode != WEBRTC_SESSION_MODE_VIGILANTE) {
-                const char *owner_name = ble_identity_get_last_validated_name();
-                char subtitle_buf[64];
-                if (owner_name && strlen(owner_name) > 0) {
-                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Owner: %s", owner_name);
-                } else {
-                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Igniting audio pipeline...");
-                }
-                camila_ui_update_state(UI_STATE_SUCCESS, "SYSTEM READY", subtitle_buf);
+                camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "WEBRTC INIT", "Connecting to server...");
             }
         }
 
@@ -298,9 +291,9 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         if (!s_arrival_context_sent) {
             if (webrtc_inject_arrival_context() == 0) {
                 s_arrival_context_sent = true;
+                ESP_LOGI(TAG, "Arrival context injected successfully into WebRTC session.");
             } else {
-                ESP_LOGW(TAG, "Arrival context injection failed; will not retry in this active session");
-                s_arrival_context_sent = true;
+                ESP_LOGW(TAG, "Arrival context injection deferred; waiting for realtime session readiness...");
             }
         }
         break;
@@ -494,7 +487,14 @@ void app_startup_orchestrator_task(void *param)
                 s_ignition_webrtc_mode    = WEBRTC_SESSION_MODE_FRIENDLY;
                 s_ble_release_to_sleep    = false;
                 ESP_LOGI(TAG, "BLE CENTRAL: Identity validated! Starting dedicated initial BLE discovery phase before WebRTC ignition...");
-                camila_ui_update_state(UI_STATE_BLE_SCAN, "SEARCHING BLE", "Scanning bluetooth devices...");
+                const char *owner_name = ble_identity_get_last_validated_name();
+                char subtitle_buf[64];
+                if (owner_name && strlen(owner_name) > 0) {
+                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Owner: %s", owner_name);
+                } else {
+                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Identity Validated");
+                }
+                camila_ui_update_state(UI_STATE_SUCCESS, "SYSTEM READY", subtitle_buf);
                 orchestrator_start_initial_ble_discovery(5000);
             } else if (event == ORCH_EVENT_DISCOVERY_COMPLETE) {
                 ESP_LOGI(TAG, "BLE CENTRAL: Dedicated discovery phase complete. Proceeding to STATE_IGNITING.");

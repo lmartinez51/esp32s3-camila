@@ -51,7 +51,7 @@
 #include "ui_config.h"
 #include "camila_lvgl_ui.h"
 
-#ifdef USE_LVGL_UI
+#if USE_LVGL_UI
 extern void camila_lvgl_init(void);
 #endif
 
@@ -344,8 +344,11 @@ void app_main(void)
     esp_log_level_set("CAPTURE_SIMP", ESP_LOG_WARN);
 
     /* 1) UI */
-#ifdef USE_LVGL_UI
+#if USE_LVGL_UI
     camila_lvgl_init();
+    camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
+#else
+    ui_init();
     camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
 #endif
 
@@ -452,7 +455,7 @@ void app_main(void)
         if (!boot_to_provisioning)
         {
             ESP_LOGI(TAG, "WiFi no conectado (fallo normal). Mostrando pantalla de credenciales WiFi.");
-            camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "PROVISIONING", "Enter WiFi credentials via BLE");
+            camila_ui_update_state(UI_STATE_WIFI_CONNECTING, "PROVISIONING", "Enter WiFi creds via BLE");
         }
         else
         {

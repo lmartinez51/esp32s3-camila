@@ -152,7 +152,7 @@ static volatile uint32_t g_last_realtime_activity_ms = 0;
 static volatile uint32_t g_session_update_generation = 0;
 static volatile uint32_t g_camila_session_generation = 0;
 static volatile uint32_t g_camila_anim_allowed_ms = 0;
-static volatile camila_state_t g_camila_pending_state = CAMILA_STATE_IDLE;
+static volatile camila_state_t g_camila_pending_state = CAMILA_STATE_LISTENING;
 static volatile bool g_camila_pending_speaking = false;
 static volatile bool g_camila_static_ready = false;
 static volatile webrtc_session_mode_t g_webrtc_session_mode = WEBRTC_SESSION_MODE_FRIENDLY;
@@ -835,7 +835,27 @@ static void display_camila_session_state(camila_state_t state, const char *reaso
         return;
     }
 
-
+    switch (state) {
+        case CAMILA_STATE_MUTED:
+            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "MUTED", "Microphone Disabled");
+            break;
+        case CAMILA_STATE_TALKING:
+            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Speaking...");
+            break;
+        case CAMILA_STATE_ALERT:
+            camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "ALERT", "Radar Active");
+            break;
+        case CAMILA_STATE_SAD:
+            camila_ui_update_state(UI_STATE_ERROR, "SYSTEM ERROR", "Connection Error");
+            break;
+        case CAMILA_STATE_BOOT:
+            camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Standby");
+            break;
+        case CAMILA_STATE_LISTENING:
+        default:
+            camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Ready and listening");
+            break;
+    }
 }
 
 static void camila_session_deferred_task(void *arg)
@@ -851,7 +871,7 @@ static void camila_session_deferred_task(void *arg)
     }
 
     camila_state_t state = (camila_state_t)g_camila_pending_state;
-    display_camila_session_state(state, "session_updated_deferred");
+    (void)state;
     g_camila_static_ready = true;
 
     if (CAMILA_SESSION_ANIM_PROTECT_MS > 0)
@@ -862,7 +882,6 @@ static void camila_session_deferred_task(void *arg)
     if (camila_session_generation_is_current(generation))
     {
         g_camila_anim_allowed_ms = app_millis();
-
     }
 
     camila_session_finish_task(generation);
@@ -980,10 +999,7 @@ static void camila_session_set_state(camila_state_t state, const char *reason)
 static void camila_session_notify_speaking(bool active)
 {
     g_camila_pending_speaking = active;
-
     camila_ui_set_speaking_state(active);
-
-
 }
 
 static void reset_realtime_interaction_state(void)
@@ -1005,7 +1021,7 @@ static void reset_realtime_interaction_state(void)
     g_dc_last_event_type[0] = '\0';
     g_last_realtime_activity_ms = 0;
     g_camila_anim_allowed_ms = 0;
-    g_camila_pending_state = CAMILA_STATE_IDLE;
+    g_camila_pending_state = CAMILA_STATE_LISTENING;
     g_camila_pending_speaking = false;
     g_camila_static_ready = false;
 }
@@ -1811,7 +1827,7 @@ static void web_search_task(void *arg)
     orchestrator_log_heap_snapshot("active_session:tool_call");
 
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CONSULTING", "Searching Google...");
+    ui_show_status_message("CONSULTING: Searching Google...", COLOR_YELLOW_BGR565);
 
     char *response = get_web_info(ctx->query);
     if (!response)
@@ -1854,7 +1870,7 @@ static void web_search_task(void *arg)
 
 cleanup:
     // 5) Limpiar y terminar la tarea
-    camila_ui_show_avatar();
+    ui_clear_status_message();
     free((void *)ctx->user);
     free((void *)ctx->query);
     free(ctx->call_id);
@@ -2746,7 +2762,12 @@ static int process_json(const char *json_data, int json_size)
             ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
                      dev_str, act_str, dur_val);
 
+            char ui_sub[64];
+            snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
+            ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
             esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
+            ui_clear_status_message();
             if (ctrl_err == ESP_OK) {
                 send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
             } else {
@@ -2765,7 +2786,12 @@ static int process_json(const char *json_data, int json_size)
 
             ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
 
+            char ui_sub[64];
+            snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
+            ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
             esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
+            ui_clear_status_message();
             if (alias_err == ESP_OK) {
                 send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
             } else {
@@ -2858,6 +2884,7 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
                                                  : CAMILA_STATE_LISTENING,
                                              "session_updated");
             }
+            webrtc_inject_arrival_context();
         }
         else
         {
@@ -2892,10 +2919,6 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         webrtc_mark_activity();
         reset_data_channel_response_stats();
         track_data_channel_event(event_type, size);
-        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
-        {
-            camila_session_set_state(CAMILA_STATE_THINKING, "response_created");
-        }
     }
     else if (strcmp(event_type, "response.done") == 0)
     {
@@ -2976,10 +2999,6 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     }
     else if (strcmp(event_type, "response.function_call_arguments.done") == 0)
     {
-        if (g_webrtc_session_mode != WEBRTC_SESSION_MODE_VIGILANTE)
-        {
-            camila_session_set_state(CAMILA_STATE_THINKING, "function_call_arguments_done");
-        }
         process_json((const char *)data, size);
     }
     else if (strcmp(event_type, "response.output_item.added") == 0 ||

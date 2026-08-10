@@ -164,6 +164,11 @@ static void orchestrator_initial_ble_discovery_task(void *param)
     ESP_LOGI(TAG, "   Escaneando dispositivos cercanos antes de iniciar WebRTC...");
     ESP_LOGI(TAG, "=======================================================");
 
+    // Permitir que el mensaje "SYSTEM READY / Owner: Lorenzo" sea visible 1.2s antes de la fase de descubrimiento
+    vTaskDelay(pdMS_TO_TICKS(1200));
+
+    camila_ui_update_state(UI_STATE_BLE_DISCOVERY, "BT Discovery", "Scanning devices...");
+
     esp_err_t disc_err = ble_device_start_smart_task();
     if (disc_err != ESP_OK) {
         ESP_LOGW(TAG, "ble_device_start_smart_task returned: %s", esp_err_to_name(disc_err));

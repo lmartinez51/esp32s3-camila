@@ -1932,6 +1932,17 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
 
         // Buscar dispositivo por el handle de la conexión que se cerró
         device = find_device_by_conn_handle(event->disconnect.conn.conn_handle);
+        if (!device)
+        {
+            device = find_device_by_addr_internal(g_pending_connection.addr);
+            if (device && device->state == BLE_DEVICE_STATE_CONNECTING)
+            {
+                ESP_LOGW(TAG, "Conexión fallida (reason 0x%x) para '%s'; reseteando estado a DISCONNECTED.",
+                         event->disconnect.reason, device->name);
+                device->state = BLE_DEVICE_STATE_DISCONNECTED;
+                device->conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            }
+        }
 
         if (device)
         {
@@ -4130,7 +4141,7 @@ conn_ready:
             param->conn_handle = current_conn_handle;
             param->char_handle = write_handle;
             param->duration_ms = pulse_duration;
-            xTaskCreate(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL);
+            xTaskCreatePinnedToCoreWithCaps(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         }
     }
 
