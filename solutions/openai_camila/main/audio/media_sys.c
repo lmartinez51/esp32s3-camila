@@ -384,20 +384,25 @@ bool media_sys_mic_mute(bool mute)
 
     if (mute)
     {
+        if (capture_sys.mic_muted)
+        {
+            return true; // Ya silenciado
+        }
         ESP_LOGI(TAG, "Silenciando micrófono (stop capture)...");
+        capture_sys.mic_muted = true;
         int ret = esp_capture_stop(capture_sys.capture_handle);
         if (ret != ESP_CAPTURE_ERR_OK && ret != ESP_CAPTURE_ERR_INVALID_STATE)
         {
             ESP_LOGE(TAG, "Fallo esp_capture_stop: %d", ret);
             return false;
         }
-        else
-        {
-            capture_sys.mic_muted = true;
-        }
     }
     else
     {
+        if (!capture_sys.mic_muted)
+        {
+            return true; // Ya activo
+        }
         capture_sys.mic_muted = false;
         ESP_LOGI(TAG, "Reactivando micrófono (start capture)...");
         int ret = esp_capture_start(capture_sys.capture_handle);

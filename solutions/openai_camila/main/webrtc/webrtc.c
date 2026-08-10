@@ -21,8 +21,6 @@
 #include "web_search.h"
 #include "responses_client.h"
 #include "ui.h"
-#include "camila_lvgl_ui.h"
-#include "camila_lvgl_ui.h"
 #include "webrtc.h"
 #include "app_events.h"
 #include "config_manager.h"
@@ -2086,23 +2084,17 @@ void start_delete_credentials_task(void)
  */
 static void activate_mute_task(void *arg)
 {
-    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Muting microphone...");
+    (void)arg;
+    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Muting microphone immediately (0 ms lag)...");
     
-    int timeout_ms = 10000;
-    while ((g_response_in_progress || g_output_audio_active) && timeout_ms > 0)
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        timeout_ms -= 100;
-    }
-    vTaskDelay(pdMS_TO_TICKS(500)); // Delay to ensure chatbot's response is complete
-    
-    // Delegate media control and UI to the central orchestrator
+    // Immediately notify orchestrator to mute microphone capture
     orchestrator_post_mute_state(true);
 
-    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Orchestrator notified. Hardware is now physically dead until physical unmute.");
-    // Notify OpenAI via WebRTC so it understands the silence
+    ESP_LOGI(TAG, "ACTIVATE_MUTE_TASK: Orchestrator notified. Hardware mic disabled instantly.");
+    
+    // Send confirmation item to WebRTC session
     sendEvent("conversation.item.create", "Microphone muted successfully. I must wait for the user to physically unmute.");
-    vTaskDelay(pdMS_TO_TICKS(200));
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Task complete.
     vTaskDelete(NULL);

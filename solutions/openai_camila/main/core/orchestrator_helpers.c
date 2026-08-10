@@ -21,7 +21,6 @@
 #include "wifi_session_state.h"
 #include "webrtc.h"  /* webrtc_get_last_activity_ms, webrtc_realtime_is_busy */
 #include "ui.h"
-#include "camila_lvgl_ui.h"
 #include "webrtc.h"
 #include "media_sys.h"
 #include "codec_init.h"

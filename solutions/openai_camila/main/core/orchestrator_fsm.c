@@ -31,8 +31,6 @@
 #include "wifi_session_state.h"
 #include "webrtc.h"
 #include "ui.h"
-#include "camila_lvgl_ui.h"
-#include "camila_lvgl_ui.h"
 #include "media_sys.h"
 #include "mute_handler.h"
 #include "ble_device_callbacks.h"
@@ -587,6 +585,8 @@ void app_startup_orchestrator_task(void *param)
                 if (s_is_muted != want_mute) {
                     s_is_muted = want_mute;
                 }
+                mute_handler_set_muted(s_is_muted);
+
                 /* Actualizar timestamp de actividad por interacción física con el botón */
                 webrtc_mark_activity();
 
@@ -595,11 +595,13 @@ void app_startup_orchestrator_task(void *param)
                     camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "MUTED", "Microphone Disabled");
                     media_sys_mic_mute(true); /* Físicamente apagar el micrófono (Modo Normal) */
                     mute_handler_start_idle_timer();
+                    fflush(stdout);
                 } else {
+                    mute_handler_stop_idle_timer(); /* Detener timer y limpiar overlay ANTES de repintar avatar */
                     camila_ui_show_avatar();
                     media_sys_mic_mute(false); /* Reactivar micrófono físicamente (Modo Normal) */
-                    mute_handler_stop_idle_timer();
                     webrtc_post_action(WEBRTC_ACTION_NOTIFY_UNMUTE);
+                    fflush(stdout);
                 }
             } else if (event == ORCH_EVENT_AUTO_SLEEP_TIMEOUT &&
                        !orchestrator_is_vigilante_active())

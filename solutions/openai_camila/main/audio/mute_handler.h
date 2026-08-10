@@ -24,6 +24,10 @@ extern "C"
      * Se debe llamar cuando el usuario desmutea el micrófono.
      */
     void mute_handler_stop_idle_timer(void);
+    /**
+     * @brief Sincroniza explícitamente el estado interno del botón de mute.
+     */
+    void mute_handler_set_muted(bool muted);
 
 #ifdef __cplusplus
 }

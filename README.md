@@ -24,7 +24,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
-- 📺 **On-device LCD UI** with a tailored character map, responsive 7-bar equalizer audio spectrum visualizer, live countdown timer for mute auto-reset, dynamic state color indicators, and hardware-accelerated rendering optimizations.
+- 📺 **On-device LCD UI** with a tailored character map, status overlays, atomic 1-pass non-blocking mute countdown bands, dynamic state color indicators, and hardware-accelerated rendering optimizations.
 - 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
 
@@ -175,11 +175,10 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 ## 🔧 Implementation Highlights
 
-- **Mute/Unmute Pipeline Orchestration**: The central FSM manages global mute states, gracefully stopping audio capture pipelines while keeping the OpenAI WebRTC session active and synchronized via text channel notices.
+- **Mute/Unmute Pipeline Orchestration & Zero-Lag Muting**: The central FSM manages global mute states, executing instant zero-lag (0 ms delay) microphone capture shutdown upon voice command while keeping the WebRTC session active and synchronized via text channel notices.
 - **Resilient WebRTC SDP Signaling & Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling coupled with state machine fallback (`STATE_IGNITING` UI warnings, sleep, and auto-reconnect logic) during network degradation.
 - **Vigilante Mode & Wi-Fi CSI Radar Security**: Integrates Wi-Fi Channel State Information (CSI) variance analysis for autonomous intruder detection, triggering automated WebRTC warning announcements and alert events upon motion detection.
-- **Dynamic LVGL Visualizer & Countdown UI**: Responsive 7-bar audio spectrum equalizer animation for active speech synthesis, thread-safe mute countdown subtitles, and execution status banners rendered on the LCD screen.
-- **LVGL UI Resilience & Early DMA Allocation**: Allocates LVGL DMA draw buffers at boot to prevent internal SRAM pool fragmentation, registers `lvgl_task` with the Task Watchdog (TWDT), and enforces 500 ms bounded timeouts on UI mutex locks to guarantee zero display deadlocks.
+- **Non-Blocking Atomic LCD Frame-Buffer Rendering**: Single-pass atomic 1-frame LCD blitting (`ui_draw_mute_countdown_band`) with 50 ms bounded SPI timeouts (`ui_panel_try_blit`), zero Task Watchdog delays, and instant non-blocking mute countdown overlay erasure upon unmuting (`camila_ui_clear_mute_countdown`).
 - **ESP-Claw Lua 5.4 Automation VM**: An isolated FreeRTOS task running Lua 5.4 to interpret, execute, and store persistent home automation rules on LittleFS using non-blocking coroutines and UDP packet dispatching.
 - **Proactive BLE Proximity Identification & Arrival Context**: Continuously scans for the owner's smartphone BLE UUID ("Nexus" digital key), dynamically injecting personalized arrival context into the OpenAI Realtime API session upon owner presence.
 - **Realtime BLE Central Control & NVS Alias Persistence**: Autonomous background scanning and classification of surrounding BLE GATT peripherals with thread-safe NVS alias key storage, exposing direct natural language voice control tools (`get_discovered_ble_devices`, `set_ble_device_alias`, `control_ble_device`) over OpenAI WebRTC.

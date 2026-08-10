@@ -4032,6 +4032,9 @@ static void ble_pulse_stop_task(void *param)
         ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
         if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
             send_elegoo_command_payload(p->conn_handle, p->char_handle, "STOP");
+            vTaskDelay(pdMS_TO_TICKS(300));
+            ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
+            ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
         free(p);
     }

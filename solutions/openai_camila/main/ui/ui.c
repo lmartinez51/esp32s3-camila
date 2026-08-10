@@ -724,8 +724,12 @@ static void display_text(int start_x, int start_y, const int *char_map, int num_
     int total_width = num_chars * display_char_width + (num_chars - 1) * char_spacing;
     int total_height = display_char_height;
 
-    // Asignar buffer para todo el texto
-    uint16_t *full_buffer = malloc(total_width * total_height * sizeof(uint16_t));
+    // Asignar buffer para todo el texto en PSRAM para no agotar la memoria DMA interna
+    uint16_t *full_buffer = heap_caps_malloc(total_width * total_height * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!full_buffer)
+    {
+        full_buffer = malloc(total_width * total_height * sizeof(uint16_t));
+    }
     if (!full_buffer)
     {
         ESP_LOGE(TAG, "Fallo al asignar memoria para el buffer de texto!");
@@ -777,16 +781,22 @@ static void draw_filled_rect(int x, int y, int width, int height, uint16_t color
     if (x + width  > BSP_LCD_H_RES) width  = BSP_LCD_H_RES - x;
     if (y + height > BSP_LCD_V_RES) height = BSP_LCD_V_RES - y;
 
-    uint16_t row_buf[BSP_LCD_H_RES];
-    for (int i = 0; i < width; i++)
-        row_buf[i] = color;
-
-    for (int row = 0; row < height; row++)
+    int total_pixels = width * height;
+    uint16_t *buf = heap_caps_malloc(total_pixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf)
     {
-        ui_panel_blit(x,         y + row,
-                      x + width, y + row + 1,
-                      row_buf);
+        buf = malloc(total_pixels * sizeof(uint16_t));
     }
+    if (!buf)
+        return;
+
+    for (int i = 0; i < total_pixels; i++)
+    {
+        buf[i] = color;
+    }
+
+    ui_panel_blit(x, y, x + width, y + height, buf);
+    free(buf);
 }
 
 static void draw_screen_border(uint16_t color, int thickness)
@@ -803,6 +813,65 @@ static void draw_screen_border(uint16_t color, int thickness)
     draw_filled_rect(x0, y1 - thickness, x1 - x0, thickness, color);
     draw_filled_rect(x0, y0, thickness, y1 - y0, color);
     draw_filled_rect(x1 - thickness, y0, thickness, y1 - y0, color);
+}
+
+/* Mute countdown persistent overlay — survives display_system_phase_message repaints */
+/* NOTE: declared here (before display_system_phase_message) so the function can access them */
+static bool s_mute_overlay_active = false;
+static char s_mute_overlay_text[32] = {0};
+
+/**
+ * @brief Draws the mute countdown band directly to LCD in 1 atomic, non-blocking pass.
+ * Uses ui_panel_try_blit (50ms max timeout) so it NEVER blocks the FreeRTOS timer thread.
+ */
+static void ui_draw_mute_countdown_band(void)
+{
+    if (!s_mute_overlay_active || s_mute_overlay_text[0] == '\0') return;
+
+    int text_map[32];
+    int num_chars = convert_string_to_char_map(s_mute_overlay_text, text_map, 32);
+    if (num_chars <= 0) return;
+
+    const int band_w = 296;
+    const int band_h = 35;
+    const int band_x = 12;
+    const int band_y = 190;
+
+    int total_pixels = band_w * band_h;
+    uint16_t *band_buf = heap_caps_malloc(total_pixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!band_buf)
+    {
+        band_buf = malloc(total_pixels * sizeof(uint16_t));
+    }
+    if (!band_buf) return;
+
+    // Clear entire 296x35 band to black
+    memset(band_buf, 0x00, total_pixels * sizeof(uint16_t));
+
+    int scale = 2;
+    int char_spacing = CHAR_SPACING_SCALE_2X;
+    int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+    if (text_w > band_w)
+    {
+        scale = 1;
+        char_spacing = CHAR_SPACING_SCALE_1X;
+        text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+    }
+    int rel_x = (band_w - text_w) / 2;
+    if (rel_x < 0) rel_x = 0;
+    int rel_y = (scale == 2) ? 5 : 10;
+
+    // Render font glyphs into composite band buffer
+    for (int i = 0; i < num_chars; i++)
+    {
+        int char_offset_x = rel_x + i * (CHAR_WIDTH * scale + char_spacing);
+        draw_char_to_buffer(band_buf, band_w, band_h, char_offset_x, rel_y, text_map[i], COLOR_YELLOW_BGR565, scale);
+    }
+
+    // Single non-blocking SPI blit (50ms timeout)
+    ui_panel_try_blit(band_x, band_y, band_x + band_w, band_y + band_h, band_buf, 50);
+
+    free(band_buf);
 }
 
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
@@ -884,6 +953,15 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
     }
 
     ui_backlight_on();
+
+    /* If the mute countdown overlay is active, redraw it directly over the new render.
+     * This does NOT go through ui_show_status_message / s_camila_overlay_mutex.
+     * Only s_panel_mutex is used (inside draw_filled_rect / display_text). */
+    if (s_mute_overlay_active && s_mute_overlay_text[0] != '\0')
+    {
+        ui_draw_mute_countdown_band();
+    }
+
     ESP_LOGI(TAG, "System phase displayed: %s / %s",
              title ? title : "", subtitle ? subtitle : "");
 }
@@ -905,6 +983,8 @@ static char s_camila_overlay_text[64] = {0};
 static uint16_t s_camila_overlay_color = COLOR_WHITE_BGR565;
 static SemaphoreHandle_t s_camila_overlay_mutex = NULL;
 
+
+
 void ui_show_status_message(const char *msg, uint16_t color)
 {
     if (s_camila_overlay_mutex == NULL)
@@ -912,7 +992,7 @@ void ui_show_status_message(const char *msg, uint16_t color)
         s_camila_overlay_mutex = xSemaphoreCreateMutex();
     }
 
-    if (xSemaphoreTake(s_camila_overlay_mutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    if (xSemaphoreTake(s_camila_overlay_mutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         if (msg && msg[0] != '\0')
         {
@@ -1020,9 +1100,34 @@ void camila_ui_set_speaking_state(bool is_speaking)
 
 void camila_ui_update_mute_countdown(int remaining_seconds)
 {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Muted (%ds)", remaining_seconds);
-    camila_ui_update_state(UI_STATE_ALERT_VIGILANTE, "MUTED", buf);
+    if (remaining_seconds < 0) return;
+    int mins = remaining_seconds / 60;
+    int secs = remaining_seconds % 60;
+    /* Save text for display_system_phase_message to restore on full repaints */
+    snprintf(s_mute_overlay_text, sizeof(s_mute_overlay_text), "Auto-sleep in %02d:%02d", mins, secs);
+    s_mute_overlay_active = true;
+    /* Direct draw — only s_panel_mutex, NO s_camila_overlay_mutex (avoids timer-task contention) */
+    ui_draw_mute_countdown_band();
+}
+
+/**
+ * @brief Clears the persistent mute countdown overlay.
+ * Must be called when the device exits MUTE state so the overlay
+ * is never restored by subsequent display_system_phase_message calls.
+ * Unconditional clear: does NOT depend on s_camila_overlay_text state.
+ */
+void camila_ui_clear_mute_countdown(void)
+{
+    s_mute_overlay_active = false;
+    s_mute_overlay_text[0] = '\0';
+    /* Erase the countdown band non-blockingly (100ms timeout) */
+    uint16_t *clear_buf = heap_caps_malloc(296 * 35 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (clear_buf)
+    {
+        memset(clear_buf, 0x00, 296 * 35 * sizeof(uint16_t));
+        ui_panel_try_blit(12, 190, 12 + 296, 190 + 35, clear_buf, 100);
+        free(clear_buf);
+    }
 }
 
 

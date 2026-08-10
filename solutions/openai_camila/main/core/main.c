@@ -49,19 +49,12 @@
 /* ── Project Modules ────────────────────────────────────────────────────── */
 #include "common.h"
 #include "ui_config.h"
-#include "camila_lvgl_ui.h"
-
-#if USE_LVGL_UI
-extern void camila_lvgl_init(void);
-#endif
-
 #include "lua_benchmark.h"
 #include "esp_claw_init.h"
 #include "ble_config.h"
 #include "ble_common.h"
 #include "codec_init.h"
 #include "ui.h"
-#include "camila_lvgl_ui.h"
 #include "webrtc.h"
 #include "mute_handler.h"
 #include "media_sys.h"
@@ -344,13 +337,8 @@ void app_main(void)
     esp_log_level_set("CAPTURE_SIMP", ESP_LOG_WARN);
 
     /* 1) UI */
-#if USE_LVGL_UI
-    camila_lvgl_init();
-    camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
-#else
     ui_init();
     camila_ui_update_state(UI_STATE_BOOT, "SYSTEM BOOT", "Initializing subsystems...");
-#endif
 
     /* 2) I2C bus and pristine hardware allocations */
     bsp_i2c_init();

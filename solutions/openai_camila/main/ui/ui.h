@@ -2,7 +2,6 @@
 #define MAIN_UI_H
 
 #include "ui_config.h"
-#include "camila_lvgl_ui.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include <stdint.h>
@@ -38,6 +37,7 @@ void camila_ui_update_state(ui_state_t state, const char* title, const char* sub
 void camila_ui_show_avatar(void);
 void camila_ui_set_speaking_state(bool is_speaking);
 void camila_ui_update_mute_countdown(int remaining_seconds);
+void camila_ui_clear_mute_countdown(void);
 void ui_backlight_off_safe(void);
 void ui_backlight_on(void);
 #define COLOR_GREEN_BGR565 0x001F

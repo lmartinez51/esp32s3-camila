@@ -7,7 +7,6 @@
 #include "esp_rom_sys.h"
 #include <stdint.h>
 #include "ui.h"
-#include "camila_lvgl_ui.h"
 #include "freertos/timers.h"
 #include "mute_handler.h"
 #include "webrtc.h"
@@ -39,16 +38,17 @@ TimerHandle_t g_idle_timer = NULL;
 
 static void vIdleTimerCallback(TimerHandle_t xTimer);
 
+void mute_handler_set_muted(bool muted)
+{
+    mic_muted = muted;
+}
+
 /**
  * @brief ISR handler for the mute button.
- *
- * This function is called when the mute button is pressed or released.
- * It debounces the button press and sends a mute event to the queue.
- *
- * @param arg Unused parameter
  */
 static void IRAM_ATTR mute_isr_handler(void *arg)
 {
+    (void)arg;
     static uint32_t last_isr_time = 0;
     uint32_t now = xTaskGetTickCountFromISR();
     if ((now - last_isr_time) < pdMS_TO_TICKS(200))
@@ -56,7 +56,8 @@ static void IRAM_ATTR mute_isr_handler(void *arg)
     last_isr_time = now;
 
     mute_event_t evt = {
-        .state = gpio_get_level(MUTE_BUTTON_GPIO) == 0 ? MUTE_STATE_MUTED : MUTE_STATE_UNMUTED};
+        .state = (gpio_get_level(MUTE_BUTTON_GPIO) == 0) ? MUTE_STATE_MUTED : MUTE_STATE_UNMUTED
+    };
 
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     xQueueSendFromISR(mute_evt_queue, &evt, &xHigherPriorityTaskWoken);
@@ -67,15 +68,11 @@ static void IRAM_ATTR mute_isr_handler(void *arg)
 }
 
 /**
- * @brief Task to handle mute events.
- *
- * This task listens for mute events from the queue and updates the microphone state accordingly.
- * It will mute or unmute the microphone based on the received event.
- *
- * @param arg Unused parameter
+ * @brief Task to handle mute events from physical button.
  */
 static void mute_evt_task(void *arg)
 {
+    (void)arg;
     mute_event_t evt;
     while (1)
     {
@@ -105,9 +102,6 @@ static void mute_evt_task(void *arg)
 
 /**
  * @brief Initializes the mute handler.
- *
- * Sets up the GPIO for the mute button, creates a queue for mute events,
- * and starts the mute event task. Also registers the ISR handler for the mute button.
  */
 void mute_handler_init(void)
 {
@@ -128,18 +122,18 @@ void mute_handler_init(void)
         return;
     }
 
-    xTaskCreate(mute_evt_task, "mute_evt_task", 4096, NULL, 10, NULL);
+    // Allocate task in PSRAM so internal DRAM is preserved for LCD SPI DMA
+    xTaskCreatePinnedToCoreWithCaps(mute_evt_task, "mute_evt_task", 4096, NULL, 10, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     gpio_install_isr_service(0);
     gpio_isr_handler_add(MUTE_BUTTON_GPIO, mute_isr_handler, NULL);
 
     ESP_LOGI(TAG, "Callback de mute registrado en GPIO %d", MUTE_BUTTON_GPIO);
-    // Crear el timer de inactividad (periodico 1s)
     ESP_LOGI(TAG, "Creando timer de inactividad periódico de 1 segundo...");
     g_idle_timer = xTimerCreate(
         "IdleTimer",
         pdMS_TO_TICKS(1000), // Periodo (1 segundo)
-        pdTRUE,              // pdTRUE = Auto-reload, periódico
+        pdTRUE,              // Auto-reload, periódico
         (void *)0,
         vIdleTimerCallback
     );
@@ -152,14 +146,11 @@ void mute_handler_init(void)
 
 static void vIdleTimerCallback(TimerHandle_t xTimer)
 {
+    (void)xTimer;
     if (s_mute_remaining_seconds > 0)
     {
         s_mute_remaining_seconds--;
-        
-        char buffer[32];
-        int mins = s_mute_remaining_seconds / 60;
-        int secs = s_mute_remaining_seconds % 60;
-        snprintf(buffer, sizeof(buffer), "Reboot:%02d:%02d", mins, secs);
+        // ESP_LOGI(TAG, "⏱️ Mute countdown tick: %d s restantes", s_mute_remaining_seconds);
 
         camila_ui_update_mute_countdown(s_mute_remaining_seconds);
 
@@ -181,7 +172,6 @@ static void vIdleTimerCallback(TimerHandle_t xTimer)
 
 /**
  * @brief Inicia o reinicia el timer de inactividad de 14 minutos.
- * Se debe llamar CADA VEZ que el dispositivo entra en estado MUTE.
  */
 void mute_handler_start_idle_timer(void)
 {
@@ -189,13 +179,14 @@ void mute_handler_start_idle_timer(void)
     {
         s_idle_warning_sent = false;
         s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
+        mic_muted = true;
+        camila_ui_update_mute_countdown(s_mute_remaining_seconds);
         xTimerStart(g_idle_timer, 100);
     }
 }
 
 /**
  * @brief Detiene el timer de inactividad.
- * Se debe llamar CADA VEZ que el dispositivo sale del estado MUTE.
  */
 void mute_handler_stop_idle_timer(void)
 {
@@ -203,6 +194,8 @@ void mute_handler_stop_idle_timer(void)
     {
         ESP_LOGI(TAG, "Deteniendo timer de inactividad (usuario hizo unmute).");
         xTimerStop(g_idle_timer, pdMS_TO_TICKS(100));
+        mic_muted = false;
+        camila_ui_clear_mute_countdown();
         s_mute_remaining_seconds = (IDLE_TIMEOUT_MS / 1000);
     }
 }

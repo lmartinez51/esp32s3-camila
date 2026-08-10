@@ -27,7 +27,6 @@ idf_component_register(
         "ble/ble_device_control.c"
 
         "ui/ui.c"
-        "ui/camila_lvgl_ui.c"
 
         "webrtc/webrtc.c"
         "webrtc/openai_signaling.c"

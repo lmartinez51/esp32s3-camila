@@ -20,7 +20,7 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 - 💡 **Sistema de eventos internos** que proporciona seudo-eventos útiles (`keep.alive`, `system.message.create`) mapeados a eventos reales de la API Realtime.
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
-- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, ecualizador visual de espectro de audio de 7 barras en LVGL, subtítulo de cuenta regresiva en tiempo real para silenciado automático, indicadores dinámicos por estado y optimizaciones de renderizado.
+- 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, mensajes de estado superpuestos, banda de cuenta regresiva de silencio atómica de 1 paso no bloqueante, indicadores dinámicos por estado y optimizaciones de renderizado acelerado por hardware.
 - 🦎 **Motor Lua ESP-Claw** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, prototipado rápido de lógica sin bloquear el ciclo principal en C de WebRTC.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
 
@@ -171,11 +171,10 @@ A continuación, un ejemplo de cómo se registra y actúa en la conversación un
 
 ## 🔧 Aspectos Destacados de la Implementación
 
-- **Orquestación de la Tubería de Silencio (Mute/Unmute)**: El orquestador central gestiona el estado global de silencio, apagando de forma limpia la captura de audio mientras mantiene activa la sesión WebRTC de OpenAI y la sincroniza mediante mensajes de texto.
+- **Orquestación de la Tubería de Silencio y Desactivación Instantánea (Mute/Unmute)**: El orquestador central gestiona el estado global de silencio, ejecutando la desactivación inmediata (0 ms de retardo) de la captura del micrófono tras una orden de voz, mientras mantiene activa la sesión WebRTC de OpenAI y la sincroniza mediante mensajes de texto.
 - **Señalización WebRTC SDP Resiliente y Recuperación de Red**: Reintentos automáticos HTTP POST para la señalización SDP de WebRTC y recuperación inteligente del autómata de estados (`STATE_IGNITING` advierte problemas en pantalla LCD y realiza un fallback limpio a suspensión o reconexión si la red falla).
 - **Modo Vigilante y Seguridad por Radar Wi-Fi CSI**: Integra análisis de varianza de Información de Estado del Canal (CSI) Wi-Fi para la detección autónoma de intrusos, activando avisos hablados automatizados por WebRTC y eventos de alerta ante presencia no autorizada.
-- **Interfaz Dinámica LVGL y Cuenta Regresiva**: Animación reactiva de espectro de audio de 7 barras para la síntesis de voz, subtítulo de cuenta regresiva en tiempo real thread-safe para auto-reseteo de silencio y banners emergentes de estado de ejecución en la pantalla LCD.
-- **Resiliencia de UI en LVGL y Reserva Temprana de DMA**: Asigna el buffer de dibujo DMA de LVGL al arrancar el sistema para evitar la fragmentación de la SRAM interna, registra `lvgl_task` en el Task Watchdog (TWDT) y aplica tiempos de espera acotados de 500 ms en los cerrojos de mutex para garantizar cero bloqueos en la pantalla.
+- **Renderizado de UI LCD Atómico y No Bloqueante**: Volcado directo de trama a pantalla en 1 paso atómico (`ui_draw_mute_countdown_band`) con tiempos de espera SPI acotados de 50 ms (`ui_panel_try_blit`), cero retrasos en el Task Watchdog y borrado no bloqueante inmediato del subtítulo de silencio al desilenciar (`camila_ui_clear_mute_countdown`).
 - **Motor de Automatización Lua 5.4 (ESP-Claw)**: Una tarea aislada de FreeRTOS que ejecuta Lua 5.4 para interpretar, ejecutar y almacenar reglas persistentes de automatización en LittleFS utilizando corrutinas no bloqueantes y emisión de paquetes UDP.
 - **Identificación Proactiva por Proximidad BLE y Contexto de Llegada**: Escaneo continuo del UUID del smartphone del propietario (llave digital "Nexus"), inyectando automáticamente contexto personalizado de llegada a la sesión de OpenAI Realtime API tras validar la presencia.
 - **Control Central BLE en Tiempo Real y Persistencia de Apodos NVS**: Escaneo y clasificación automática en segundo plano de periféricos BLE GATT con almacenamiento thread-safe de apodos en NVS, exponiendo herramientas de control por voz en lenguaje natural (`get_discovered_ble_devices`, `set_ble_device_alias`, `control_ble_device`) sobre OpenAI WebRTC.
