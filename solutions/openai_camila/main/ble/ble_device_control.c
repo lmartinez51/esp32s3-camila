@@ -4012,27 +4012,48 @@ static int on_gatt_write_cb(uint16_t conn_handle, const struct ble_gatt_error *e
     return 0;
 }
 
-static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_handle, const char *action_str)
-{
-    char payload[32] = {0};
+typedef struct {
+    const char *action_name;       // Standard action identifier (e.g. "FORWARD", "SPIN_180")
+    const char *alias_es;          // Spanish alias (e.g. "avanzar", "dar_vuelta_180")
+    const char *payload_json;      // JSON command payload (e.g. "{\"N\":2,\"D1\":3}")
+    uint32_t default_duration_ms;  // Default pulse duration in ms
+    bool requires_stop_pulse;      // True for motion commands requiring a STOP pulse
+    bool expects_notification;     // Reserved for sensor telemetry/notifications
+} ble_command_entry_t;
 
-    if (strcasecmp(action_str, "FORWARD") == 0 || strcasecmp(action_str, "avanzar") == 0) {
-        snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":3}");
-    } else if (strcasecmp(action_str, "BACKWARD") == 0 || strcasecmp(action_str, "retroceder") == 0) {
-        snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":4}");
-    } else if (strcasecmp(action_str, "LEFT") == 0 || strcasecmp(action_str, "izquierda") == 0 ||
-               strcasecmp(action_str, "SPIN_180") == 0 || strcasecmp(action_str, "dar_vuelta_180") == 0) {
-        snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":1}");
-    } else if (strcasecmp(action_str, "RIGHT") == 0 || strcasecmp(action_str, "derecha") == 0) {
-        snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":2}");
-    } else { // STOP / detener
-        snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":5}");
+static const ble_command_entry_t s_cmd_dispatch_table[] = {
+    { "FORWARD",  "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
+    { "BACKWARD", "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
+    { "LEFT",     "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
+    { "RIGHT",    "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
+    { "SPIN_180", "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
+    { "STOP",     "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
+};
+
+static const size_t s_cmd_dispatch_table_count = sizeof(s_cmd_dispatch_table) / sizeof(s_cmd_dispatch_table[0]);
+
+static const ble_command_entry_t *ble_find_command_entry(const char *action)
+{
+    if (!action) return &s_cmd_dispatch_table[5]; // Default STOP
+
+    for (size_t i = 0; i < s_cmd_dispatch_table_count; i++) {
+        if (strcasecmp(action, s_cmd_dispatch_table[i].action_name) == 0 ||
+            (s_cmd_dispatch_table[i].alias_es && strcasecmp(action, s_cmd_dispatch_table[i].alias_es) == 0)) {
+            return &s_cmd_dispatch_table[i];
+        }
     }
 
+    return &s_cmd_dispatch_table[5]; // Default to STOP if unmatched
+}
+
+static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_handle, const ble_command_entry_t *cmd)
+{
+    const char *payload = (cmd && cmd->payload_json) ? cmd->payload_json : "{\"N\":2,\"D1\":5}";
+    const char *action_name = (cmd && cmd->action_name) ? cmd->action_name : "STOP";
     uint16_t payload_len = (uint16_t)strlen(payload);
 
     ESP_LOGI(TAG, "ELEGOO COMMAND:\n  action=%s\n  handle=0x%04X\n  payload=%s",
-             action_str, char_handle, payload);
+             action_name, char_handle, payload);
 
     int write_rc = ble_gattc_write_no_rsp_flat(conn_handle, char_handle, payload, payload_len);
 
@@ -4051,7 +4072,8 @@ static void ble_pulse_stop_task(void *param)
         vTaskDelay(pdMS_TO_TICKS(p->duration_ms));
         ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
         if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
-            send_elegoo_command_payload(p->conn_handle, p->char_handle, "STOP");
+            const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
+            send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd);
             vTaskDelay(pdMS_TO_TICKS(300));
             ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
             ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -4064,6 +4086,8 @@ static void ble_pulse_stop_task(void *param)
 esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, const char *action, uint32_t duration_ms)
 {
     if (!name_or_alias || !action) return ESP_ERR_INVALID_ARG;
+
+    const ble_command_entry_t *cmd = ble_find_command_entry(action);
 
     ble_device_info_t target_dev = {0};
     bool dev_found = false;
@@ -4087,33 +4111,14 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         return ESP_ERR_NOT_FOUND;
     }
 
-    char cmd_char = 'S';
-    uint32_t pulse_duration = duration_ms;
-
-    if (strcasecmp(action, "FORWARD") == 0 || strcasecmp(action, "avanzar") == 0) {
-        cmd_char = 'F';
-        if (pulse_duration == 0) pulse_duration = 1000;
-    } else if (strcasecmp(action, "BACKWARD") == 0 || strcasecmp(action, "retroceder") == 0) {
-        cmd_char = 'B';
-        if (pulse_duration == 0) pulse_duration = 1000;
-    } else if (strcasecmp(action, "LEFT") == 0 || strcasecmp(action, "izquierda") == 0) {
-        cmd_char = 'L';
-        if (pulse_duration == 0) pulse_duration = 500;
-    } else if (strcasecmp(action, "RIGHT") == 0 || strcasecmp(action, "derecha") == 0) {
-        cmd_char = 'R';
-        if (pulse_duration == 0) pulse_duration = 500;
-    } else if (strcasecmp(action, "SPIN_180") == 0 || strcasecmp(action, "dar_vuelta_180") == 0) {
-        cmd_char = 'L';
-        pulse_duration = 650;
-    } else if (strcasecmp(action, "STOP") == 0 || strcasecmp(action, "detener") == 0) {
-        cmd_char = 'S';
-        pulse_duration = 0;
-    } else {
-        cmd_char = action[0];
+    /* Custom Duration Precedence: Caller's duration_ms takes precedence over default_duration_ms if > 0 */
+    uint32_t pulse_duration = 0;
+    if (cmd->requires_stop_pulse) {
+        pulse_duration = (duration_ms > 0) ? duration_ms : cmd->default_duration_ms;
     }
 
-    ESP_LOGI(TAG, "🤖 Enviando comando BLE: Acción='%s' (Byte='%c') a '%s' por %lu ms",
-             action, cmd_char, target_dev.name, pulse_duration);
+    ESP_LOGI(TAG, "🤖 Enviando comando BLE: Acción='%s' (CMD='%s') a '%s' por %lu ms",
+             action, cmd->action_name, target_dev.name, pulse_duration);
 
     uint16_t current_conn_handle = target_dev.conn_handle;
     uint16_t write_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : 0x0006;
@@ -4179,12 +4184,12 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
 conn_ready:
     if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-        send_elegoo_command_payload(current_conn_handle, write_handle, action);
+        send_elegoo_command_payload(current_conn_handle, write_handle, cmd);
     } else {
         ESP_LOGW(TAG, "⚠️ No se pudo obtener conexión lista con '%s' para enviar comando", target_dev.name);
     }
 
-    if (pulse_duration > 0 && cmd_char != 'S') {
+    if (cmd->requires_stop_pulse && pulse_duration > 0) {
         ble_pulse_stop_param_t *param = heap_caps_malloc(sizeof(ble_pulse_stop_param_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!param) {
             param = malloc(sizeof(ble_pulse_stop_param_t)); /* Fallback a DRAM */
@@ -4196,7 +4201,7 @@ conn_ready:
             param->duration_ms = pulse_duration;
             BaseType_t task_ret = xTaskCreatePinnedToCoreWithCaps(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (task_ret != pdPASS) {
-                ESP_LOGE(TAG, "\u274c Failed to create ble_pulse_stop task; freeing param to prevent leak");
+                ESP_LOGE(TAG, "❌ Failed to create ble_pulse_stop task; freeing param to prevent leak");
                 free(param);
             }
         }
