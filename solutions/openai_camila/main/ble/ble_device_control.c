@@ -15,6 +15,7 @@
 #include <stdatomic.h>
 
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -171,7 +172,7 @@ static bool module_stopping = false;
 static bool ble_runtime_resources_ready = false;
 static ble_discovery_metrics_t discovery_metrics;
 // Base de datos de perfiles conocidos
-static known_device_profile_t g_known_profiles[MAX_KNOWN_PROFILES];
+static EXT_RAM_BSS_ATTR known_device_profile_t g_known_profiles[MAX_KNOWN_PROFILES];
 static int g_known_profiles_count = 0;
 static atomic_int g_active_ble_operations = 0;
 
@@ -271,13 +272,14 @@ static struct
 static bool module_initialized = false;
 static bool scanning_active = false;
 static ble_device_callbacks_t device_callbacks = {0};
-static ble_device_info_t discovered_devices[BLE_DEVICE_MAX_DEVICES];
+static EXT_RAM_BSS_ATTR ble_device_info_t discovered_devices[BLE_DEVICE_MAX_DEVICES];
 static int discovered_count = 0;
 static SemaphoreHandle_t devices_mutex = NULL;
-static discovery_context_t discovery_contexts[BLE_DEVICE_MAX_DEVICES];
+static EXT_RAM_BSS_ATTR discovery_context_t discovery_contexts[BLE_DEVICE_MAX_DEVICES];
 static int active_discoveries = 0;
 static SemaphoreHandle_t scan_complete_semaphore = NULL;
 static SemaphoreHandle_t ble_control_worker_stop_signal = NULL;
+static SemaphoreHandle_t s_ondemand_conn_sem = NULL;  /* Binary sem: signals on-demand GATT discovery done/failed */
 static bool smart_task_shutdown_requested = false;
 
 /* Private function declarations */
@@ -735,6 +737,16 @@ static esp_err_t ble_device_runtime_resources_init(void)
         {
             ESP_LOGE(TAG, "Error creando scan_complete_semaphore.");
             ble_log_memory_snapshot("runtime:scan_sem_failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (s_ondemand_conn_sem == NULL)
+    {
+        s_ondemand_conn_sem = xSemaphoreCreateBinary();
+        if (s_ondemand_conn_sem == NULL)
+        {
+            ESP_LOGE(TAG, "Error creando s_ondemand_conn_sem.");
             return ESP_ERR_NO_MEM;
         }
     }
@@ -1904,8 +1916,11 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             else
             {
                 ESP_LOGE(TAG, "No se pudo encontrar el dispositivo del intento de conexión fallido en la lista.");
-                // Aún así, decrementar el contador para evitar un bloqueo permanente
                 DECR_ACTIVE_OPS();
+            }
+            /* Signal on-demand caller that connection failed */
+            if (s_ondemand_conn_sem != NULL) {
+                xSemaphoreGive(s_ondemand_conn_sem);
             }
         }
         break;
@@ -1948,14 +1963,16 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         {
             ESP_LOGI(TAG, "Dispositivo '%s' desconectado", device->name);
 
-            // Si el dispositivo no era conocido, estábamos perfilándolo. La operación ha terminado.
             if (!device->is_known)
             {
                 DECR_ACTIVE_OPS();
             }
 
-            // --- LA CORRECCIÓN CLAVE ---
-            // Solo cambiar a DISCONNECTED si el dispositivo NO está ya en un estado final.
+            /* If link drops while GATT discovery/profiling was active, unblock on-demand caller immediately */
+            if (!device->char_discovered && s_ondemand_conn_sem != NULL) {
+                xSemaphoreGive(s_ondemand_conn_sem);
+            }
+
             if (device->state != BLE_DEVICE_STATE_ERROR && device->state != BLE_DEVICE_STATE_DISCOVERY_COMPLETE)
             {
                 update_device_state(device->addr, BLE_DEVICE_STATE_DISCONNECTED);
@@ -1963,14 +1980,12 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             else
             {
                 ESP_LOGI(TAG, "Manteniendo estado final (%d) para '%s' tras desconexión.", device->state, device->name);
-                // Opcionalmente, aquí también podemos limpiar el handle para asegurar consistencia
                 if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
                 {
                     device->conn_handle = BLE_HS_CONN_HANDLE_NONE;
                     xSemaphoreGive(devices_mutex);
                 }
             }
-            // --- FIN DE LA CORRECCIÓN ---
 
             if (device_callbacks.on_device_disconnected)
             {
@@ -2526,6 +2541,10 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
         {
             ESP_LOGW(TAG, "No se encontraron características de perfiles conocidos para '%s'", device->name);
             mark_device_as_error_and_disconnect(device);
+        }
+        /* Signal on-demand caller regardless of success/failure */
+        if (s_ondemand_conn_sem != NULL) {
+            xSemaphoreGive(s_ondemand_conn_sem);
         }
         return 0;
     }
@@ -4001,7 +4020,8 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
         snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":3}");
     } else if (strcasecmp(action_str, "BACKWARD") == 0 || strcasecmp(action_str, "retroceder") == 0) {
         snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":4}");
-    } else if (strcasecmp(action_str, "LEFT") == 0 || strcasecmp(action_str, "izquierda") == 0) {
+    } else if (strcasecmp(action_str, "LEFT") == 0 || strcasecmp(action_str, "izquierda") == 0 ||
+               strcasecmp(action_str, "SPIN_180") == 0 || strcasecmp(action_str, "dar_vuelta_180") == 0) {
         snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":1}");
     } else if (strcasecmp(action_str, "RIGHT") == 0 || strcasecmp(action_str, "derecha") == 0) {
         snprintf(payload, sizeof(payload), "{\"N\":2,\"D1\":2}");
@@ -4100,33 +4120,60 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
     if (current_conn_handle == BLE_HS_CONN_HANDLE_NONE || current_conn_handle == 0 || target_dev.state != BLE_DEVICE_STATE_CONNECTED) {
         ESP_LOGI(TAG, "Iniciando conexión bajo demanda con %s...", target_dev.name);
-        
-        // PASO 4: Marcador Heap para la ventana de conexión bajo demanda durante audio WebRTC activo
         ble_log_memory_snapshot("ble_central:ondemand_connect_during_audio");
 
+        /* Drain any stale token left by a previous timed-out operation (mandatory amendment) */
+        if (s_ondemand_conn_sem != NULL) {
+            while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
+        }
+
         ble_device_connect(target_dev.addr, target_dev.addr_type);
-        
-        // Esperar dinámicamente hasta 3000ms (pasos de 50ms) a que la conexión GATT esté completamente lista
-        for (int wait = 0; wait < 60; wait++) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-            if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                for (int i = 0; i < discovered_count; i++) {
-                    if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
-                        if (discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+
+        /* Block efficiently until GATT discovery completes, fails, or 3s timeout */
+        if (s_ondemand_conn_sem != NULL) {
+            BaseType_t sem_result = xSemaphoreTake(s_ondemand_conn_sem, pdMS_TO_TICKS(3000));
+            if (sem_result != pdTRUE) {
+                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión GATT con '%s' (3000 ms)", target_dev.name);
+            }
+        } else {
+            /* Fallback: legacy short poll if semaphore was not allocated */
+            for (int wait = 0; wait < 60; wait++) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    for (int i = 0; i < discovered_count; i++) {
+                        if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0 &&
+                            discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
                             discovered_devices[i].conn_handle != 0 &&
                             (discovered_devices[i].state == BLE_DEVICE_STATE_CONNECTED || discovered_devices[i].state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) &&
                             discovered_devices[i].char_discovered) {
                             current_conn_handle = discovered_devices[i].conn_handle;
-                            if (discovered_devices[i].char_val_handle > 0) {
-                                write_handle = discovered_devices[i].char_val_handle;
-                            }
+                            if (discovered_devices[i].char_val_handle > 0) write_handle = discovered_devices[i].char_val_handle;
                             xSemaphoreGive(devices_mutex);
                             goto conn_ready;
                         }
                     }
+                    xSemaphoreGive(devices_mutex);
                 }
-                xSemaphoreGive(devices_mutex);
             }
+        }
+
+        /* Single mutex acquisition post-wake to extract handles */
+        if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            for (int i = 0; i < discovered_count; i++) {
+                if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
+                    if (discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+                        discovered_devices[i].conn_handle != 0 &&
+                        (discovered_devices[i].state == BLE_DEVICE_STATE_CONNECTED || discovered_devices[i].state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) &&
+                        discovered_devices[i].char_discovered) {
+                        current_conn_handle = discovered_devices[i].conn_handle;
+                        if (discovered_devices[i].char_val_handle > 0) write_handle = discovered_devices[i].char_val_handle;
+                    } else {
+                        ESP_LOGW(TAG, "⚠️ Dispositivo '%s' no listo para comandos tras espera GATT.", target_dev.name);
+                    }
+                    break;
+                }
+            }
+            xSemaphoreGive(devices_mutex);
         }
     }
 
@@ -4138,13 +4185,20 @@ conn_ready:
     }
 
     if (pulse_duration > 0 && cmd_char != 'S') {
-        ble_pulse_stop_param_t *param = malloc(sizeof(ble_pulse_stop_param_t));
+        ble_pulse_stop_param_t *param = heap_caps_malloc(sizeof(ble_pulse_stop_param_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!param) {
+            param = malloc(sizeof(ble_pulse_stop_param_t)); /* Fallback a DRAM */
+        }
         if (param) {
             memcpy(param->addr, target_dev.addr, 6);
             param->conn_handle = current_conn_handle;
             param->char_handle = write_handle;
             param->duration_ms = pulse_duration;
-            xTaskCreatePinnedToCoreWithCaps(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            BaseType_t task_ret = xTaskCreatePinnedToCoreWithCaps(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (task_ret != pdPASS) {
+                ESP_LOGE(TAG, "\u274c Failed to create ble_pulse_stop task; freeing param to prevent leak");
+                free(param);
+            }
         }
     }
 
