@@ -115,6 +115,14 @@
 // Variables globales
 static const char *TAG = "BLE_DEVICE_CTRL";
 
+#define ELEGOO_NOTIFY_VALUE_HANDLE  0x0003
+#define ELEGOO_NOTIFY_CCCD_HANDLE   0x0004
+#define ELEGOO_COMMAND_VALUE_HANDLE 0x0006
+
+static SemaphoreHandle_t s_telemetry_sem = NULL;
+static SemaphoreHandle_t s_cccd_ack_sem = NULL;
+static char s_last_telemetry_buf[64] = {0};
+
 static bool ble_central_diagnostic_enabled(void)
 {
     return BLE_CENTRAL_DIAGNOSTIC_ENABLED != 0;
@@ -1195,6 +1203,16 @@ esp_err_t ble_device_control_start(ble_device_callbacks_t *callbacks)
 {
     ble_log_memory_snapshot("start:entry");
 
+    if (ble_hs_cfg.sm_sec_lvl >= 2) {
+        const int prev_sec_lvl = ble_hs_cfg.sm_sec_lvl;
+        ble_hs_cfg.sm_sec_lvl = 0;
+        ESP_LOGW(TAG,
+                 "ble_hs_cfg.sm_sec_lvl lowered from %d to 0: CONFIG_BT_NIMBLE_SM_LVL=2 forces NimBLE "
+                 "(ble_att_svr_rx_notify) to silently discard all incoming GATT notifications on "
+                 "unencrypted links; ELEGOO BT16 telemetry requires this relaxation.",
+                 prev_sec_lvl);
+    }
+
     if (module_initialized)
     {
         ESP_LOGI(TAG, "Módulo de Control de Dispositivos ya inicializado.");
@@ -1924,6 +1942,50 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             }
         }
         break;
+
+    case BLE_GAP_EVENT_NOTIFY_RX:
+    {
+        uint16_t raw_conn = event->notify_rx.conn_handle;
+        uint16_t raw_attr = event->notify_rx.attr_handle;
+        bool has_mbuf = (event->notify_rx.om != NULL);
+        uint16_t om_len = has_mbuf ? OS_MBUF_PKTLEN(event->notify_rx.om) : 0;
+
+        uint8_t raw_buf[64] = {0};
+        if (has_mbuf && om_len > 0) {
+            uint16_t copy_len = (om_len < (sizeof(raw_buf) - 1)) ? om_len : (sizeof(raw_buf) - 1);
+            os_mbuf_copydata(event->notify_rx.om, 0, copy_len, raw_buf);
+        }
+
+        ESP_LOGI(TAG, "[BLE RX RAW] BLE_GAP_EVENT_NOTIFY_RX conn=%d attr=0x%04X len=%u text='%s'",
+                 raw_conn, raw_attr, om_len, (char *)raw_buf);
+
+        if (has_mbuf && om_len > 0 && raw_attr == ELEGOO_NOTIFY_VALUE_HANDLE) {
+            char *rx_buf = (char *)raw_buf;
+            char *open_brace = strchr(rx_buf, '{');
+            char *close_brace = strchr(rx_buf, '}');
+            if (open_brace != NULL && close_brace != NULL && close_brace > open_brace) {
+                char inner[32] = {0};
+                size_t inner_len = close_brace - open_brace - 1;
+                if (inner_len > 0 && inner_len < sizeof(inner)) {
+                    strncpy(inner, open_brace + 1, inner_len);
+                }
+                char *underscore = strchr(inner, '_');
+                if (underscore != NULL && strlen(underscore + 1) > 0) {
+                    snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s cm", underscore + 1);
+                } else {
+                    snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", inner);
+                }
+            } else {
+                snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", rx_buf);
+            }
+
+            ESP_LOGI(TAG, "✅ [BLE TELEMETRY] Parsed ultrasonic distance = %s", s_last_telemetry_buf);
+            if (s_telemetry_sem != NULL) {
+                xSemaphoreGive(s_telemetry_sem);
+            }
+        }
+        break;
+    }
 
     case BLE_GAP_EVENT_ENC_CHANGE:
         ESP_LOGI(TAG, "🔐 Evento de Encriptación Cambiada (status: %d)", event->enc_change.status);
@@ -4002,12 +4064,14 @@ static int on_gatt_write_cb(uint16_t conn_handle, const struct ble_gatt_error *e
 {
     if (error) {
         if (error->status == 0) {
-            ESP_LOGI(TAG, "✅ Peer ACK recibido exitosamente para escritura GATT (conn_handle=%d, att_handle=0x%04X)!",
-                     conn_handle, error->att_handle);
+            ESP_LOGI(TAG, "✅ Peer ACK received for GATT write (conn_handle=%d)", conn_handle);
         } else {
             ESP_LOGE(TAG, "❌ Error de peer en escritura GATT! conn_handle=%d, status=%d (0x%02X), att_handle=0x%04X",
                      conn_handle, error->status, error->status, error->att_handle);
         }
+    }
+    if (arg != NULL) {
+        xSemaphoreGive((SemaphoreHandle_t)arg);
     }
     return 0;
 }
@@ -4022,15 +4086,43 @@ typedef struct {
 } ble_command_entry_t;
 
 static const ble_command_entry_t s_cmd_dispatch_table[] = {
-    { "FORWARD",  "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
-    { "BACKWARD", "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
-    { "LEFT",     "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
-    { "RIGHT",    "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
-    { "SPIN_180", "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
-    { "STOP",     "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
+    { "FORWARD",         "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
+    { "BACKWARD",        "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
+    { "LEFT",            "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
+    { "RIGHT",           "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
+    { "SPIN_180",        "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
+    { "STOP",            "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
+    { "READ_ULTRASONIC", "leer_ultrasonico", "{\"N\":21,\"D1\":2}", 0,   false, true  },
 };
 
 static const size_t s_cmd_dispatch_table_count = sizeof(s_cmd_dispatch_table) / sizeof(s_cmd_dispatch_table[0]);
+
+static esp_err_t ble_device_enable_notifications(uint16_t conn_handle, uint16_t cccd_handle)
+{
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE || conn_handle == 0) return ESP_ERR_INVALID_STATE;
+    if (cccd_handle == 0) cccd_handle = ELEGOO_NOTIFY_CCCD_HANDLE;
+
+    if (s_cccd_ack_sem == NULL) {
+        s_cccd_ack_sem = xSemaphoreCreateBinary();
+    }
+    if (s_cccd_ack_sem != NULL) {
+        while (xSemaphoreTake(s_cccd_ack_sem, 0) == pdTRUE) { /* drain stale token */ }
+    }
+
+    uint8_t cccd_val[2] = {0x01, 0x00}; // Enable notifications
+
+    ESP_LOGI(TAG, "🔔 Habilitando notificaciones CCCD (conn_handle=%u, cccd_handle=0x%04X)...",
+             conn_handle, cccd_handle);
+
+    int rc = ble_gattc_write_flat(conn_handle, cccd_handle, cccd_val, sizeof(cccd_val), on_gatt_write_cb, (void *)s_cccd_ack_sem);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "[BLE TELEMETRY] STOP. CCCD enable write initiation failed: rc=%d", rc);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "✅ Solicitud de notificaciones CCCD enviada en handle 0x%04X", cccd_handle);
+    return ESP_OK;
+}
 
 static const ble_command_entry_t *ble_find_command_entry(const char *action)
 {
@@ -4183,10 +4275,78 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
     }
 
 conn_ready:
-    if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-        send_elegoo_command_payload(current_conn_handle, write_handle, cmd);
+    if (cmd->expects_notification) {
+        uint16_t command_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : ELEGOO_COMMAND_VALUE_HANDLE;
+        uint16_t notify_handle = ELEGOO_NOTIFY_VALUE_HANDLE;
+        uint16_t cccd_handle = ELEGOO_NOTIFY_CCCD_HANDLE;
+
+        ESP_LOGI(TAG, "📡 Requesting ultrasonic distance telemetry from '%s'...", target_dev.name);
+
+        if (s_telemetry_sem == NULL) {
+            s_telemetry_sem = xSemaphoreCreateBinary();
+        }
+        if (s_telemetry_sem != NULL) {
+            while (xSemaphoreTake(s_telemetry_sem, 0) == pdTRUE) { /* drain */ }
+        }
+        memset(s_last_telemetry_buf, 0, sizeof(s_last_telemetry_buf));
+
+        /* Step 1: Write CCCD 0x0004 = 01 00 via Write Request and wait for ACK */
+        ESP_LOGI(TAG, "🔔 Enabling notifications (CCCD 0x%04X)...", cccd_handle);
+        esp_err_t cccd_res = ble_device_enable_notifications(current_conn_handle, cccd_handle);
+        if (cccd_res != ESP_OK) {
+            ESP_LOGE(TAG, "❌ CCCD enable write request failed (rc=%d). Aborting telemetry query.", cccd_res);
+            ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            return ESP_FAIL;
+        }
+
+        if (s_cccd_ack_sem != NULL) {
+            if (xSemaphoreTake(s_cccd_ack_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
+                ESP_LOGI(TAG, "✅ CCCD notification subscription confirmed");
+            } else {
+                ESP_LOGE(TAG, "❌ Timeout waiting for CCCD write ACK. Aborting telemetry query.");
+                ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return ESP_FAIL;
+            }
+        }
+
+        /* Step 2: Inject 150 ms Radio Stabilization Delay */
+        ESP_LOGI(TAG, "⏱️ Radio stabilization pause (150 ms)...");
+        vTaskDelay(pdMS_TO_TICKS(150));
+
+        /* Step 3: Send 15-byte command payload {"N":21,"D1":2} strictly without "H":1 or newlines */
+        const char *payload_str = "{\"N\":21,\"D1\":2}";
+        ESP_LOGI(TAG, "📤 Transmitting 15-byte command payload: %s", payload_str);
+        int write_rc = ble_gattc_write_no_rsp_flat(current_conn_handle, command_handle, (const uint8_t *)payload_str, (uint16_t)strlen(payload_str));
+        if (write_rc != 0) {
+            ESP_LOGW(TAG, "⚠️ Write Without Response returned rc=%d", write_rc);
+        }
+
+        /* Step 4: Wait up to 1500 ms for notification on handle 0x0003 */
+        ESP_LOGI(TAG, "⏳ Waiting for telemetry notification (1500 ms)...");
+        bool telem_success = false;
+        if (s_telemetry_sem != NULL && xSemaphoreTake(s_telemetry_sem, pdMS_TO_TICKS(1500)) == pdTRUE) {
+            if (strlen(s_last_telemetry_buf) > 0) {
+                ESP_LOGI(TAG, "✅ Ultrasonic distance telemetry received: '%s'", s_last_telemetry_buf);
+                telem_success = true;
+            }
+        } else {
+            ESP_LOGE(TAG, "❌ Telemetry response timed out after 1500 ms");
+            telem_success = false;
+        }
+
+        /* Step 5: Disconnect cleanly */
+        ESP_LOGI(TAG, "🔌 Disconnecting BLE session...");
+        ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+        if (!telem_success) {
+            return ESP_FAIL;
+        }
     } else {
-        ESP_LOGW(TAG, "⚠️ No se pudo obtener conexión lista con '%s' para enviar comando", target_dev.name);
+        if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
+            send_elegoo_command_payload(current_conn_handle, write_handle, cmd);
+        } else {
+            ESP_LOGW(TAG, "⚠️ No se pudo obtener conexión lista con '%s' para enviar comando", target_dev.name);
+        }
     }
 
     if (cmd->requires_stop_pulse && pulse_duration > 0) {
@@ -4214,4 +4374,9 @@ esp_err_t ble_device_trigger_ondemand_scan(uint32_t duration_ms)
 {
     ESP_LOGI(TAG, "🔍 Disparando escaneo BLE bajo demanda (%lu ms)...", duration_ms);
     return ble_device_start_smart_task();
+}
+
+const char *ble_device_get_last_telemetry(void)
+{
+    return s_last_telemetry_buf;
 }

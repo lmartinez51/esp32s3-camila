@@ -1738,7 +1738,7 @@ static int send_session_update(void)
         "{"
         "  \"type\": \"function\","
         "  \"name\": \"control_ble_device\","
-        "  \"description\": \"Use this tool to move or control a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD (avanzar), BACKWARD (retroceder), LEFT (izquierda), RIGHT (derecha), STOP (detener), SPIN_180 (dar vuelta 180 grados).\","
+        "  \"description\": \"Use this tool to move, control, or read telemetry from a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180, READ_ULTRASONIC (read obstacle distance sensor).\","
         "  \"parameters\": {"
         "    \"type\": \"object\","
         "    \"properties\": {"
@@ -1748,7 +1748,8 @@ static int send_session_update(void)
         "      },"
         "      \"action\": {"
         "        \"type\": \"string\","
-        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180'.\""
+        "        \"enum\": [\"FORWARD\", \"BACKWARD\", \"LEFT\", \"RIGHT\", \"STOP\", \"SPIN_180\", \"READ_ULTRASONIC\"],"
+        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180', 'READ_ULTRASONIC'.\""
         "      },"
         "      \"duration_ms\": {"
         "        \"type\": \"integer\","
@@ -2761,7 +2762,14 @@ static int process_json(const char *json_data, int json_size)
             esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
             ui_clear_status_message();
             if (ctrl_err == ESP_OK) {
-                send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
+                if (strcasecmp(act_str, "READ_ULTRASONIC") == 0 || strcasecmp(act_str, "leer_ultrasonico") == 0) {
+                    const char *telemetry = ble_device_get_last_telemetry();
+                    char resp_buf[128];
+                    snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"success\", \"distance\": \"%s\"}", (telemetry && strlen(telemetry) > 0) ? telemetry : "desconocida");
+                    send_function_output(call_id, resp_buf);
+                } else {
+                    send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
+                }
             } else {
                 send_function_output(call_id, "{\"status\": \"error\", \"message\": \"No se pudo enviar el comando al dispositivo BLE\"}");
             }

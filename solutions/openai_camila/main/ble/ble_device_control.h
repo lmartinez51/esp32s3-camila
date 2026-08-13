@@ -352,6 +352,11 @@ extern "C"
     esp_err_t ble_device_trigger_ondemand_scan(uint32_t duration_ms);
 
     /**
+     * @brief Returns the last parsed telemetry string (e.g. "25 cm") from the ultrasonic sensor.
+     */
+    const char *ble_device_get_last_telemetry(void);
+
+    /**
      * @brief Inicializa el sistema de descubrimiento inteligente
      *
      * Configura todos los parámetros necesarios para el funcionamiento

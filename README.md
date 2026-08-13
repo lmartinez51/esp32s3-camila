@@ -17,7 +17,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 ## ⚙️ Key Features
 
 - 📡 **Presence Detection & Beacon (BLE & ESP-NOW)** — uses BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant. It also functions as an ESP-NOW beacon, sending on-demand UDP packets to other devices.
-- 🤖 **BLE Device & Robotics Natural Language Control** — real-time discovery of nearby Bluetooth devices, custom persistent NVS alias assignment (e.g. renaming ELEGOO BT16 to 'Carro'), and natural language voice commands over WebRTC to control movement (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180) and smart peripherals.
+- 🤖 **BLE Device & Robotics Natural Language Control & Telemetry** — real-time discovery of nearby Bluetooth devices, custom persistent NVS alias assignment (e.g. renaming ELEGOO BT16 to 'Carro'), natural language voice commands over WebRTC to control movement (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180), and real-time ultrasonic sensor telemetry querying (READ_ULTRASONIC) for obstacle distance measurements.
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2.1** model).
 - 🎧 **Dynamic audio control** — toggle mute/unmute with a robust pipeline restart strategy.
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
@@ -142,7 +142,8 @@ You can control various device features simply by talking to Camila. Here are so
   - **Action**: Triggers `set_ble_device_alias`.
 - **Control BLE Robot / Device**:
   - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."* (Context: "Camila, drive the car forward for 2 seconds then turn left.")
-  - **Action**: Triggers `control_ble_device`.
+  - *"Camila, ¿a qué distancia hay un obstáculo?"* (Context: "Camila, how far is the obstacle?")
+  - **Action**: Triggers `control_ble_device` (with action `FORWARD`, `SPIN_180`, or `READ_ULTRASONIC`).
 
 ---
 

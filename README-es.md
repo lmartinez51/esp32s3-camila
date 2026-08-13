@@ -13,7 +13,7 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 ## ⚙️ Características Principales
 
 - 📡 **Detección de Presencia y Baliza (BLE & ESP-NOW)** — utiliza la proximidad BLE de un smartphone autorizado para validar la identidad del usuario antes de despertar a la asistente. También funciona como una baliza (beacon) ESP-NOW, enviando paquetes UDP bajo demanda a otros dispositivos.
-- 🤖 **Control en Lenguaje Natural de Dispositivos BLE y Robótica** — descubrimiento en tiempo real de dispositivos Bluetooth cercanos, asignación de apodos personalizados guardados en NVS (ej. renombrar ELEGOO BT16 a 'Carro') y comandos de voz en lenguaje natural sobre WebRTC para controlar movimiento (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180) y periféricos inteligentes.
+- 🤖 **Control en Lenguaje Natural y Telemetría de Dispositivos BLE y Robótica** — descubrimiento en tiempo real de dispositivos Bluetooth cercanos, asignación de apodos personalizados guardados en NVS (ej. renombrar ELEGOO BT16 a 'Carro'), comandos de voz en lenguaje natural sobre WebRTC para controlar movimiento (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180) y consulta de telemetría de sensores en tiempo real (READ_ULTRASONIC) para medición de distancia a obstáculos.
 - 🎙️ **Conversación en tiempo real** utilizando la **API Realtime** de OpenAI vía WebRTC (impulsado por el modelo **gpt-realtime-2.1**).
 - 🎧 **Control dinámico de audio** — activa o desactiva el silencio con una estrategia robusta de reinicio de la tubería de audio.
 - 🤫 **Modo Silencio Inteligente** — cuando el usuario pide al asistente que guarde silencio, este silencia el micrófono pero mantiene activa la sesión, pudiendo enviar mensajes cortos de solo texto a la pantalla.
@@ -138,7 +138,8 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con Camil
   - **Acción**: Ejecuta `set_ble_device_alias`.
 - **Controlar Robot / Dispositivo BLE**:
   - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."*
-  - **Acción**: Ejecuta `control_ble_device`.
+  - *"Camila, ¿a qué distancia está el obstáculo?"*
+  - **Acción**: Ejecuta `control_ble_device` (con acción `FORWARD`, `SPIN_180`, o `READ_ULTRASONIC`).
 
 ---
 
