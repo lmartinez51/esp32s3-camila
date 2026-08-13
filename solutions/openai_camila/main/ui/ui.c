@@ -535,6 +535,16 @@ static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
         return false;
     }
 
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > BSP_LCD_H_RES) x1 = BSP_LCD_H_RES;
+    if (y1 > BSP_LCD_V_RES) y1 = BSP_LCD_V_RES;
+    if (x0 >= x1 || y0 >= y1)
+    {
+        xSemaphoreGive(s_panel_mutex);
+        return false;
+    }
+
     int w = x1 - x0;
     int max_bytes_per_chunk = 4096; // 4KB to safely fit in heavily fragmented DMA memory
     int rows_per_chunk = max_bytes_per_chunk / (w * 2);
@@ -876,38 +886,52 @@ static void ui_draw_mute_countdown_band(void)
 
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
 {
-    int title_map[32];
-    int title_chars = title ? convert_string_to_char_map(title, title_map, 32) : 0;
+    char title_buf[64] = {0};
+    char sub_buf[128] = {0};
 
-    // División inteligente multilínea para subtítulos largos
+    if (title && title[0] != '\0') {
+        strncpy(title_buf, title, sizeof(title_buf) - 1);
+        ui_sanitize_text(title_buf);
+    } else {
+        strncpy(title_buf, "Camila AI", sizeof(title_buf) - 1);
+    }
+
+    if (subtitle && subtitle[0] != '\0') {
+        strncpy(sub_buf, subtitle, sizeof(sub_buf) - 1);
+        ui_sanitize_text(sub_buf);
+    }
+
     char sub_line1[32] = {0};
     char sub_line2[32] = {0};
     bool has_sub2 = false;
 
-    if (subtitle && strlen(subtitle) > 0) {
-        if (strlen(subtitle) <= 16) {
-            strncpy(sub_line1, subtitle, sizeof(sub_line1) - 1);
+    if (sub_buf[0] != '\0') {
+        size_t sub_len = strlen(sub_buf);
+        if (sub_len <= 14) {
+            strncpy(sub_line1, sub_buf, sizeof(sub_line1) - 1);
         } else {
-            // Buscar espacio cerca del caracter 16
-            int split_idx = 16;
-            for (int i = 16; i >= 6; i--) {
-                if (subtitle[i] == ' ') {
+            int split_idx = 14;
+            for (int i = 14; i >= 4; i--) {
+                if (sub_buf[i] == ' ' || sub_buf[i] == '/') {
                     split_idx = i;
                     break;
                 }
             }
-            strncpy(sub_line1, subtitle, split_idx);
+            strncpy(sub_line1, sub_buf, split_idx);
             sub_line1[split_idx] = '\0';
-            const char *rest = subtitle + split_idx + (subtitle[split_idx] == ' ' ? 1 : 0);
+            const char *rest = sub_buf + split_idx + (sub_buf[split_idx] == ' ' ? 1 : 0);
             strncpy(sub_line2, rest, sizeof(sub_line2) - 1);
-            if (strlen(sub_line2) > 0) {
+            if (sub_line2[0] != '\0') {
                 has_sub2 = true;
             }
         }
     }
 
+    int title_map[32];
     int sub1_map[32];
     int sub2_map[32];
+
+    int title_chars = convert_string_to_char_map(title_buf, title_map, 32);
     int sub1_chars = sub_line1[0] != '\0' ? convert_string_to_char_map(sub_line1, sub1_map, 32) : 0;
     int sub2_chars = has_sub2 ? convert_string_to_char_map(sub_line2, sub2_map, 32) : 0;
 
@@ -917,13 +941,21 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         return;
     }
 
-    const int scale = 2;
-    const int spacing = CHAR_SPACING_SCALE_2X;
-    const int char_h = CHAR_HEIGHT * scale;
-    const int line_gap = 12;
+    int title_scale = (title_chars > 14) ? 1 : 2;
+    int sub1_scale = (sub1_chars > 14) ? 1 : 2;
+    int sub2_scale = (sub2_chars > 14) ? 1 : 2;
+
+    int title_spacing = (title_scale == 2) ? CHAR_SPACING_SCALE_2X : CHAR_SPACING_SCALE_1X;
+    int sub1_spacing = (sub1_scale == 2) ? CHAR_SPACING_SCALE_2X : CHAR_SPACING_SCALE_1X;
+    int sub2_spacing = (sub2_scale == 2) ? CHAR_SPACING_SCALE_2X : CHAR_SPACING_SCALE_1X;
+
+    int title_h = CHAR_HEIGHT * title_scale;
+    int sub1_h = sub1_chars > 0 ? (CHAR_HEIGHT * sub1_scale) : 0;
+    int sub2_h = sub2_chars > 0 ? (CHAR_HEIGHT * sub2_scale) : 0;
+    int line_gap = 12;
 
     int total_lines = (title_chars > 0 ? 1 : 0) + (sub1_chars > 0 ? 1 : 0) + (sub2_chars > 0 ? 1 : 0);
-    int total_h = total_lines * char_h + (total_lines - 1) * line_gap;
+    int total_h = title_h + sub1_h + sub2_h + (total_lines - 1) * line_gap;
     int y = (BSP_LCD_V_RES - total_h) / 2;
 
     clear_screen();
@@ -931,32 +963,32 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
 
     if (title_chars > 0)
     {
-        int title_w = title_chars * (CHAR_WIDTH * scale) + (title_chars - 1) * spacing;
+        int title_w = title_chars * (CHAR_WIDTH * title_scale) + (title_chars - 1) * title_spacing;
         int x = (BSP_LCD_H_RES - title_w) / 2;
-        display_text(x, y, title_map, title_chars, color, scale);
-        y += char_h + line_gap;
+        if (x < 8) x = 8;
+        display_text(x, y, title_map, title_chars, color, title_scale);
+        y += title_h + line_gap;
     }
 
     if (sub1_chars > 0)
     {
-        int sub1_w = sub1_chars * (CHAR_WIDTH * scale) + (sub1_chars - 1) * spacing;
+        int sub1_w = sub1_chars * (CHAR_WIDTH * sub1_scale) + (sub1_chars - 1) * sub1_spacing;
         int x = (BSP_LCD_H_RES - sub1_w) / 2;
-        display_text(x, y, sub1_map, sub1_chars, COLOR_WHITE_BGR565, scale);
-        y += char_h + line_gap;
+        if (x < 8) x = 8;
+        display_text(x, y, sub1_map, sub1_chars, COLOR_WHITE_BGR565, sub1_scale);
+        y += sub1_h + line_gap;
     }
 
     if (sub2_chars > 0)
     {
-        int sub2_w = sub2_chars * (CHAR_WIDTH * scale) + (sub2_chars - 1) * spacing;
+        int sub2_w = sub2_chars * (CHAR_WIDTH * sub2_scale) + (sub2_chars - 1) * sub2_spacing;
         int x = (BSP_LCD_H_RES - sub2_w) / 2;
-        display_text(x, y, sub2_map, sub2_chars, COLOR_WHITE_BGR565, scale);
+        if (x < 8) x = 8;
+        display_text(x, y, sub2_map, sub2_chars, COLOR_WHITE_BGR565, sub2_scale);
     }
 
     ui_backlight_on();
 
-    /* If the mute countdown overlay is active, redraw it directly over the new render.
-     * This does NOT go through ui_show_status_message / s_camila_overlay_mutex.
-     * Only s_panel_mutex is used (inside draw_filled_rect / display_text). */
     if (s_mute_overlay_active && s_mute_overlay_text[0] != '\0')
     {
         ui_draw_mute_countdown_band();
@@ -979,11 +1011,49 @@ void display_welcome_identity(const char *name)
     display_system_phase_message("Camila AI", buf, COLOR_WHITE_BGR565);
 }
 
+void display_error_message(void)
+{
+    display_system_phase_message("SYSTEM ERROR", "Connection Error / Retrying", COLOR_RED_BGR565);
+}
+
+void display_resetting_message(void)
+{
+    display_system_phase_message("REBOOTING", "Resetting system...", COLOR_YELLOW_BGR565);
+}
+
+void display_disconnected_message(void)
+{
+    display_system_phase_message("DISCONNECTED", "WiFi Disconnected", COLOR_RED_BGR565);
+}
+
+void display_network_timeout_message(void)
+{
+    display_system_phase_message("NETWORK TIMEOUT", "WiFi Signal Weak / Retrying...", COLOR_RED_BGR565);
+}
+
+void display_api_key_error_message(void)
+{
+    display_system_phase_message("API ERROR 429", "Quota Exceeded / Rate Limit", COLOR_RED_BGR565);
+}
+
+void display_intruder_alert_message(void)
+{
+    display_system_phase_message("CENTINELA", "Security Alert: Access Denied", COLOR_RED_BGR565);
+}
+
+void display_config_mode_message(void)
+{
+    display_system_phase_message("CONFIG MODE", "Provisioning Active...", COLOR_CYAN_BGR565);
+}
+
+void display_wifi_creds(void)
+{
+    display_system_phase_message("PROVISIONING", "Enter WiFi creds via BLE", COLOR_YELLOW_BGR565);
+}
+
 static char s_camila_overlay_text[64] = {0};
 static uint16_t s_camila_overlay_color = COLOR_WHITE_BGR565;
 static SemaphoreHandle_t s_camila_overlay_mutex = NULL;
-
-
 
 void ui_show_status_message(const char *msg, uint16_t color)
 {
@@ -1053,39 +1123,46 @@ void ui_clear_help_message_below_status(void)
     ui_clear_status_message();
 }
 
-void camila_ui_update_state(ui_state_t state, const char *title, const char *subtitle)
+void camila_ui_update_state_with_color(ui_state_t state, const char *title, const char *subtitle, uint16_t color)
 {
-    uint16_t color;
-    switch (state) {
-        case UI_STATE_BOOT:
-            color = COLOR_MAGENTA_BGR565;
-            break;
-        case UI_STATE_WIFI_CONNECTING:
-            color = COLOR_YELLOW_BGR565;
-            break;
-        case UI_STATE_BLE_SCAN:
-        case UI_STATE_BLE_DISCOVERY:
-            color = COLOR_CYAN_BGR565;
-            break;
-        case UI_STATE_SUCCESS:
-            color = COLOR_GREEN_BGR565;
-            break;
-        case UI_STATE_ACTIVE_WEBRTC:
-            color = COLOR_WHITE_BGR565;
-            break;
-        case UI_STATE_ALERT_VIGILANTE:
-        case UI_STATE_ERROR:
-            color = COLOR_RED_BGR565;
-            break;
-        default:
-            color = COLOR_CYAN_BGR565;
-            break;
+    uint16_t render_color = color;
+    if (render_color == 0) {
+        switch (state) {
+            case UI_STATE_BOOT:
+                render_color = COLOR_MAGENTA_BGR565;
+                break;
+            case UI_STATE_WIFI_CONNECTING:
+                render_color = COLOR_YELLOW_BGR565;
+                break;
+            case UI_STATE_BLE_SCAN:
+            case UI_STATE_BLE_DISCOVERY:
+                render_color = COLOR_CYAN_BGR565;
+                break;
+            case UI_STATE_SUCCESS:
+                render_color = COLOR_GREEN_BGR565;
+                break;
+            case UI_STATE_ACTIVE_WEBRTC:
+                render_color = COLOR_WHITE_BGR565;
+                break;
+            case UI_STATE_ALERT_VIGILANTE:
+            case UI_STATE_ERROR:
+                render_color = COLOR_RED_BGR565;
+                break;
+            default:
+                render_color = COLOR_CYAN_BGR565;
+                break;
+        }
     }
 
     const char *title_str = title ? title : "Camila AI";
     const char *sub_str = subtitle ? subtitle : "Active";
 
-    display_system_phase_message(title_str, sub_str, color);
+    display_system_phase_message(title_str, sub_str, render_color);
+}
+
+void camila_ui_update_state(ui_state_t state, const char *title, const char *subtitle)
+{
+    camila_ui_update_state_with_color(state, title, subtitle, 0);
 }
 
 void camila_ui_show_avatar(void)
@@ -1132,482 +1209,7 @@ void camila_ui_clear_mute_countdown(void)
 
 
 
-/**
- * @brief Displays the WiFi credentials prompt message on the LCD screen.
- *        Shows "Enter WiFi credentials" text in two lines, centered on the screen.
- *        Used to prompt the user to provide WiFi connection details via BLE.
- */
-void display_wifi_creds(void)
-{
-    clear_screen();
-    draw_screen_border(COLOR_YELLOW_BGR565, 2);
 
-    // Primera línea: "Enter WiFi"
-    int char_map_l1[] = {15, 12, 16, 14, 17, 4, 18, 8, 19, 8};
-    int num_chars_l1 = sizeof(char_map_l1) / sizeof(char_map_l1[0]);
-
-    // Segunda línea: "Credentials"
-    int char_map_l2[] = {5, 17, 14, 21, 14, 12, 16, 8, 6, 7, 9};
-    int num_chars_l2 = sizeof(char_map_l2) / sizeof(char_map_l2[0]);
-
-    int scale = 2;
-    int line_spacing = 4;
-    int char_h = CHAR_HEIGHT * scale;
-
-    // Calcular dimensiones de cada línea
-    int width_l1 = num_chars_l1 * (CHAR_WIDTH * scale) + (num_chars_l1 - 1) * CHAR_SPACING_SCALE_2X;
-    int width_l2 = num_chars_l2 * (CHAR_WIDTH * scale) + (num_chars_l2 - 1) * CHAR_SPACING_SCALE_2X;
-
-    // Centrar cada línea independientemente
-    int x_l1 = (BSP_LCD_H_RES - width_l1) / 2;
-    int x_l2 = (BSP_LCD_H_RES - width_l2) / 2;
-
-    // Calcular posición vertical
-    int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
-    int y_l1 = text_y_center + char_h + 12;
-    int y_l2 = y_l1 + char_h + line_spacing;
-
-    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
-
-    // Mostrar ambas líneas en amarillo
-    display_text(x_l1, y_l1, char_map_l1, num_chars_l1, COLOR_YELLOW_BGR565, scale);
-    display_text(x_l2, y_l2, char_map_l2, num_chars_l2, COLOR_YELLOW_BGR565, scale);
-    ui_backlight_on();
-}
-
-/**
- * @brief Displays an error message on the LCD screen.
- *        Shows "Error!" text centered on the screen in red color,
- *        replacing any previous WiFi credential messages.
- *        Used to indicate WiFi connection failure.
- */
-void display_error_message(void)
-{
-    clear_screen();
-    draw_screen_border(COLOR_RED_BGR565, 2);
-
-    // Mapeo de caracteres para "Error!"
-    int char_map[] = {15, 17, 17, 11, 17, 13};
-    int num_chars = sizeof(char_map) / sizeof(char_map[0]);
-    int scale = 2;
-    int char_h = CHAR_HEIGHT * scale;
-
-    // Calcular dimensiones del texto
-    int width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int x = (BSP_LCD_H_RES - width) / 2;
-
-    // Usar la misma posición vertical que display_wifi_creds
-    int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
-    int y = text_y_center + char_h + 12;
-
-    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
-
-    // Mostrar el mensaje de error en rojo
-    display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
-    ui_backlight_on();
-}
-
-/**
- * @brief Displays "Resetting..." message after user action in config mode
- *        Clears ALL content except screen borders
- *        Message is centered both horizontally and vertically
- */
-void display_resetting_message(void)
-{
-    // ========================================================================
-    // Limpiar TODA la pantalla EXCEPTO los bordes
-    // ========================================================================
-
-    // Bordes ocupan ~2px en cada lado (ajusta según tu draw_screen_border)
-    int border_width = 2;
-
-    // Limpiar el área interna completa
-    draw_filled_rect(6, 6, BSP_LCD_H_RES - 12, BSP_LCD_V_RES - 12, COLOR_BLACK_BGR565);
-
-    // ========================================================================
-    // MENSAJE "Resetting..." - Una sola línea, centrado completo
-    // ========================================================================
-
-    // R e s e t t i n g . . .
-    // 17 14 9 14 16 16 8 12 25 26 26 26
-    int resetting_map[] = {32, 14, 9, 14, 16, 16, 8, 12, 25, 26, 26, 26};
-    int num_resetting = sizeof(resetting_map) / sizeof(resetting_map[0]);
-
-    int scale = 2;
-    int msg_height = CHAR_HEIGHT * scale; // 32px
-
-    // Calcular ancho del mensaje
-    int msg_width = num_resetting * (CHAR_WIDTH * scale) +
-                    (num_resetting - 1) * CHAR_SPACING_SCALE_2X;
-
-    // ========================================================================
-    // CENTRADO HORIZONTAL
-    // ========================================================================
-    int x_msg = (BSP_LCD_H_RES - msg_width) / 2;
-
-    // ========================================================================
-    // CENTRADO VERTICAL
-    // Teniendo en cuenta el espacio útil (sin bordes)
-    // ========================================================================
-    int usable_height = BSP_LCD_V_RES - (border_width * 2);
-    int y_msg = border_width + ((usable_height - msg_height) / 2);
-
-    // Mostrar el mensaje en YELLOW (indica proceso en curso)
-    display_text(x_msg, y_msg, resetting_map, num_resetting,
-                 COLOR_YELLOW_BGR565, scale);
-    ui_backlight_on();
-
-    ESP_LOGI(TAG, "Resetting message displayed - Screen cleaned, only borders remain");
-}
-
-/**
- * @brief Displays a "Disconnected!" message on the LCD screen.
- *        Shows the text in red color, centered below the WiFi credentials prompt area.
- *        Used to indicate that the device is not connected to WiFi.
- */
-void display_disconnected_message(void)
-{
-    clear_screen();
-    draw_screen_border(COLOR_RED_BGR565, 2);
-
-    // Mapeo de caracteres para "Disconnected!"
-    // D-i-s-c-o-n-n-e-c-t-e-d-!
-    int char_map[] = {27, 8, 9, 20, 11, 12, 12, 14, 20, 16, 14, 21, 13};
-    int num_chars = sizeof(char_map) / sizeof(char_map[0]);
-    int scale = 2;
-    int char_h = CHAR_HEIGHT * scale;
-
-    // Calcular dimensiones del texto
-    int width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int x = (BSP_LCD_H_RES - width) / 2;
-
-    // Usar la misma posición vertical que display_wifi_creds
-    int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
-    int y = text_y_center + char_h + 8;
-
-    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
-
-    // Mostrar el mensaje de desconexión en rojo
-    display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
-    ui_backlight_on();
-}
-
-/**
- * @brief Displays a "NETWORK TIMEOUT" warning on the LCD screen.
- *        Shows red border, "NETWORK TIMEOUT" status and "WiFi Signal Weak - Retrying".
- */
-void display_network_timeout_message(void)
-{
-    clear_screen();
-    draw_screen_border(COLOR_RED_BGR565, 3);
-    ui_show_status_message("NETWORK TIMEOUT", COLOR_RED_BGR565);
-    ui_show_help_message_below_status("WiFi Signal Weak - Retrying", COLOR_YELLOW_BGR565);
-    ui_backlight_on();
-}
-
-/**
- * @brief Displays the configuration mode screen with instructions.
- *        Shows the main title and helpful instructions for the user.
- *        OPTIMIZADO: Mensajes más grandes (escala 2) y mensajes ajustados
- *
- * Layout (320x240):
- * ┌──────────────────────┐
- * │    Config Mode       │  ← Azul, escala 2
- * │                      │
- * │  Use app to:         │  ← Blanco, escala 2
- * │  Add WiFi Creds      │  ← Blanco, escala 2
- * │  Add API Key         │  ← Blanco, escala 2
- * │  Clear NVS           │  ← Blanco, escala 2
- * │                      │
- * └──────────────────────┘
- */
-void display_config_mode_message(void)
-{
-    // Limpiar toda la pantalla
-    clear_screen();
-
-    // ========================================================================
-    // BORDE EXTERNO: Linea cian de 2px
-    // ========================================================================
-    draw_screen_border(COLOR_CYAN_BGR565, 2); // Borde exterior azul
-
-    // ========================================================================
-    // SECCIÓN PRINCIPAL: "Config Mode"
-    // ========================================================================
-
-    int config_mode_map[] = {5, 11, 12, 28, 8, 25, 4, 41, 11, 21, 14};
-    int num_config = sizeof(config_mode_map) / sizeof(config_mode_map[0]);
-    int scale_main = 2;
-
-    int config_width = num_config * (CHAR_WIDTH * scale_main) +
-                       (num_config - 1) * CHAR_SPACING_SCALE_2X;
-    int config_x = (BSP_LCD_H_RES - config_width) / 2;
-    int config_y = 20;
-
-    display_text(config_x, config_y, config_mode_map, num_config,
-                 COLOR_BLUE_BGR565, scale_main);
-
-    // ========================================================================
-    // LÍNEA DIVISORIA MEJORADA: Doble línea degradada
-    // ========================================================================
-
-    int divider_y = config_y + (CHAR_HEIGHT * scale_main) + 12;
-    int divider_width = 210;
-    int divider_x = (BSP_LCD_H_RES - divider_width) / 2;
-
-    // Línea superior (cian más clara)
-    draw_filled_rect(divider_x, divider_y, divider_width, 1, COLOR_CYAN_BGR565);
-    // Línea inferior (azul más oscuro)
-    draw_filled_rect(divider_x, divider_y + 2, divider_width, 1, COLOR_BLUE_BGR565);
-
-    // ========================================================================
-    // CÁLCULO DE ESPACIADO VERTICAL CENTRADO
-    // ========================================================================
-
-    int scale_info = 2;
-    int info_y_start = divider_y + 28;
-    int line_height = (CHAR_HEIGHT * scale_info) + 14;
-
-    int total_messages_height = line_height * 4;
-    int space_after_messages = BSP_LCD_V_RES - (info_y_start + total_messages_height);
-
-    if (space_after_messages > info_y_start - divider_y - 28)
-    {
-        info_y_start = divider_y + ((BSP_LCD_V_RES - divider_y - total_messages_height) / 2);
-    }
-
-    // ========================================================================
-    // Línea 0: "Use app to:"
-    // ========================================================================
-    int line0_map[] = {44, 9, 14, 4, 0, 34, 34, 4, 16, 11, 45};
-    int num_line0 = sizeof(line0_map) / sizeof(line0_map[0]);
-
-    int line0_width = num_line0 * (CHAR_WIDTH * scale_info) +
-                      (num_line0 - 1) * CHAR_SPACING_SCALE_2X;
-    int line0_x = (BSP_LCD_H_RES - line0_width) / 2;
-
-    display_text(line0_x, info_y_start, line0_map, num_line0,
-                 COLOR_YELLOW_BGR565, scale_info);
-
-    // ========================================================================
-    // Línea 1: "Add WiFi Creds" CON FONDO SUTIL
-    // ========================================================================
-    int line1_map[] = {0, 21, 21, 4, 18, 8, 19, 8, 4, 5, 17, 14, 21, 9};
-    int num_line1 = sizeof(line1_map) / sizeof(line1_map[0]);
-
-    int line1_width = num_line1 * (CHAR_WIDTH * scale_info) +
-                      (num_line1 - 1) * CHAR_SPACING_SCALE_2X;
-    int line1_x = (BSP_LCD_H_RES - line1_width) / 2;
-
-    // Fondo sutil detrás del texto (muy discreto)
-    // draw_filled_rect(line1_x - 8, info_y_start + line_height - 2,
-    //                  line1_width + 16, 36, COLOR_DARK_BLUE_BGR565);
-
-    display_text(line1_x, info_y_start + line_height, line1_map, num_line1,
-                 COLOR_WHITE_BGR565, scale_info);
-
-    // ========================================================================
-    // Línea 2: "Add API Key" CON FONDO SUTIL
-    // ========================================================================
-    int line2_map[] = {0, 21, 21, 4, 0, 31, 1, 4, 29, 14, 24};
-    int num_line2 = sizeof(line2_map) / sizeof(line2_map[0]);
-
-    int line2_width = num_line2 * (CHAR_WIDTH * scale_info) +
-                      (num_line2 - 1) * CHAR_SPACING_SCALE_2X;
-    int line2_x = (BSP_LCD_H_RES - line2_width) / 2;
-
-    // Fondo sutil detrás del texto
-    // draw_filled_rect(line2_x - 8, info_y_start + (line_height * 2) - 2,
-    //                  line2_width + 16, 36, COLOR_DARK_BLUE_BGR565);
-
-    display_text(line2_x, info_y_start + (line_height * 2), line2_map, num_line2,
-                 COLOR_WHITE_BGR565, scale_info);
-
-    // ========================================================================
-    // Línea 3: "Clear NVS" CON FONDO SUTIL
-    // ========================================================================
-    int line3_map[] = {5, 7, 14, 6, 17, 4, 39, 46, 38};
-    int num_line3 = sizeof(line3_map) / sizeof(line3_map[0]);
-
-    int line3_width = num_line3 * (CHAR_WIDTH * scale_info) +
-                      (num_line3 - 1) * CHAR_SPACING_SCALE_2X;
-    int line3_x = (BSP_LCD_H_RES - line3_width) / 2;
-
-    display_text(line3_x, info_y_start + (line_height * 3), line3_map, num_line3,
-                 COLOR_WHITE_BGR565, scale_info);
-    ui_backlight_on();
-}
-
-/**
- * @brief Displays API Key error message with clean, centered layout
- *        All text in red, blue divider line exactly at screen midpoint
- *
- * Layout (320x240 screen):
- * ┌─────────────────────────┐
- * │   [Blue border]         │
- * │                         │
- * │       Missing or        │  ← Red, scale 2
- * │    Invalid API Key      │  ← Red, scale 2
- * │                         │
- * │    ───────────────      │  ← Blue line at Y=120 (exact center)
- * │                         │
- * │     Send new key        │  ← Yellow, scale 2
- * │        via app          │  ← Yellow, scale 2
- * │                         │
- * └─────────────────────────┘
- */
-void display_api_key_error_message(void)
-{
-    // ========================================================================
-    // PASO 1: Limpiar área central preservando borde azul
-    // ========================================================================
-    const int border_margin = 6;
-    draw_filled_rect(border_margin, border_margin,
-                     BSP_LCD_H_RES - (border_margin * 2),
-                     BSP_LCD_V_RES - (border_margin * 2),
-                     0x0000);
-
-    // ========================================================================
-    // CONFIGURACIÓN
-    // ========================================================================
-    const int TEXT_SCALE = 2;
-    const int char_h = CHAR_HEIGHT * TEXT_SCALE;
-    const int line_spacing = 6;
-
-    // Calcular posición de la línea divisoria
-    const int divider_y = BSP_LCD_V_RES / 2;
-    const int divider_width = 200;
-    const int divider_thickness = 2;
-    const int divider_x = (BSP_LCD_H_RES - divider_width) / 2;
-
-    // ========================================================================
-    // SECCIÓN SUPERIOR: Mensaje de error reorganizado
-    // ========================================================================
-
-    // Línea 1: "Missing or" - 10 caracteres
-    int line1_map[] = {41, 8, 9, 9, 8, 12, 25, 4, 11, 17};
-    int num_line1 = sizeof(line1_map) / sizeof(line1_map[0]);
-
-    // Línea 2: "Invalid API Key" - 15 caracteres
-    // I n v a l i d (space) A P I (space) K e y
-    int line2_map[] = {1, 12, 33, 6, 7, 8, 21, 4, 0, 31, 1, 4, 29, 14, 24};
-    int num_line2 = sizeof(line2_map) / sizeof(line2_map[0]);
-
-    // Calcular anchos de cada línea
-    int line1_width = num_line1 * (CHAR_WIDTH * TEXT_SCALE) +
-                      (num_line1 - 1) * CHAR_SPACING_SCALE_2X;
-    int line2_width = num_line2 * (CHAR_WIDTH * TEXT_SCALE) +
-                      (num_line2 - 1) * CHAR_SPACING_SCALE_2X;
-
-    // Centrar cada línea horizontalmente
-    int line1_x = (BSP_LCD_H_RES - line1_width) / 2;
-    int line2_x = (BSP_LCD_H_RES - line2_width) / 2;
-
-    // Calcular altura total de las dos líneas
-    int error_section_height = (char_h * 2) + line_spacing;
-
-    // Centrar la sección de error en la mitad superior
-    int upper_section_height = divider_y - border_margin;
-    int error_start_y = border_margin + (upper_section_height - error_section_height) / 2;
-
-    int line1_y = error_start_y;
-    int line2_y = line1_y + char_h + line_spacing;
-
-    // Dibujar líneas de error en rojo
-    display_text(line1_x, line1_y, line1_map, num_line1, COLOR_RED_BGR565, TEXT_SCALE);
-    display_text(line2_x, line2_y, line2_map, num_line2, COLOR_RED_BGR565, TEXT_SCALE);
-
-    // ========================================================================
-    // LÍNEA DIVISORIA
-    // ========================================================================
-    draw_filled_rect(divider_x, divider_y - (divider_thickness / 2),
-                     divider_width, divider_thickness,
-                     COLOR_CYAN_BGR565);
-
-    // ========================================================================
-    // SECCIÓN INFERIOR: Instrucciones (sin cambios)
-    // ========================================================================
-
-    // Línea 3: "Send new key"
-    int line3_map[] = {38, 14, 12, 21, 4, 12, 14, 22, 4, 37, 14, 24};
-    int num_line3 = sizeof(line3_map) / sizeof(line3_map[0]);
-
-    int line3_width = num_line3 * (CHAR_WIDTH * TEXT_SCALE) +
-                      (num_line3 - 1) * CHAR_SPACING_SCALE_2X;
-    int line3_x = (BSP_LCD_H_RES - line3_width) / 2;
-
-    // Línea 4: "via app"
-    int line4_map[] = {33, 8, 6, 4, 6, 34, 34};
-    int num_line4 = sizeof(line4_map) / sizeof(line4_map[0]);
-
-    int line4_width = num_line4 * (CHAR_WIDTH * TEXT_SCALE) +
-                      (num_line4 - 1) * CHAR_SPACING_SCALE_2X;
-    int line4_x = (BSP_LCD_H_RES - line4_width) / 2;
-
-    // Calcular altura total de las instrucciones
-    int instruction_section_height = (char_h * 2) + line_spacing;
-
-    // Centrar la sección de instrucciones en la mitad inferior
-    int lower_section_height = (BSP_LCD_V_RES - border_margin) - divider_y;
-    int instruction_start_y = divider_y + (lower_section_height - instruction_section_height) / 2;
-
-    int line3_y = instruction_start_y;
-    int line4_y = line3_y + char_h + line_spacing;
-
-    // Dibujar líneas de instrucciones en amarillo
-    display_text(line3_x, line3_y, line3_map, num_line3, COLOR_YELLOW_BGR565, TEXT_SCALE);
-    display_text(line4_x, line4_y, line4_map, num_line4, COLOR_YELLOW_BGR565, TEXT_SCALE);
-    ui_backlight_on();
-
-    ESP_LOGI(TAG, "API Key error message displayed with reorganized layout");
-}
-
-/**
- * @brief Displays an "Intruder Detected" red alert screen.
- *        Clears the whole screen and draws a thick red border.
- *        Renders "INTRUDER" and "DETECTED" on two lines using scale 3.
- */
-void display_intruder_alert_message(void)
-{
-    // Limpiar toda la pantalla
-    clear_screen();
-
-    // Dibujar un borde rojo intenso de 4px para resaltar la alerta de seguridad
-    draw_screen_border(COLOR_RED_BGR565, 4);
-
-    const int TEXT_SCALE = 3;
-    const int line_spacing = 10;
-    const int char_h = CHAR_HEIGHT * TEXT_SCALE;
-
-    // Convertir de forma segura las cadenas de texto a nuestro mapa de caracteres
-    int map_l1[10];
-    int num_l1 = convert_string_to_char_map("INTRUDER", map_l1, 10);
-
-    int map_l2[15];
-    int num_l2 = convert_string_to_char_map("DETECTED", map_l2, 15);
-
-    // Calcular el ancho de cada línea
-    int line1_width = num_l1 * (CHAR_WIDTH * TEXT_SCALE) + (num_l1 - 1) * CHAR_SPACING_SCALE_3X;
-    int line2_width = num_l2 * (CHAR_WIDTH * TEXT_SCALE) + (num_l2 - 1) * CHAR_SPACING_SCALE_3X;
-
-    // Calcular posiciones X para centrar
-    int line1_x = (BSP_LCD_H_RES - line1_width) / 2;
-    int line2_x = (BSP_LCD_H_RES - line2_width) / 2;
-
-    // Calcular posiciones Y para centrar verticalmente
-    int total_height = (char_h * 2) + line_spacing;
-    int start_y = (BSP_LCD_V_RES - total_height) / 2;
-
-    int line1_y = start_y;
-    int line2_y = line1_y + char_h + line_spacing;
-
-    // Mostrar ambas líneas en rojo
-    display_text(line1_x, line1_y, map_l1, num_l1, COLOR_RED_BGR565, TEXT_SCALE);
-    display_text(line2_x, line2_y, map_l2, num_l2, COLOR_RED_BGR565, TEXT_SCALE);
-    ui_backlight_on();
-
-    ESP_LOGW(TAG, "Alerta de INTRUSO DETECTADO renderizada en pantalla");
-}
 
 static void ui_backlight_set_if_changed(int brightness_percent)
 {

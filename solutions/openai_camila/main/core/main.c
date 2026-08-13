@@ -314,6 +314,15 @@ void app_main(void)
     esp_log_level_set("PEER_DEF",   ESP_LOG_WARN);
     esp_log_level_set("webrtc",     ESP_LOG_WARN);
     esp_log_level_set("AV_RENDER",  ESP_LOG_WARN);
+    esp_log_level_set("wifi",       ESP_LOG_WARN);
+    esp_log_level_set("wifi_init",  ESP_LOG_WARN);
+    esp_log_level_set("net80211",   ESP_LOG_WARN);
+    esp_log_level_set("pp",         ESP_LOG_WARN);
+    esp_log_level_set("phy_init",   ESP_LOG_WARN);
+    esp_log_level_set("coexist",    ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+    esp_log_level_set("NimBLE",     ESP_LOG_WARN);
+    esp_log_level_set("UI",         ESP_LOG_WARN);
 
     esp_err_t heap_hook_err = heap_caps_register_failed_alloc_callback(app_heap_alloc_failed_hook);
     if (heap_hook_err != ESP_OK) {

@@ -236,7 +236,14 @@ esp_err_t save_device_profile(const char *ssid, const device_profile_nvs_t *prof
  */
 esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device)
 {
-    if (!device || !device->is_known || device->char_discovered == false)
+    if (!device)
+    {
+        ESP_LOGE(TAG, "Dispositivo nulo no válido para guardar en NVS");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool has_alias = (device->alias[0] != '\0');
+    if (!has_alias && (!device->is_known || device->char_discovered == false))
     {
         ESP_LOGE(TAG, "Dispositivo no válido para guardar en NVS");
         return ESP_ERR_INVALID_ARG;

@@ -1738,7 +1738,7 @@ static int send_session_update(void)
         "{"
         "  \"type\": \"function\","
         "  \"name\": \"control_ble_device\","
-        "  \"description\": \"Use this tool to move, control, or read telemetry from a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180, READ_ULTRASONIC (read obstacle distance sensor).\","
+        "  \"description\": \"Use this tool to move, control, or read telemetry from a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180, READ_ULTRASONIC, MOVE_HEAD, READ_LINE_SENSOR, SET_AUTONOMOUS_MODE.\","
         "  \"parameters\": {"
         "    \"type\": \"object\","
         "    \"properties\": {"
@@ -1748,12 +1748,12 @@ static int send_session_update(void)
         "      },"
         "      \"action\": {"
         "        \"type\": \"string\","
-        "        \"enum\": [\"FORWARD\", \"BACKWARD\", \"LEFT\", \"RIGHT\", \"STOP\", \"SPIN_180\", \"READ_ULTRASONIC\"],"
-        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180', 'READ_ULTRASONIC'.\""
+        "        \"enum\": [\"FORWARD\", \"BACKWARD\", \"LEFT\", \"RIGHT\", \"STOP\", \"SPIN_180\", \"READ_ULTRASONIC\", \"MOVE_HEAD\", \"READ_LINE_SENSOR\", \"SET_AUTONOMOUS_MODE\"],"
+        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180', 'READ_ULTRASONIC', 'MOVE_HEAD', 'READ_LINE_SENSOR', 'SET_AUTONOMOUS_MODE'.\""
         "      },"
         "      \"duration_ms\": {"
         "        \"type\": \"integer\","
-        "        \"description\": \"Optional pulse duration in milliseconds. Default 1000ms for movement, 650ms for 180 turn.\""
+        "        \"description\": \"Optional pulse duration in ms, or parameter value (e.g. servo angle 5-175 for MOVE_HEAD, mode 1 for line follower / 2 for obstacle avoidance in SET_AUTONOMOUS_MODE).\""
         "      }"
         "    },"
         "    \"required\": [\"device_name\", \"action\"]"
@@ -2771,7 +2771,7 @@ static int process_json(const char *json_data, int json_size)
                     send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
                 }
             } else {
-                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"No se pudo enviar el comando al dispositivo BLE\"}");
+                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Unable to communicate with the BLE car. Device is offline, powered off, or disconnected.\"}");
             }
             sendEvent("response.create", NULL);
             class_found = true;

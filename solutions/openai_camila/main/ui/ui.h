@@ -34,6 +34,7 @@ void ui_clear_status_message(void);
 void ui_show_help_message_below_status(const char *msg, uint16_t color);
 void ui_clear_help_message_below_status(void);
 void camila_ui_update_state(ui_state_t state, const char* title, const char* subtitle);
+void camila_ui_update_state_with_color(ui_state_t state, const char* title, const char* subtitle, uint16_t color);
 void camila_ui_show_avatar(void);
 void camila_ui_set_speaking_state(bool is_speaking);
 void camila_ui_update_mute_countdown(int remaining_seconds);

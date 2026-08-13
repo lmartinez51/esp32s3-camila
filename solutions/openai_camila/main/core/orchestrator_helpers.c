@@ -202,8 +202,17 @@ void orchestrator_show_phase(const char *reason,
                              uint16_t    color)
 {
     (void)reason;
-    (void)color;
-    camila_ui_update_state(UI_STATE_BOOT, title, subtitle);
+    ui_state_t state = UI_STATE_BOOT;
+    if (color == COLOR_RED_BGR565) {
+        state = UI_STATE_ERROR;
+    } else if (color == COLOR_YELLOW_BGR565) {
+        state = UI_STATE_WIFI_CONNECTING;
+    } else if (color == COLOR_GREEN_BGR565) {
+        state = UI_STATE_SUCCESS;
+    } else if (color == COLOR_CYAN_BGR565) {
+        state = UI_STATE_BLE_SCAN;
+    }
+    camila_ui_update_state_with_color(state, title, subtitle, color);
 }
 
 void orchestrator_show_vigilante_alert_visual(void)

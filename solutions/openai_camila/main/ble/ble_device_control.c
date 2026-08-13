@@ -1016,6 +1016,7 @@ static esp_err_t load_discovered_devices_safe(void)
         memcpy(dev->addr, loaded_profiles[i].addr.val, sizeof(dev->addr));
         dev->addr_type = loaded_profiles[i].addr.type;
         strlcpy(dev->name, loaded_profiles[i].name, sizeof(dev->name));
+        strlcpy(dev->alias, loaded_profiles[i].alias, sizeof(dev->alias));
         dev->type = (ble_device_type_t)loaded_profiles[i].device_type;
         dev->service_uuid_128 = loaded_profiles[i].service_uuid;
         dev->char_uuid_128 = loaded_profiles[i].char_uuid;
@@ -1026,6 +1027,10 @@ static esp_err_t load_discovered_devices_safe(void)
         dev->state = BLE_DEVICE_STATE_DISCONNECTED;
         dev->conn_handle = BLE_HS_CONN_HANDLE_NONE;
         dev->is_known = true; // Si se carga de NVS, es conocido
+        if (dev->alias[0] != '\0')
+        {
+            dev->is_configured = true;
+        }
 
         // Limpieza de otros campos
         dev->char_val_handle = 0;
@@ -1650,7 +1655,14 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
         // Detectar tipo
         device.type = ble_device_detect_type_from_name(device.name);
 
-        ESP_LOGI(TAG, "🔍 Dispositivo encontrado: %s (RSSI: %d)", device.name, device.rssi);
+        if (device.name[0] != '\0' && strncmp(device.name, "Unknown_", 8) != 0)
+        {
+            ESP_LOGI(TAG, "🔍 Dispositivo nombrado encontrado: %s (RSSI: %d)", device.name, device.rssi);
+        }
+        else
+        {
+            ESP_LOGD(TAG, "🔍 Dispositivo encontrado: %s (RSSI: %d)", device.name, device.rssi);
+        }
 
         // Guardar en lista
         add_or_update_discovered_device(&device);
@@ -2004,6 +2016,9 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "Dispositivo desconectado (conn_handle: %d, reason: 0x%x)",
                  event->disconnect.conn.conn_handle, event->disconnect.reason);
 
+        // Always clear pending connection lock on disconnect event
+        g_pending_connection.is_active = false;
+
         // Limpiar contexto de discovery si lo hubiera
         cleanup_discovery_context(event->disconnect.conn.conn_handle);
 
@@ -2012,18 +2027,11 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         if (!device)
         {
             device = find_device_by_addr_internal(g_pending_connection.addr);
-            if (device && device->state == BLE_DEVICE_STATE_CONNECTING)
-            {
-                ESP_LOGW(TAG, "Conexión fallida (reason 0x%x) para '%s'; reseteando estado a DISCONNECTED.",
-                         event->disconnect.reason, device->name);
-                device->state = BLE_DEVICE_STATE_DISCONNECTED;
-                device->conn_handle = BLE_HS_CONN_HANDLE_NONE;
-            }
         }
 
         if (device)
         {
-            ESP_LOGI(TAG, "Dispositivo '%s' desconectado", device->name);
+            ESP_LOGI(TAG, "Dispositivo '%s' desconectado (reason: 0x%x); reseteando estado a DISCONNECTED", device->name, event->disconnect.reason);
 
             if (!device->is_known)
             {
@@ -2035,19 +2043,8 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                 xSemaphoreGive(s_ondemand_conn_sem);
             }
 
-            if (device->state != BLE_DEVICE_STATE_ERROR && device->state != BLE_DEVICE_STATE_DISCOVERY_COMPLETE)
-            {
-                update_device_state(device->addr, BLE_DEVICE_STATE_DISCONNECTED);
-            }
-            else
-            {
-                ESP_LOGI(TAG, "Manteniendo estado final (%d) para '%s' tras desconexión.", device->state, device->name);
-                if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
-                {
-                    device->conn_handle = BLE_HS_CONN_HANDLE_NONE;
-                    xSemaphoreGive(devices_mutex);
-                }
-            }
+            device->conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            update_device_state(device->addr, BLE_DEVICE_STATE_DISCONNECTED);
 
             if (device_callbacks.on_device_disconnected)
             {
@@ -3978,23 +3975,39 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
         return ESP_ERR_TIMEOUT;
     }
 
-    char cat_a[256] = "";
-    char cat_b[256] = "";
+    char cat_a[384] = "";
+    char cat_b[384] = "";
     char cat_c[384] = "";
     int count_a = 0, count_b = 0, count_c = 0;
 
     for (int i = 0; i < discovered_count; i++) {
         const ble_device_info_t *dev = &discovered_devices[i];
-        const char *display_name = (strlen(dev->alias) > 0) ? dev->alias : dev->name;
-        if (strlen(display_name) == 0) display_name = "Unknown Device";
 
-        if (dev->is_configured && dev->char_discovered) {
-            if (count_a > 0) strlcat(cat_a, ", ", sizeof(cat_a));
-            snprintf(cat_a + strlen(cat_a), sizeof(cat_a) - strlen(cat_a), "\"%s\"", display_name);
-            count_a++;
+        char display_str[96];
+        if (dev->alias[0] != '\0') {
+            snprintf(display_str, sizeof(display_str), "%s (%s)", dev->alias, (dev->name[0] != '\0') ? dev->name : "Unknown");
+        } else if (dev->name[0] != '\0') {
+            snprintf(display_str, sizeof(display_str), "%s", dev->name);
+        } else {
+            snprintf(display_str, sizeof(display_str), "Unknown Device");
+        }
+
+        bool is_saved_or_configured = dev->is_known || (dev->alias[0] != '\0');
+        bool is_connected = (dev->state == BLE_DEVICE_STATE_CONNECTED || dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+
+        if (is_saved_or_configured) {
+            if (is_connected) {
+                if (count_a > 0) strlcat(cat_a, ", ", sizeof(cat_a));
+                snprintf(cat_a + strlen(cat_a), sizeof(cat_a) - strlen(cat_a), "\"%s\"", display_str);
+                count_a++;
+            } else {
+                if (count_b > 0) strlcat(cat_b, ", ", sizeof(cat_b));
+                snprintf(cat_b + strlen(cat_b), sizeof(cat_b) - strlen(cat_b), "\"%s\"", display_str);
+                count_b++;
+            }
         } else {
             if (count_c > 0) strlcat(cat_c, ", ", sizeof(cat_c));
-            snprintf(cat_c + strlen(cat_c), sizeof(cat_c) - strlen(cat_c), "\"%s\"", display_name);
+            snprintf(cat_c + strlen(cat_c), sizeof(cat_c) - strlen(cat_c), "\"%s\"", display_str);
             count_c++;
         }
     }
@@ -4018,10 +4031,16 @@ esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
         for (int i = 0; i < discovered_count; i++) {
             if (memcmp(discovered_devices[i].addr, mac, 6) == 0) {
                 strlcpy(discovered_devices[i].alias, alias, sizeof(discovered_devices[i].alias));
-                save_discovered_device_to_nvs(&discovered_devices[i]);
+                discovered_devices[i].is_known = true;
+                discovered_devices[i].is_configured = true;
+                esp_err_t nvs_err = save_discovered_device_to_nvs(&discovered_devices[i]);
                 xSemaphoreGive(devices_mutex);
-                ESP_LOGI(TAG, "Alias '%s' asignado exitosamente a dispositivo %02X:%02X:%02X:%02X:%02X:%02X",
-                         alias, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                if (nvs_err == ESP_OK) {
+                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y guardado persistentemente en NVS para MAC %02X:%02X:%02X:%02X:%02X:%02X",
+                             alias, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                } else {
+                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero guardado NVS devolvió %s", alias, esp_err_to_name(nvs_err));
+                }
                 return ESP_OK;
             }
         }
@@ -4041,9 +4060,14 @@ esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new
                 (strstr(current_name, "ELEGOO") != NULL && strstr(discovered_devices[i].name, "ELEGOO") != NULL)) {
                 strlcpy(discovered_devices[i].alias, new_alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
-                save_discovered_device_to_nvs(&discovered_devices[i]);
+                discovered_devices[i].is_configured = true;
+                esp_err_t nvs_err = save_discovered_device_to_nvs(&discovered_devices[i]);
                 xSemaphoreGive(devices_mutex);
-                ESP_LOGI(TAG, "Alias '%s' asignado exitosamente al dispositivo '%s'", new_alias, current_name);
+                if (nvs_err == ESP_OK) {
+                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y guardado persistentemente en NVS para dispositivo '%s'", new_alias, current_name);
+                } else {
+                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero guardado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
+                }
                 return ESP_OK;
             }
         }
@@ -4086,13 +4110,16 @@ typedef struct {
 } ble_command_entry_t;
 
 static const ble_command_entry_t s_cmd_dispatch_table[] = {
-    { "FORWARD",         "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
-    { "BACKWARD",        "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
-    { "LEFT",            "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
-    { "RIGHT",           "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
-    { "SPIN_180",        "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
-    { "STOP",            "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
-    { "READ_ULTRASONIC", "leer_ultrasonico", "{\"N\":21,\"D1\":2}", 0,   false, true  },
+    { "FORWARD",             "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
+    { "BACKWARD",            "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
+    { "LEFT",                "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
+    { "RIGHT",               "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
+    { "SPIN_180",            "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
+    { "STOP",                "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
+    { "READ_ULTRASONIC",     "leer_ultrasonico", "{\"N\":21,\"D1\":2}", 0,   false, true  },
+    { "MOVE_HEAD",           "mover_cabeza",     "{\"N\":6,\"D1\":90}", 0,   false, false },
+    { "READ_LINE_SENSOR",    "leer_linea",       "{\"N\":22,\"D1\":1}", 0,   false, true  },
+    { "SET_AUTONOMOUS_MODE", "modo_autonomo",    "{\"N\":3,\"D1\":2}", 0,   false, false },
 };
 
 static const size_t s_cmd_dispatch_table_count = sizeof(s_cmd_dispatch_table) / sizeof(s_cmd_dispatch_table[0]);
@@ -4138,10 +4165,22 @@ static const ble_command_entry_t *ble_find_command_entry(const char *action)
     return &s_cmd_dispatch_table[5]; // Default to STOP if unmatched
 }
 
-static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_handle, const ble_command_entry_t *cmd)
+static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_handle, const ble_command_entry_t *cmd, uint32_t duration_ms)
 {
+    char dynamic_buf[32];
     const char *payload = (cmd && cmd->payload_json) ? cmd->payload_json : "{\"N\":2,\"D1\":5}";
     const char *action_name = (cmd && cmd->action_name) ? cmd->action_name : "STOP";
+
+    if (cmd && duration_ms > 0) {
+        if (strcmp(action_name, "MOVE_HEAD") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":%lu}", duration_ms);
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "SET_AUTONOMOUS_MODE") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":3,\"D1\":%lu}", duration_ms);
+            payload = dynamic_buf;
+        }
+    }
+
     uint16_t payload_len = (uint16_t)strlen(payload);
 
     ESP_LOGI(TAG, "ELEGOO COMMAND:\n  action=%s\n  handle=0x%04X\n  payload=%s",
@@ -4165,7 +4204,7 @@ static void ble_pulse_stop_task(void *param)
         ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
         if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
             const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
-            send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd);
+            send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd, 0);
             vTaskDelay(pdMS_TO_TICKS(300));
             ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
             ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -4254,6 +4293,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             }
         }
 
+        bool conn_success = false;
         /* Single mutex acquisition post-wake to extract handles */
         if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
             for (int i = 0; i < discovered_count; i++) {
@@ -4264,6 +4304,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                         discovered_devices[i].char_discovered) {
                         current_conn_handle = discovered_devices[i].conn_handle;
                         if (discovered_devices[i].char_val_handle > 0) write_handle = discovered_devices[i].char_val_handle;
+                        conn_success = true;
                     } else {
                         ESP_LOGW(TAG, "⚠️ Dispositivo '%s' no listo para comandos tras espera GATT.", target_dev.name);
                     }
@@ -4271,6 +4312,13 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                 }
             }
             xSemaphoreGive(devices_mutex);
+        }
+
+        if (!conn_success || current_conn_handle == BLE_HS_CONN_HANDLE_NONE || current_conn_handle == 0) {
+            ESP_LOGE(TAG, "❌ Conexión bajo demanda fallida con '%s'. Reseteando candado y estado a DISCONNECTED.", target_dev.name);
+            g_pending_connection.is_active = false;
+            update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+            return ESP_FAIL;
         }
     }
 
@@ -4313,9 +4361,14 @@ conn_ready:
         ESP_LOGI(TAG, "⏱️ Radio stabilization pause (150 ms)...");
         vTaskDelay(pdMS_TO_TICKS(150));
 
-        /* Step 3: Send 15-byte command payload {"N":21,"D1":2} strictly without "H":1 or newlines */
-        const char *payload_str = "{\"N\":21,\"D1\":2}";
-        ESP_LOGI(TAG, "📤 Transmitting 15-byte command payload: %s", payload_str);
+        /* Step 3: Send command payload strictly without "H":1 or newlines */
+        char dynamic_payload[32];
+        const char *payload_str = (cmd && cmd->payload_json) ? cmd->payload_json : "{\"N\":21,\"D1\":2}";
+        if (cmd && duration_ms > 0 && strcmp(cmd->action_name, "READ_LINE_SENSOR") == 0) {
+            snprintf(dynamic_payload, sizeof(dynamic_payload), "{\"N\":22,\"D1\":%lu}", duration_ms);
+            payload_str = dynamic_payload;
+        }
+        ESP_LOGI(TAG, "📤 Transmitting command payload: %s", payload_str);
         int write_rc = ble_gattc_write_no_rsp_flat(current_conn_handle, command_handle, (const uint8_t *)payload_str, (uint16_t)strlen(payload_str));
         if (write_rc != 0) {
             ESP_LOGW(TAG, "⚠️ Write Without Response returned rc=%d", write_rc);
@@ -4326,7 +4379,7 @@ conn_ready:
         bool telem_success = false;
         if (s_telemetry_sem != NULL && xSemaphoreTake(s_telemetry_sem, pdMS_TO_TICKS(1500)) == pdTRUE) {
             if (strlen(s_last_telemetry_buf) > 0) {
-                ESP_LOGI(TAG, "✅ Ultrasonic distance telemetry received: '%s'", s_last_telemetry_buf);
+                ESP_LOGI(TAG, "✅ Telemetry data received: '%s'", s_last_telemetry_buf);
                 telem_success = true;
             }
         } else {
@@ -4343,7 +4396,7 @@ conn_ready:
         }
     } else {
         if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-            send_elegoo_command_payload(current_conn_handle, write_handle, cmd);
+            send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
         } else {
             ESP_LOGW(TAG, "⚠️ No se pudo obtener conexión lista con '%s' para enviar comando", target_dev.name);
         }
