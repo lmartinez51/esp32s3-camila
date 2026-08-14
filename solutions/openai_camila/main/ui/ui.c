@@ -201,6 +201,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'z': map_buffer[count++] = 64; break;
         /* ── Símbolos ── */
         case ' ': map_buffer[count++] = 4;  break;
+        case '\'': map_buffer[count++] = 2; break;
         case '!': map_buffer[count++] = 13; break;
         case '.': map_buffer[count++] = 26; break;
         case ':': map_buffer[count++] = 45; break;  // Antes faltaba
@@ -815,26 +816,84 @@ static void draw_filled_rect(int x, int y, int width, int height, uint16_t color
     free(buf);
 }
 
+static void draw_hud_corner_brackets(uint16_t color, int margin, int arm_len, int thickness)
+{
+    int x0 = margin;
+    int y0 = margin;
+    int x1 = BSP_LCD_H_RES - margin;
+    int y1 = BSP_LCD_V_RES - margin;
+
+    // Esquina Superior Izquierda ┌
+    draw_filled_rect(x0, y0, arm_len, thickness, color);
+    draw_filled_rect(x0, y0, thickness, arm_len, color);
+
+    // Esquina Superior Derecha ┐
+    draw_filled_rect(x1 - arm_len, y0, arm_len, thickness, color);
+    draw_filled_rect(x1 - thickness, y0, thickness, arm_len, color);
+
+    // Esquina Inferior Izquierda └
+    draw_filled_rect(x0, y1 - thickness, arm_len, thickness, color);
+    draw_filled_rect(x0, y1 - arm_len, thickness, arm_len, color);
+
+    // Esquina Inferior Derecha ┘
+    draw_filled_rect(x1 - arm_len, y1 - thickness, arm_len, thickness, color);
+    draw_filled_rect(x1 - thickness, y1 - arm_len, thickness, arm_len, color);
+}
+
 static void draw_screen_border(uint16_t color, int thickness)
 {
-    const int margin_x = 8;
-    const int margin_y = 6;
-
-    int x0 = margin_x;
-    int y0 = margin_y;
-    int x1 = BSP_LCD_H_RES - margin_x;
-    int y1 = BSP_LCD_V_RES - margin_y;
-
-    draw_filled_rect(x0, y0, x1 - x0, thickness, color);
-    draw_filled_rect(x0, y1 - thickness, x1 - x0, thickness, color);
-    draw_filled_rect(x0, y0, thickness, y1 - y0, color);
-    draw_filled_rect(x1 - thickness, y0, thickness, y1 - y0, color);
+    draw_hud_corner_brackets(color, 8, 24, thickness > 0 ? thickness : 2);
 }
 
 /* Mute countdown persistent overlay — survives display_system_phase_message repaints */
 /* NOTE: declared here (before display_system_phase_message) so the function can access them */
 static bool s_mute_overlay_active = false;
 static char s_mute_overlay_text[32] = {0};
+static char s_user_identity_name[32] = "Lorenzo";
+
+static void draw_avatar_subtitle_line(void)
+{
+    draw_filled_rect(24, 140, 272, 20, COLOR_BLACK_BGR565);
+
+    char sub_buf[64] = {0};
+    uint16_t sub_color = COLOR_WHITE_BGR565;
+
+    if (s_mute_overlay_active && s_mute_overlay_text[0] != '\0')
+    {
+        if (strstr(s_mute_overlay_text, "Microphone") != NULL || strstr(s_mute_overlay_text, "microphone") != NULL) {
+            strncpy(sub_buf, "Press 2x to Unmute", sizeof(sub_buf) - 1);
+        } else {
+            strncpy(sub_buf, s_mute_overlay_text, sizeof(sub_buf) - 1);
+        }
+        sub_color = COLOR_YELLOW_BGR565;
+    }
+    else
+    {
+        snprintf(sub_buf, sizeof(sub_buf), "Spill it %s...",
+                 (s_user_identity_name[0] != '\0') ? s_user_identity_name : "Lorenzo");
+        sub_color = COLOR_WHITE_BGR565;
+    }
+
+    ui_sanitize_text(sub_buf);
+
+    int sub_map[32];
+    int num_chars = convert_string_to_char_map(sub_buf, sub_map, 32);
+    if (num_chars > 0)
+    {
+        int scale = 1;
+        int char_spacing = CHAR_SPACING_SCALE_1X;
+        int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+        if (text_w > 272)
+        {
+            num_chars = (272 + char_spacing) / (CHAR_WIDTH * scale + char_spacing);
+            if (num_chars < 1) num_chars = 1;
+            text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+        }
+        int x = (BSP_LCD_H_RES - text_w) / 2;
+        if (x < 12) x = 12;
+        display_text(x, 144, sub_map, num_chars, sub_color, scale);
+    }
+}
 
 /**
  * @brief Draws the mute countdown band directly to LCD in 1 atomic, non-blocking pass.
@@ -843,51 +902,7 @@ static char s_mute_overlay_text[32] = {0};
 static void ui_draw_mute_countdown_band(void)
 {
     if (!s_mute_overlay_active || s_mute_overlay_text[0] == '\0') return;
-
-    int text_map[32];
-    int num_chars = convert_string_to_char_map(s_mute_overlay_text, text_map, 32);
-    if (num_chars <= 0) return;
-
-    const int band_w = 296;
-    const int band_h = 35;
-    const int band_x = 12;
-    const int band_y = 190;
-
-    int total_pixels = band_w * band_h;
-    uint16_t *band_buf = heap_caps_malloc(total_pixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!band_buf)
-    {
-        band_buf = malloc(total_pixels * sizeof(uint16_t));
-    }
-    if (!band_buf) return;
-
-    // Clear entire 296x35 band to black
-    memset(band_buf, 0x00, total_pixels * sizeof(uint16_t));
-
-    int scale = 2;
-    int char_spacing = CHAR_SPACING_SCALE_2X;
-    int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-    if (text_w > band_w)
-    {
-        scale = 1;
-        char_spacing = CHAR_SPACING_SCALE_1X;
-        text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-    }
-    int rel_x = (band_w - text_w) / 2;
-    if (rel_x < 0) rel_x = 0;
-    int rel_y = (scale == 2) ? 5 : 10;
-
-    // Render font glyphs into composite band buffer
-    for (int i = 0; i < num_chars; i++)
-    {
-        int char_offset_x = rel_x + i * (CHAR_WIDTH * scale + char_spacing);
-        draw_char_to_buffer(band_buf, band_w, band_h, char_offset_x, rel_y, text_map[i], COLOR_YELLOW_BGR565, scale);
-    }
-
-    // Single non-blocking SPI blit (50ms timeout)
-    ui_panel_try_blit(band_x, band_y, band_x + band_w, band_y + band_h, band_buf, 50);
-
-    free(band_buf);
+    draw_avatar_subtitle_line();
 }
 
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color)
@@ -899,11 +914,15 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         strncpy(title_buf, title, sizeof(title_buf) - 1);
         ui_sanitize_text(title_buf);
     } else {
-        strncpy(title_buf, "Camila AI", sizeof(title_buf) - 1);
+        strncpy(title_buf, "AI'M CAMILA", sizeof(title_buf) - 1);
     }
 
     if (subtitle && subtitle[0] != '\0') {
-        strncpy(sub_buf, subtitle, sizeof(sub_buf) - 1);
+        if (strstr(subtitle, "Microphone") != NULL || strstr(subtitle, "microphone") != NULL) {
+            strncpy(sub_buf, "Press 2x to Unmute", sizeof(sub_buf) - 1);
+        } else {
+            strncpy(sub_buf, subtitle, sizeof(sub_buf) - 1);
+        }
         ui_sanitize_text(sub_buf);
     }
 
@@ -955,15 +974,6 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
     int sub1_spacing = (sub1_scale == 2) ? CHAR_SPACING_SCALE_2X : CHAR_SPACING_SCALE_1X;
     int sub2_spacing = (sub2_scale == 2) ? CHAR_SPACING_SCALE_2X : CHAR_SPACING_SCALE_1X;
 
-    int title_h = CHAR_HEIGHT * title_scale;
-    int sub1_h = sub1_chars > 0 ? (CHAR_HEIGHT * sub1_scale) : 0;
-    int sub2_h = sub2_chars > 0 ? (CHAR_HEIGHT * sub2_scale) : 0;
-    int line_gap = 12;
-
-    int total_lines = (title_chars > 0 ? 1 : 0) + (sub1_chars > 0 ? 1 : 0) + (sub2_chars > 0 ? 1 : 0);
-    int total_h = title_h + sub1_h + sub2_h + (total_lines - 1) * line_gap;
-    int y = (BSP_LCD_V_RES - total_h) / 2;
-
     clear_screen();
     draw_screen_border(color, 2);
 
@@ -972,17 +982,20 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         int title_w = title_chars * (CHAR_WIDTH * title_scale) + (title_chars - 1) * title_spacing;
         int x = (BSP_LCD_H_RES - title_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, y, title_map, title_chars, color, title_scale);
-        y += title_h + line_gap;
+        display_text(x, 20, title_map, title_chars, COLOR_MAGENTA_BGR565, title_scale);
     }
+
+    draw_filled_rect(24, 44, 272, 2, COLOR_CYAN_BGR565);
 
     if (sub1_chars > 0)
     {
         int sub1_w = sub1_chars * (CHAR_WIDTH * sub1_scale) + (sub1_chars - 1) * sub1_spacing;
         int x = (BSP_LCD_H_RES - sub1_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, y, sub1_map, sub1_chars, COLOR_WHITE_BGR565, sub1_scale);
-        y += sub1_h + line_gap;
+        bool is_mute_sub = (strcmp(title_buf, "MUTED") == 0 || strstr(sub_line1, "Unmute") != NULL);
+        uint16_t sub1_color = is_mute_sub ? COLOR_YELLOW_BGR565 : COLOR_WHITE_BGR565;
+        int sub1_y = is_mute_sub ? 85 : 100;
+        display_text(x, sub1_y, sub1_map, sub1_chars, sub1_color, sub1_scale);
     }
 
     if (sub2_chars > 0)
@@ -990,7 +1003,7 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         int sub2_w = sub2_chars * (CHAR_WIDTH * sub2_scale) + (sub2_chars - 1) * sub2_spacing;
         int x = (BSP_LCD_H_RES - sub2_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, y, sub2_map, sub2_chars, COLOR_WHITE_BGR565, sub2_scale);
+        display_text(x, 124, sub2_map, sub2_chars, COLOR_WHITE_BGR565, sub2_scale);
     }
 
     ui_backlight_on();
@@ -1009,12 +1022,22 @@ void display_startup_screen(void)
     display_system_phase_message("Welcome!", "Starting up", COLOR_CYAN_BGR565);
 }
 
+void ui_set_user_name(const char *name)
+{
+    if (name && name[0] != '\0') {
+        strncpy(s_user_identity_name, name, sizeof(s_user_identity_name) - 1);
+        s_user_identity_name[sizeof(s_user_identity_name) - 1] = '\0';
+    } else {
+        strncpy(s_user_identity_name, "Lorenzo", sizeof(s_user_identity_name) - 1);
+    }
+}
+
 void display_welcome_identity(const char *name)
 {
-    const char *identity_name = (name && name[0] != '\0') ? name : "Lorenzo";
+    ui_set_user_name(name);
     char buf[64];
-    snprintf(buf, sizeof(buf), "Spill it, %s...", identity_name);
-    display_system_phase_message("Camila AI", buf, COLOR_WHITE_BGR565);
+    snprintf(buf, sizeof(buf), "Spill it, %s...", s_user_identity_name);
+    display_system_phase_message("AI'M CAMILA", buf, COLOR_WHITE_BGR565);
 }
 
 void display_error_message(void)
@@ -1160,7 +1183,7 @@ void camila_ui_update_state_with_color(ui_state_t state, const char *title, cons
         }
     }
 
-    const char *title_str = title ? title : "Camila AI";
+    const char *title_str = title ? title : "AI'M CAMILA";
     const char *sub_str = subtitle ? subtitle : "Active";
 
     display_system_phase_message(title_str, sub_str, render_color);
@@ -1173,7 +1196,47 @@ void camila_ui_update_state(ui_state_t state, const char *title, const char *sub
 
 void camila_ui_show_avatar(void)
 {
-    camila_ui_update_state(UI_STATE_ACTIVE_WEBRTC, "CAMILA AI", "Ready and listening");
+    clear_screen();
+    draw_screen_border(COLOR_CYAN_BGR565, 2);
+
+    // 1. Top Demo Tech Header (y = 14)
+    const char *header_text = "ESP32-S3 / OPENAI REALTIME";
+    int header_map[32];
+    int header_chars = convert_string_to_char_map(header_text, header_map, 32);
+    if (header_chars > 0)
+    {
+        int header_w = header_chars * CHAR_WIDTH + (header_chars - 1) * CHAR_SPACING_SCALE_1X;
+        int x = (BSP_LCD_H_RES - header_w) / 2;
+        if (x < 8) x = 8;
+        display_text(x, 14, header_map, header_chars, COLOR_CYAN_BGR565, 1);
+    }
+    // Horizontal divider line at y = 28 (w = 272, h = 1)
+    draw_filled_rect(24, 28, 272, 1, COLOR_CYAN_BGR565);
+
+    // 2. Center Hero Title (y = 106)
+    const char *title_text = "AI'M CAMILA";
+    int title_map[32];
+    int title_chars = convert_string_to_char_map(title_text, title_map, 32);
+    if (title_chars > 0)
+    {
+        int title_w = title_chars * (CHAR_WIDTH * 2) + (title_chars - 1) * CHAR_SPACING_SCALE_2X;
+        int x = (BSP_LCD_H_RES - title_w) / 2;
+        if (x < 8) x = 8;
+        display_text(x, 106, title_map, title_chars, COLOR_MAGENTA_BGR565, 2);
+    }
+    // Centered accent divider line at y = 131 (x = 120, w = 80, h = 2)
+    draw_filled_rect(120, 131, 80, 2, COLOR_CYAN_BGR565);
+
+    // 3. Dynamic Subtitle & Mute State Handling (y = 144)
+    draw_avatar_subtitle_line();
+
+    ui_backlight_on();
+
+    // Re-draw status overlay if currently active
+    if (s_camila_overlay_text[0] != '\0')
+    {
+        ui_show_status_message(s_camila_overlay_text, s_camila_overlay_color);
+    }
 }
 
 void camila_ui_set_speaking_state(bool is_speaking)
@@ -1186,10 +1249,8 @@ void camila_ui_update_mute_countdown(int remaining_seconds)
     if (remaining_seconds < 0) return;
     int mins = remaining_seconds / 60;
     int secs = remaining_seconds % 60;
-    /* Save text for display_system_phase_message to restore on full repaints */
     snprintf(s_mute_overlay_text, sizeof(s_mute_overlay_text), "Auto-sleep in %02d:%02d", mins, secs);
     s_mute_overlay_active = true;
-    /* Direct draw — only s_panel_mutex, NO s_camila_overlay_mutex (avoids timer-task contention) */
     ui_draw_mute_countdown_band();
 }
 
@@ -1203,14 +1264,7 @@ void camila_ui_clear_mute_countdown(void)
 {
     s_mute_overlay_active = false;
     s_mute_overlay_text[0] = '\0';
-    /* Erase the countdown band non-blockingly (100ms timeout) */
-    uint16_t *clear_buf = heap_caps_malloc(296 * 35 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (clear_buf)
-    {
-        memset(clear_buf, 0x00, 296 * 35 * sizeof(uint16_t));
-        ui_panel_try_blit(12, 190, 12 + 296, 190 + 35, clear_buf, 100);
-        free(clear_buf);
-    }
+    draw_avatar_subtitle_line();
 }
 
 

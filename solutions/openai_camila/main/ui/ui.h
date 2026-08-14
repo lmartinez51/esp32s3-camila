@@ -20,6 +20,7 @@ esp_err_t ui_deinit_keep_last_frame(void);
 bool ui_is_initialized(void);
 void display_startup_screen(void);
 void display_welcome_identity(const char *name);
+void ui_set_user_name(const char *name);
 void display_system_phase_message(const char *title, const char *subtitle, uint16_t color);
 void display_wifi_creds(void);
 void display_error_message(void);
@@ -43,7 +44,7 @@ void ui_backlight_off_safe(void);
 void ui_backlight_on(void);
 #define COLOR_GREEN_BGR565 0x001F
 #define COLOR_RED_BGR565 0x07E0
-#define COLOR_BLUE_BGR565 0x0F800
+#define COLOR_BLUE_BGR565 0xF800
 #define COLOR_WHITE_BGR565 0xFFFF
 #define COLOR_BLACK_BGR565 0x0000
 #define COLOR_YELLOW_BGR565 0x07FF
