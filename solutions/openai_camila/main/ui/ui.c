@@ -511,6 +511,8 @@ void ui_panel_unlock(void)
     }
 }
 
+static DRAM_ATTR uint16_t s_blit_dma_buf[BSP_LCD_H_RES * 5];
+
 static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
                                    const void *pixels,
                                    TickType_t lock_wait_ticks,
@@ -546,21 +548,25 @@ static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
     }
 
     int w = x1 - x0;
-    int max_bytes_per_chunk = 4096; // 4KB to safely fit in heavily fragmented DMA memory
-    int rows_per_chunk = max_bytes_per_chunk / (w * 2);
-    if (rows_per_chunk < 1) rows_per_chunk = 1;
+    int max_rows = sizeof(s_blit_dma_buf) / (w * sizeof(uint16_t));
+    if (max_rows < 1) max_rows = 1;
+    if (max_rows > 5) max_rows = 5;
 
     bool ok = true;
     const uint8_t *p = (const uint8_t *)pixels;
-    for (int y = y0; y < y1; y += rows_per_chunk) {
-        int end_y = y + rows_per_chunk;
+    for (int y = y0; y < y1; y += max_rows) {
+        int end_y = y + max_rows;
         if (end_y > y1) end_y = y1;
+        int chunk_rows = end_y - y;
+        size_t chunk_bytes = chunk_rows * w * sizeof(uint16_t);
+
+        memcpy(s_blit_dma_buf, p, chunk_bytes);
 
         if (s_panel_flush_done) {
             xSemaphoreTake(s_panel_flush_done, 0);
         }
 
-        esp_err_t err = esp_lcd_panel_draw_bitmap(g_panel_handle, x0, y, x1, end_y, p);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(g_panel_handle, x0, y, x1, end_y, s_blit_dma_buf);
         if (err != ESP_OK) {
             if (log_failures) {
                 ESP_LOGW(TAG, "LCD blit failed: %s", esp_err_to_name(err));
@@ -576,7 +582,7 @@ static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
             break;
         }
 
-        p += (end_y - y) * w * 2;
+        p += chunk_bytes;
     }
     xSemaphoreGive(s_panel_mutex);
     return ok;

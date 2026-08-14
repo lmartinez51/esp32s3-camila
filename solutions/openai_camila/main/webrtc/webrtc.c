@@ -135,6 +135,7 @@ static volatile bool g_input_speech_active = false;
 static volatile bool g_response_in_progress = false;
 static volatile bool g_output_audio_active = false;
 static volatile bool g_realtime_session_ready = false;
+static bool s_arrival_context_injected = false;
 static volatile uint32_t g_last_output_audio_stopped_ms = 0;
 static uint32_t g_response_started_ms = 0;
 static uint32_t g_last_dc_stats_log_ms = 0;
@@ -236,6 +237,45 @@ static int webrtc_send_json(const char *json_string)
     }
 
     return ret;
+}
+
+/* Pending response.create requested while the server was busy; flushed on response.done.
+ * Elimina la colisión conversation_already_has_active_response causada por el espejo
+ * local de estado ocupado, que siempre va rezagado respecto al servidor. */
+static bool g_deferred_response_create = false;
+static bool g_deferred_response_has_instructions = false;
+static char g_deferred_response_instructions[512] = {0};
+
+/**
+ * Solicita un response.create de forma segura: si el servidor ya está
+ * generando una respuesta, se difiere y se envía cuando llegue response.done.
+ * Solo la generación del servidor importa aquí: la reproducción de audio local
+ * (g_output_audio_active) NO ocupa el servidor, y diferir en ese caso provoca
+ * silencios largos y respuestas duplicadas al flushear la intención tarde.
+ */
+static void request_response_create_with_instructions(const char *instructions)
+{
+    if (webrtc_is_server_generating())
+    {
+        ESP_LOGI(TAG, "response.create diferido; se enviará al completarse la respuesta actual");
+        g_deferred_response_create = true;
+        if (instructions && instructions[0] != '\0')
+        {
+            strlcpy(g_deferred_response_instructions, instructions, sizeof(g_deferred_response_instructions));
+            g_deferred_response_has_instructions = true;
+        }
+        else
+        {
+            g_deferred_response_has_instructions = false;
+        }
+        return;
+    }
+    sendEvent("response.create", instructions);
+}
+
+static void request_response_create(void)
+{
+    request_response_create_with_instructions(NULL);
 }
 
 /**
@@ -1006,6 +1046,10 @@ static void reset_realtime_interaction_state(void)
     g_response_in_progress = false;
     g_output_audio_active = false;
     g_realtime_session_ready = false;
+    g_deferred_response_create = false;
+    g_deferred_response_has_instructions = false;
+    g_deferred_response_instructions[0] = '\0';
+    s_arrival_context_injected = false;
     g_last_input_speech_ms = 0;
     g_last_response_done_ms = 0;
     g_last_output_audio_stopped_ms = 0;
@@ -1886,7 +1930,7 @@ char *get_web_info(const char *request)
 
 void start_web_search_task(const char *user, const char *query, const char *call_id, esp_webrtc_handle_t webrtc_handle)
 {
-    web_search_task_ctx_t *ctx = heap_caps_calloc(1, sizeof(web_search_task_ctx_t), MALLOC_CAP_INTERNAL);
+    web_search_task_ctx_t *ctx = heap_caps_calloc(1, sizeof(web_search_task_ctx_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!ctx)
     {
         ESP_LOGE(TAG, "start_web_search_task: fallo calloc");
@@ -2016,7 +2060,7 @@ static void delete_api_key_task(void *arg)
 void start_delete_api_key_task(void)
 {
     if (xTaskCreatePinnedToCoreWithCaps(delete_api_key_task, "del_apikey_task", 3072, NULL, 5, NULL, 1,
-                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS)
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_api_key_task");
     }
@@ -2072,7 +2116,7 @@ void start_delete_credentials_task(void)
 {
     // Usamos un stack similar al de borrar API key, 3k debería ser suficiente
     if (xTaskCreatePinnedToCoreWithCaps(delete_credentials_task, "del_creds_task", 3072, NULL, 5, NULL, 1,
-                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS)
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea delete_credentials_task");
         // Opcional: Enviar un error de vuelta a OpenAI si la tarea no se pudo crear
@@ -2314,6 +2358,12 @@ int webrtc_inject_arrival_context(void)
         return -1;
     }
 
+    if (s_arrival_context_injected)
+    {
+        ESP_LOGI(TAG, "Arrival context skipped; already injected in current WebRTC session");
+        return 0;
+    }
+
     cJSON *root = cJSON_CreateObject();
     cJSON *item = cJSON_CreateObject();
     cJSON *content_array = cJSON_CreateArray();
@@ -2359,12 +2409,16 @@ int webrtc_inject_arrival_context(void)
         return ret;
     }
 
+    s_arrival_context_injected = true;
+    extern bool s_arrival_context_sent;
+    s_arrival_context_sent = true;
+
     vTaskDelay(pdMS_TO_TICKS(150));
     webrtc_mark_activity();
 
     if (webrtc_realtime_is_busy())
     {
-        ESP_LOGI(TAG, "Arrival context injected; response.create suppressed because Realtime is already responding");
+        ESP_LOGW(TAG, "Arrival context injected; response.create suppressed because Realtime is already responding");
         return 0;
     }
 
@@ -2572,6 +2626,138 @@ static void start_automation_task(const char* call_id, const char* function_name
 }
 // ---------------------------------------------
 
+// --- BLE TOOL HANDLER TASK (FIX: fuera del pc_task de 4 KB) ---
+// La ejecución de control_ble_device / set_ble_device_alias /
+// get_discovered_ble_devices incluye cadenas profundas (JSON, NVS, LCD) que
+// desbordaban la pila de 4 KB del pc_task (esp_webrtc), corrompiendo el heap y
+// congelando el sistema con el buzzer atascado. Se ejecutan aquí con pila PSRAM.
+typedef struct {
+    char call_id[128];
+    char function_name[64];
+    char *args_json;
+} ble_tool_ctx_t;
+
+static void ble_tool_handler_task(void *arg)
+{
+    ble_tool_ctx_t *ctx = (ble_tool_ctx_t *)arg;
+    if (!ctx) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    cJSON *args_root = NULL;
+    if (ctx->args_json && strlen(ctx->args_json) > 0) {
+        args_root = cJSON_Parse(ctx->args_json);
+    }
+
+    if (strcmp(ctx->function_name, "get_discovered_ble_devices") == 0)
+    {
+        ESP_LOGI(TAG, "Llamada a función detectada! Generando resumen de dispositivos BLE para Chatbot...");
+        char summary_json[1024] = {0};
+        ble_device_get_summary_for_chatbot(summary_json, sizeof(summary_json));
+        send_function_output(ctx->call_id, summary_json);
+        request_response_create();
+    }
+    else if (strcmp(ctx->function_name, "control_ble_device") == 0)
+    {
+        cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
+        cJSON *act_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "action") : NULL;
+        cJSON *dur_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms") : NULL;
+
+        const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "ELEGOO BT16";
+        const char *act_str = (cJSON_IsString(act_item) && act_item->valuestring) ? act_item->valuestring : "FORWARD";
+        uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint : 0;
+
+        ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
+                 dev_str, act_str, dur_val);
+
+        char ui_sub[64];
+        snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
+        ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+        esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
+        ui_clear_status_message();
+        if (ctrl_err == ESP_OK) {
+            if (strcasecmp(act_str, "READ_ULTRASONIC") == 0 || strcasecmp(act_str, "leer_ultrasonico") == 0) {
+                const char *telemetry = ble_device_get_last_telemetry();
+                char resp_buf[128];
+                snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"success\", \"distance\": \"%s\"}", (telemetry && strlen(telemetry) > 0) ? telemetry : "desconocida");
+                send_function_output(ctx->call_id, resp_buf);
+            } else {
+                send_function_output(ctx->call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
+            }
+        } else {
+            send_function_output(ctx->call_id, "{\"status\": \"error\", \"message\": \"Unable to communicate with the BLE car. Device is offline, powered off, or disconnected.\"}");
+        }
+        request_response_create();
+    }
+    else if (strcmp(ctx->function_name, "set_ble_device_alias") == 0)
+    {
+        cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
+        cJSON *alias_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "new_alias") : NULL;
+
+        const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "";
+        const char *alias_str = (cJSON_IsString(alias_item) && alias_item->valuestring) ? alias_item->valuestring : "";
+
+        ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
+
+        char ui_sub[64];
+        snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
+        ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+        esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
+        ui_clear_status_message();
+        if (alias_err == ESP_OK) {
+            send_function_output(ctx->call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
+        } else {
+            send_function_output(ctx->call_id, "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
+        }
+        request_response_create();
+    }
+    else
+    {
+        ESP_LOGW(TAG, "ble_tool_handler_task: función desconocida: %s", ctx->function_name);
+    }
+
+    if (args_root) cJSON_Delete(args_root);
+    if (ctx->args_json) free(ctx->args_json);
+    free(ctx);
+    vTaskDelete(NULL);
+}
+
+static void start_ble_tool_task(const char *call_id, const char *function_name, const char *args_json)
+{
+    if (!call_id) return;
+    ble_tool_ctx_t *ctx = heap_caps_malloc(sizeof(ble_tool_ctx_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!ctx) return;
+
+    strlcpy(ctx->call_id, call_id, sizeof(ctx->call_id));
+    if (function_name) {
+        strlcpy(ctx->function_name, function_name, sizeof(ctx->function_name));
+    } else {
+        ctx->function_name[0] = '\0';
+    }
+
+    if (args_json) {
+        size_t len = strlen(args_json) + 1;
+        ctx->args_json = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ctx->args_json) {
+            memcpy(ctx->args_json, args_json, len);
+        }
+    } else {
+        ctx->args_json = NULL;
+    }
+
+    // Stack PSRAM de 12 KB: suficiente para la cadena BLE + NVS(encolado) + LCD.
+    if (create_psram_task(ble_tool_handler_task, "ble_tool", 12288, ctx, 5, NULL, 1) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to create ble_tool_handler_task");
+        if (ctx->args_json) free(ctx->args_json);
+        free(ctx);
+    }
+}
+// ---------------------------------------------
+
 /**
  * @brief Processes JSON data received via WebRTC.
  */
@@ -2675,8 +2861,7 @@ static int process_json(const char *json_data, int json_size)
                 {
                     ESP_LOGW(TAG, "Invalid 'query' argument for lookup_product_info");
                     sendEvent("conversation.item.create", "Missing or invalid 'query' argument for lookup_product_info.");
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    sendEvent("response.create", "Lo siento, no pude realizar la consulta porque el nombre del producto es inválido.");
+                    request_response_create_with_instructions("Lo siento, no pude realizar la consulta porque el nombre del producto es inválido.");
                     send_function_output(call_id, "Missing or invalid 'query' argument.");
                 }
                 break;
@@ -2693,8 +2878,7 @@ static int process_json(const char *json_data, int json_size)
                 {
                     ESP_LOGW(TAG, "Argumento 'request' inválido para web_search");
                     sendEvent("conversation.item.create", "Missing or invalid 'request' argument for web_search.");
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    sendEvent("response.create", "Lo siento, no pude realizar la búsqueda web porque el dato proporcionado es inválido.");
+                    request_response_create_with_instructions("Lo siento, no pude realizar la búsqueda web porque el dato proporcionado es inválido.");
                 }
                 break; // Procesada (o falló el argumento)
             }
@@ -2733,71 +2917,12 @@ static int process_json(const char *json_data, int json_size)
 
     if (!class_found)
     {
-        if (strcmp(name->valuestring, "get_discovered_ble_devices") == 0)
+        if (strcmp(name->valuestring, "get_discovered_ble_devices") == 0 ||
+            strcmp(name->valuestring, "control_ble_device") == 0 ||
+            strcmp(name->valuestring, "set_ble_device_alias") == 0)
         {
-            ESP_LOGI(TAG, "Llamada a función detectada! Generando resumen de dispositivos BLE para Chatbot...");
-            char summary_json[1024] = {0};
-            ble_device_get_summary_for_chatbot(summary_json, sizeof(summary_json));
-            send_function_output(call_id, summary_json);
-            sendEvent("response.create", NULL);
-            class_found = true;
-        }
-        else if (strcmp(name->valuestring, "control_ble_device") == 0)
-        {
-            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
-            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
-            cJSON *dur_item = cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms");
-
-            const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "ELEGOO BT16";
-            const char *act_str = (cJSON_IsString(act_item) && act_item->valuestring) ? act_item->valuestring : "FORWARD";
-            uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint : 0;
-
-            ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
-                     dev_str, act_str, dur_val);
-
-            char ui_sub[64];
-            snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
-            ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
-
-            esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
-            ui_clear_status_message();
-            if (ctrl_err == ESP_OK) {
-                if (strcasecmp(act_str, "READ_ULTRASONIC") == 0 || strcasecmp(act_str, "leer_ultrasonico") == 0) {
-                    const char *telemetry = ble_device_get_last_telemetry();
-                    char resp_buf[128];
-                    snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"success\", \"distance\": \"%s\"}", (telemetry && strlen(telemetry) > 0) ? telemetry : "desconocida");
-                    send_function_output(call_id, resp_buf);
-                } else {
-                    send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
-                }
-            } else {
-                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Unable to communicate with the BLE car. Device is offline, powered off, or disconnected.\"}");
-            }
-            sendEvent("response.create", NULL);
-            class_found = true;
-        }
-        else if (strcmp(name->valuestring, "set_ble_device_alias") == 0)
-        {
-            cJSON *dev_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
-            cJSON *alias_item = cJSON_GetObjectItemCaseSensitive(args_root, "new_alias");
-
-            const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "";
-            const char *alias_str = (cJSON_IsString(alias_item) && alias_item->valuestring) ? alias_item->valuestring : "";
-
-            ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
-
-            char ui_sub[64];
-            snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
-            ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
-
-            esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
-            ui_clear_status_message();
-            if (alias_err == ESP_OK) {
-                send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
-            } else {
-                send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
-            }
-            sendEvent("response.create", NULL);
+            /* Ejecutar en tarea dedicada con pila PSRAM: fuera del pc_task de 4 KB */
+            start_ble_tool_task(call_id, name->valuestring, arguments->valuestring);
             class_found = true;
         }
         else if (strcmp(name->valuestring, "list_automation_rules") == 0 ||
@@ -2861,6 +2986,9 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         {
             ESP_LOGW(TAG, "Realtime reports an active response; preserving response busy state");
             g_response_in_progress = true;
+            /* NO re-diferir aquí: el servidor ya tiene una respuesta activa que
+             * producirá salida, y re-encolar la intención tras cada response.done
+             * provocaría un bucle de respuestas duplicadas. */
             webrtc_mark_activity();
         }
         else
@@ -2897,6 +3025,12 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         g_last_input_speech_ms = app_millis();
         webrtc_mark_activity();
 
+        /* NO descartar la intención diferida aquí: speech_started solo marca el
+         * inicio del VAD y un ruido/tos puede dispararlo sin que el servidor
+         * llegue a commitear, perdiendo la narración del resultado de la
+         * herramienta. El descarte se hace en input_audio_buffer.committed,
+         * cuando el servidor ya aceptó el turno y creará su respuesta. */
+
         if (g_response_in_progress)
         {
             webrtc_send_json("{\"type\":\"response.cancel\"}");
@@ -2912,10 +3046,26 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
     else if (strcmp(event_type, "input_audio_buffer.committed") == 0)
     {
         webrtc_mark_activity();
+
+        /* Un turno real del usuario supera cualquier response.create diferido:
+         * el servidor creará su propia respuesta (VAD) al procesar el buffer
+         * commiteado. Sin esto, el flush tardío duplicaría la respuesta. */
+        if (g_deferred_response_create) {
+            ESP_LOGI(TAG, "Descartando response.create diferido: turno del usuario commiteado");
+            g_deferred_response_create = false;
+            g_deferred_response_has_instructions = false;
+        }
     }
     else if (strcmp(event_type, "response.created") == 0)
     {
         g_response_in_progress = true;
+        /* Ya hay una respuesta en camino (creada por nuestro create, por el VAD
+         * o por continuación del servidor): la intención diferida queda satisfecha.
+         * Evita que el flush de response.done genere una segunda respuesta idéntica. */
+        if (g_deferred_response_create) {
+            g_deferred_response_create = false;
+            g_deferred_response_has_instructions = false;
+        }
         webrtc_mark_activity();
         reset_data_channel_response_stats();
         track_data_channel_event(event_type, size);
@@ -2925,6 +3075,14 @@ static int webrtc_data_handler(esp_webrtc_custom_data_via_t via, uint8_t *data, 
         log_response_done(root);
         log_data_channel_snapshot("response-done");
         g_response_in_progress = false;
+        /* Flush de cualquier response.create diferido mientras el servidor estaba ocupado */
+        if (g_deferred_response_create)
+        {
+            g_deferred_response_create = false;
+            ESP_LOGI(TAG, "Enviando response.create diferido tras response.done");
+            sendEvent("response.create", g_deferred_response_has_instructions ? g_deferred_response_instructions : NULL);
+            g_deferred_response_has_instructions = false;
+        }
         webrtc_mark_activity();
         schedule_post_response_capture_recovery();
         if (!g_output_audio_active)

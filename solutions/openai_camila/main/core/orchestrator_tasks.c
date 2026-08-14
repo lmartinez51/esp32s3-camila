@@ -200,7 +200,7 @@ void orchestrator_start_initial_ble_discovery(uint32_t duration_ms)
                                                     5,
                                                     &s_initial_discovery_task_handle,
                                                     tskNO_AFFINITY,
-                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                                                    ORCHESTRATOR_EXTERNAL_STACK_CAPS);
     if (rc != pdPASS) {
         s_initial_discovery_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create initial BLE discovery task — proceeding directly to ignition");
@@ -387,7 +387,7 @@ void orchestrator_start_webrtc_stop(void)
                                                     WEBRTC_STOP_TASK_PRIORITY,
                                                     &s_webrtc_stop_task_handle,
                                                     tskNO_AFFINITY,
-                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                                                    ORCHESTRATOR_EXTERNAL_STACK_CAPS);
     if (rc != pdPASS) {
         s_webrtc_stop_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create WebRTC stop task");

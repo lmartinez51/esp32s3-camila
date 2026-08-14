@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
@@ -238,6 +239,7 @@ static struct
     uint8_t addr[6];
     uint8_t addr_type;
     bool is_active;
+    bool cancelled; // true si la operación on-demand fue abortada por timeout
 } g_pending_connection;
 
 typedef struct
@@ -1525,6 +1527,9 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Cada intento de conexión es una intención fresca: anula cancelaciones previas */
+    g_pending_connection.cancelled = false;
+
     // Buscar dispositivo en la lista
     ble_device_info_t *device = find_device_by_addr_internal(device_addr);
     if (!device)
@@ -1909,6 +1914,15 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                     if (device_callbacks.on_device_connected)
                     {
                         device_callbacks.on_device_connected(device);
+                    }
+
+                    /* Si el llamante on-demand ya abandonó la espera, terminamos el enlace
+                     * inmediatamente para no dejar conexiones huérfanas (LED rojo fijo). */
+                    if (g_pending_connection.cancelled)
+                    {
+                        ESP_LOGW(TAG, "⚠️ Conexión on-demand previamente cancelada; terminando enlace %d", event->connect.conn_handle);
+                        ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                        return 0;
                     }
 
                     // En lugar de forzar bonding inmediatamente, permite que ocurra naturalmente
@@ -2590,11 +2604,15 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
     if (error->status == BLE_HS_EDONE)
     {
         ESP_LOGI(TAG, "Descubrimiento de características completo para el servicio actual.");
-        if (device->char_discovered)
+        if (g_pending_connection.cancelled)
+        {
+            ESP_LOGW(TAG, "Descubrimiento completado tras cancelación on-demand; no se restaura estado ni se persiste");
+        }
+        else if (device->char_discovered)
         {
             ESP_LOGW(TAG, "✅ Perfil del dispositivo '%s' aprendido exitosamente (Handle GATT: 0x%04X).", device->name, device->char_val_handle);
             update_device_state(device->addr, BLE_DEVICE_STATE_CONNECTED);
-            save_discovered_device_to_nvs(device);
+            nvs_save_discovered_device_async(device);
         }
         else
         {
@@ -4033,13 +4051,13 @@ esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
                 strlcpy(discovered_devices[i].alias, alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
                 discovered_devices[i].is_configured = true;
-                esp_err_t nvs_err = save_discovered_device_to_nvs(&discovered_devices[i]);
+                esp_err_t nvs_err = nvs_save_discovered_device_async(&discovered_devices[i]);
                 xSemaphoreGive(devices_mutex);
                 if (nvs_err == ESP_OK) {
-                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y guardado persistentemente en NVS para MAC %02X:%02X:%02X:%02X:%02X:%02X",
+                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y ENCOLADO para persistir en NVS para MAC %02X:%02X:%02X:%02X:%02X:%02X",
                              alias, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                 } else {
-                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero guardado NVS devolvió %s", alias, esp_err_to_name(nvs_err));
+                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", alias, esp_err_to_name(nvs_err));
                 }
                 return ESP_OK;
             }
@@ -4061,12 +4079,12 @@ esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new
                 strlcpy(discovered_devices[i].alias, new_alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
                 discovered_devices[i].is_configured = true;
-                esp_err_t nvs_err = save_discovered_device_to_nvs(&discovered_devices[i]);
+                esp_err_t nvs_err = nvs_save_discovered_device_async(&discovered_devices[i]);
                 xSemaphoreGive(devices_mutex);
                 if (nvs_err == ESP_OK) {
-                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y guardado persistentemente en NVS para dispositivo '%s'", new_alias, current_name);
+                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y ENCOLADO para persistir en NVS para dispositivo '%s'", new_alias, current_name);
                 } else {
-                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero guardado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
+                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
                 }
                 return ESP_OK;
             }
@@ -4263,55 +4281,105 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
         }
 
-        ble_device_connect(target_dev.addr, target_dev.addr_type);
+        /* Fresh attempt: clear cancellation intent from any previous timeout */
+        g_pending_connection.cancelled = false;
+        g_pending_connection.is_active = true;
+        /* Expediente del intento en curso: necesario para que los callbacks de
+         * error de conexión y de desconexión puedan resolver el dispositivo y
+         * marcar el fallo (sin esto, el estado quedaba atascado en CONNECTING
+         * y la espera por fases agotaba los 8 s con el robot apagado). */
+        memcpy(g_pending_connection.addr, target_dev.addr, 6);
+        g_pending_connection.addr_type = target_dev.addr_type;
 
-        /* Block efficiently until GATT discovery completes, fails, or 3s timeout */
-        if (s_ondemand_conn_sem != NULL) {
-            BaseType_t sem_result = xSemaphoreTake(s_ondemand_conn_sem, pdMS_TO_TICKS(3000));
-            if (sem_result != pdTRUE) {
-                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión GATT con '%s' (3000 ms)", target_dev.name);
-            }
-        } else {
-            /* Fallback: legacy short poll if semaphore was not allocated */
-            for (int wait = 0; wait < 60; wait++) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-                if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                    for (int i = 0; i < discovered_count; i++) {
-                        if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0 &&
-                            discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
-                            discovered_devices[i].conn_handle != 0 &&
-                            (discovered_devices[i].state == BLE_DEVICE_STATE_CONNECTED || discovered_devices[i].state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) &&
-                            discovered_devices[i].char_discovered) {
-                            current_conn_handle = discovered_devices[i].conn_handle;
-                            if (discovered_devices[i].char_val_handle > 0) write_handle = discovered_devices[i].char_val_handle;
-                            xSemaphoreGive(devices_mutex);
-                            goto conn_ready;
-                        }
-                    }
-                    xSemaphoreGive(devices_mutex);
-                }
-            }
+        esp_err_t connect_rc = ble_device_connect(target_dev.addr, target_dev.addr_type);
+        if (connect_rc != ESP_OK) {
+            ESP_LOGE(TAG, "❌ ble_device_connect devolvió %s para '%s'", esp_err_to_name(connect_rc), target_dev.name);
+            g_pending_connection.is_active = false;
+            update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+            return ESP_FAIL;
         }
 
+        /*
+         * Espera por fases, medida desde cada evento (no desde la petición):
+         *  - Fase 1: establecimiento del enlace (los periféricos lentos como el
+         *    ELEGOO BT16 tardan ~2.5 s solo en enlazar).
+         *  - Fase 2: descubrimiento GATT, con presupuesto propio desde el enlace.
+         * Si cualquiera de las dos fases expira, se ABORTA activamente el enlace
+         * (ble_gap_terminate) y se marca la operación como cancelada para que los
+         * callbacks tardíos no reabran el estado ni dejen conexiones huérfanas.
+         */
+        const uint32_t phase1_timeout_ms = 8000;
+        const uint32_t phase2_timeout_ms = 6000;
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        uint32_t phase1_deadline = now_ms + phase1_timeout_ms;
+        uint32_t phase2_deadline = 0;
+        bool linked = false;
         bool conn_success = false;
-        /* Single mutex acquisition post-wake to extract handles */
-        if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-            for (int i = 0; i < discovered_count; i++) {
-                if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
-                    if (discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
-                        discovered_devices[i].conn_handle != 0 &&
-                        (discovered_devices[i].state == BLE_DEVICE_STATE_CONNECTED || discovered_devices[i].state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) &&
-                        discovered_devices[i].char_discovered) {
-                        current_conn_handle = discovered_devices[i].conn_handle;
-                        if (discovered_devices[i].char_val_handle > 0) write_handle = discovered_devices[i].char_val_handle;
-                        conn_success = true;
-                    } else {
-                        ESP_LOGW(TAG, "⚠️ Dispositivo '%s' no listo para comandos tras espera GATT.", target_dev.name);
+        bool attempt_failed = false;
+
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+            if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                for (int i = 0; i < discovered_count; i++) {
+                    if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
+                        ble_device_info_t *dev = &discovered_devices[i];
+                        if (dev->conn_handle != BLE_HS_CONN_HANDLE_NONE && dev->conn_handle != 0) {
+                            current_conn_handle = dev->conn_handle;
+                            if (!linked) {
+                                linked = true;
+                                phase2_deadline = now_ms + phase2_timeout_ms;
+                            }
+                            if (dev->char_discovered &&
+                                (dev->state == BLE_DEVICE_STATE_CONNECTED || dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE)) {
+                                if (dev->char_val_handle > 0) write_handle = dev->char_val_handle;
+                                conn_success = true;
+                            }
+                        } else if (linked) {
+                            ESP_LOGW(TAG, "⚠️ El enlace con '%s' se cayó durante la espera GATT.", target_dev.name);
+                            linked = false;
+                        } else if (dev->state != BLE_DEVICE_STATE_CONNECTING) {
+                            /* El intento de conexión ya terminó sin enlace: el
+                             * callback de error marcó ERROR o el callback de
+                             * desconexión volvió a DISCONNECTED (p. ej. robot
+                             * apagado). Abortar de inmediato en lugar de esperar
+                             * los 8 s de la fase 1. */
+                            ESP_LOGW(TAG, "⚠️ Intento de conexión con '%s' terminó sin enlace (estado %d). Abortando espera.",
+                                     target_dev.name, dev->state);
+                            current_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+                            linked = false;
+                            attempt_failed = true;
+                            break;
+                        }
+                        break;
                     }
-                    break;
                 }
+                xSemaphoreGive(devices_mutex);
             }
-            xSemaphoreGive(devices_mutex);
+
+            if (attempt_failed || conn_success) {
+                break;
+            }
+
+            if (linked && phase2_deadline != 0 && now_ms >= phase2_deadline) {
+                ESP_LOGW(TAG, "⚠️ Timeout esperando descubrimiento GATT con '%s' (fase 2: %lu ms)",
+                         target_dev.name, (unsigned long)phase2_timeout_ms);
+                g_pending_connection.cancelled = true;
+                if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
+                    ESP_LOGW(TAG, "🔌 Terminando enlace huérfano '%s' (handle %u) para liberar radio...",
+                             target_dev.name, current_conn_handle);
+                    ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                }
+                break;
+            }
+
+            if (!linked && now_ms >= phase1_deadline) {
+                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión con '%s' (fase 1: %lu ms)",
+                         target_dev.name, (unsigned long)phase1_timeout_ms);
+                g_pending_connection.cancelled = true;
+                break;
+            }
         }
 
         if (!conn_success || current_conn_handle == BLE_HS_CONN_HANDLE_NONE || current_conn_handle == 0) {
@@ -4322,7 +4390,6 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         }
     }
 
-conn_ready:
     if (cmd->expects_notification) {
         uint16_t command_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : ELEGOO_COMMAND_VALUE_HANDLE;
         uint16_t notify_handle = ELEGOO_NOTIFY_VALUE_HANDLE;

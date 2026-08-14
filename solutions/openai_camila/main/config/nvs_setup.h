@@ -176,6 +176,19 @@ extern "C"
     esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device);
 
     /**
+     * @brief Encola un dispositivo para persistirlo en NVS de forma asíncrona.
+     *
+     * El guardado real se ejecuta en una tarea dedicada de baja prioridad con
+     * pila interna. NUNCA ejecuta operaciones de flash en el contexto del
+     * llamante (pc_task de WebRTC o callbacks de NimBLE), evitando el cuelgue
+     * del pipeline de audio y la corrupción de pila.
+     *
+     * @param device Puntero al dispositivo a guardar (se copia en profundidad).
+     * @return esp_err_t ESP_OK si el perfil fue encolado, otro código en caso de error.
+     */
+    esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device);
+
+    /**
      * @brief Provisión de un dispositivo de prueba Philips Hue en NVS.
      *
      * Esta función crea y guarda un perfil de dispositivo simulado para pruebas,

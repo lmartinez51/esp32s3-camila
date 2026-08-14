@@ -11,6 +11,7 @@
 // Sistema / FreeRTOS
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 // ESP-IDF
 #include "esp_log.h"
@@ -267,6 +268,103 @@ esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device)
     profile.requires_bonding = true;
 
     return save_device_profile(current_ssid, &profile);
+}
+
+/* ----------------- Persistencia NVS asíncrona (fuera de rutas de tiempo real) ----------------- */
+
+#define NVS_SAVE_QUEUE_LEN 4
+#define NVS_SAVE_WORKER_STACK 4096
+#define NVS_SSID_BUF_SIZE 33
+
+typedef struct
+{
+    char ssid[NVS_SSID_BUF_SIZE];
+    device_profile_nvs_t profile;
+} nvs_save_req_t;
+
+static QueueHandle_t s_nvs_save_queue = NULL;
+
+/**
+ * Tarea de baja prioridad que ejecuta exclusivamente las escrituras NVS.
+ * Usa pila INTERNA (no PSRAM): las operaciones de flash deshabilitan la
+ * caché durante la escritura y el stack no puede residir en PSRAM.
+ */
+static void nvs_save_worker_task(void *arg)
+{
+    (void)arg;
+    nvs_save_req_t req;
+    for (;;)
+    {
+        if (xQueueReceive(s_nvs_save_queue, &req, portMAX_DELAY) == pdTRUE)
+        {
+            esp_err_t err = save_device_profile(req.ssid, &req.profile);
+            if (err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "NVS worker: fallo persistiendo '%s': %s",
+                         req.profile.name[0] ? req.profile.name : "(sin nombre)",
+                         esp_err_to_name(err));
+            }
+        }
+    }
+}
+
+esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device)
+{
+    if (!device)
+    {
+        ESP_LOGE(TAG, "Dispositivo nulo no válido para encolar en NVS");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool has_alias = (device->alias[0] != '\0');
+    if (!has_alias && (!device->is_known || device->char_discovered == false))
+    {
+        ESP_LOGE(TAG, "Dispositivo no válido para encolar en NVS");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *current_ssid = wifi_session_get_connected_ssid();
+    if (!current_ssid || strlen(current_ssid) == 0)
+    {
+        ESP_LOGE(TAG, "No hay SSID activo para encolar dispositivo");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_nvs_save_queue == NULL)
+    {
+        s_nvs_save_queue = xQueueCreate(NVS_SAVE_QUEUE_LEN, sizeof(nvs_save_req_t));
+        if (s_nvs_save_queue == NULL)
+        {
+            ESP_LOGE(TAG, "Error creando cola de guardado NVS");
+            return ESP_ERR_NO_MEM;
+        }
+        if (xTaskCreatePinnedToCore(nvs_save_worker_task, "nvs_save", NVS_SAVE_WORKER_STACK,
+                                    NULL, 5, NULL, 0) != pdPASS)
+        {
+            ESP_LOGE(TAG, "Error creando tarea de guardado NVS");
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "Tarea de guardado NVS asíncrona creada");
+    }
+
+    nvs_save_req_t req = {0};
+    strlcpy(req.ssid, current_ssid, sizeof(req.ssid));
+    strlcpy(req.profile.name, device->name, sizeof(req.profile.name));
+    strlcpy(req.profile.alias, device->alias, sizeof(req.profile.alias));
+    memcpy(req.profile.addr.val, device->addr, sizeof(req.profile.addr.val));
+    req.profile.addr.type = device->addr_type;
+    req.profile.device_type = device->type;
+    req.profile.service_uuid = device->service_uuid_128;
+    req.profile.char_uuid = device->char_uuid_128;
+    req.profile.requires_bonding = true;
+
+    if (xQueueSend(s_nvs_save_queue, &req, pdMS_TO_TICKS(100)) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Cola de guardado NVS llena; perfil '%s' no persistido", req.profile.name);
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "Perfil encolado para persistir: '%s'", req.profile.name);
+    return ESP_OK;
 }
 
 /**
