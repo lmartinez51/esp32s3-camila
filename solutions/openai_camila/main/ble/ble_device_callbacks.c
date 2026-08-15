@@ -54,15 +54,10 @@ void on_device_discovered_callback(ble_device_info_t *device)
 
     int current_total = ble_device_get_discovered_count();
 
-    ESP_LOGI(TAG, "=== DISPOSITIVO BLE DESCUBIERTO ===");
-    ESP_LOGI(TAG, "Nombre: %s", device->name);
-    ESP_LOGI(TAG, "Tipo: %s", device_type_to_string(device->type));
-    ESP_LOGI(TAG, "RSSI: %d dBm", device->rssi);
-    ESP_LOGI(TAG, "Dirección: %02X:%02X:%02X:%02X:%02X:%02X",
+    ESP_LOGI(TAG, "Dispositivo BLE descubierto: '%s' (%s, RSSI %d dBm, %02X:%02X:%02X:%02X:%02X:%02X) | total=%d",
+             device->name, device_type_to_string(device->type), device->rssi,
              device->addr[0], device->addr[1], device->addr[2],
-             device->addr[3], device->addr[4], device->addr[5]);
-    ESP_LOGI(TAG, "Total descubiertos: %d", current_total); // discovered_devices_count); // Cambiado a total_discovered_for_callback
-    ESP_LOGI(TAG, "================================");
+             device->addr[3], device->addr[4], device->addr[5], current_total);
 
     // Lógica específica por tipo de dispositivo
     switch (device->type)
@@ -95,12 +90,8 @@ void on_device_connected_callback(ble_device_info_t *device)
 
     connected_devices_count++;
 
-    ESP_LOGI(TAG, "=== DISPOSITIVO CONECTADO ===");
-    ESP_LOGI(TAG, "✅ Conexión establecida con: %s", device->name);
-    ESP_LOGI(TAG, "Tipo: %s", device_type_to_string(device->type));
-    ESP_LOGI(TAG, "Connection Handle: %d", device->conn_handle);
-    ESP_LOGI(TAG, "Dispositivos conectados: %d", connected_devices_count);
-    ESP_LOGI(TAG, "============================");
+    ESP_LOGI(TAG, "✅ Conexión establecida con: %s (tipo: %s, conn_handle: %d)",
+             device->name, device_type_to_string(device->type), device->conn_handle);
 
     // Notificar al sistema AI que el dispositivo está disponible
     // Aquí podrías enviar un evento al sistema de reconocimiento de voz
@@ -137,11 +128,8 @@ void on_device_disconnected_callback(ble_device_info_t *device)
         connected_devices_count--;
     }
 
-    ESP_LOGW(TAG, "=== DISPOSITIVO DESCONECTADO ===");
-    ESP_LOGW(TAG, "❌ Conexión perdida con: %s", device->name);
-    ESP_LOGW(TAG, "Tipo: %s", device_type_to_string(device->type));
-    ESP_LOGW(TAG, "Dispositivos conectados: %d", connected_devices_count);
-    ESP_LOGW(TAG, "==============================");
+    ESP_LOGW(TAG, "❌ Conexión perdida con: %s (tipo: %s, conectados: %d)",
+             device->name, device_type_to_string(device->type), connected_devices_count);
 
     // Resetear estado y handle
     device->state = BLE_DEVICE_STATE_DISCONNECTED;
@@ -164,18 +152,14 @@ void on_command_result_callback(ble_device_info_t *device, bool success)
     if (success)
     {
         successful_commands_count++;
-        ESP_LOGI(TAG, "=== COMANDO EXITOSO ===");
-        ESP_LOGI(TAG, "✅ Comando enviado correctamente a: %s", device->name);
-        ESP_LOGI(TAG, "Comandos exitosos: %d", successful_commands_count);
-        ESP_LOGI(TAG, "=====================");
+        ESP_LOGI(TAG, "✅ Comando enviado correctamente a: %s (exitosos: %d)",
+                 device->name, successful_commands_count);
     }
     else
     {
         failed_commands_count++;
-        ESP_LOGE(TAG, "=== COMANDO FALLIDO ===");
-        ESP_LOGE(TAG, "❌ Error enviando comando a: %s", device->name);
-        ESP_LOGE(TAG, "Comandos fallidos: %d", failed_commands_count);
-        ESP_LOGE(TAG, "=====================");
+        ESP_LOGE(TAG, "❌ Error enviando comando a: %s (fallidos: %d)",
+                 device->name, failed_commands_count);
     }
 
     // Notificar al sistema AI sobre el resultado

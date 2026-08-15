@@ -8,6 +8,7 @@ extern "C"
 #include "esp_webrtc.h" // Aquí se define esp_webrtc_handle_t
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <cJSON.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -81,6 +82,27 @@ extern "C"
      * @param action La acción a publicar.
      */
     void webrtc_post_action(webrtc_action_t action);
+
+    /**
+     * @brief Crea una tarea con pila PSRAM (fallback a pila interna).
+     *
+     * Helper compartido por los módulos que despachan tool calls pesados
+     * (adaptadores, drivers) fuera del pc_task de 4 KB de WebRTC.
+     */
+    BaseType_t webrtc_create_psram_task(TaskFunction_t task_fn,
+                                        const char *name,
+                                        uint32_t stack_size,
+                                        void *param,
+                                        UBaseType_t priority,
+                                        TaskHandle_t *task_handle,
+                                        BaseType_t core_id);
+
+    /**
+     * @brief Solicita un response.create de forma segura (wrapper público).
+     *
+     * Difiere la petición si el servidor ya está generando una respuesta.
+     */
+    void webrtc_request_response_create(void);
 
 #ifdef __cplusplus
 }

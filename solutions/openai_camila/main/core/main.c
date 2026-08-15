@@ -35,6 +35,7 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include "esp_debug_helpers.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_err.h"
@@ -68,6 +69,8 @@
 #include "app_events.h"
 #include "wifi_session_state.h"
 #include "config_manager.h"
+#include "device_registry.h"
+#include "webrtc_tool_adapter.h"
 #include "webrtc.h"
 #include "csi_handler.h"
 #include "ei_inference.h"
@@ -283,6 +286,10 @@ static void app_heap_alloc_failed_hook(size_t      requested_size,
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+
+    ESP_EARLY_LOGE(TAG, "[HEAP] alloc_failed task=%s",
+                   pcTaskGetName(NULL) ? pcTaskGetName(NULL) : "?");
+    esp_backtrace_print(12);
 }
 
 /* ── Application Entry Point ────────────────────────────────────────────── */
@@ -416,6 +423,14 @@ void app_main(void)
         ESP_LOGE(TAG, "No se pudieron crear primitivas de sincronizacion de arranque");
         return;
     }
+
+    /* 4b) Robot HAL + WebRTC tool adapter (Phase 2: registry + migration task) */
+    /* NOTE: runs after app_startup_event_group exists — the migration task
+     * blocks on WIFI_CONNECTED_BIT from boot. */
+    if (robot_registry_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Robot registry init failed; device tools will use legacy BLE path");
+    }
+    webrtc_tool_adapter_init();
 
     ESP_LOGI(TAG, "BLE se inicializara bajo demanda.");
     ESP_LOGI(TAG, "BLE Central permanece deshabilitado por defecto.");

@@ -159,10 +159,7 @@ static void orchestrator_initial_ble_discovery_task(void *param)
     uint32_t duration_ms = (uint32_t)(uintptr_t)param;
     if (duration_ms == 0) duration_ms = 8000;
 
-    ESP_LOGI(TAG, "=======================================================");
-    ESP_LOGI(TAG, "🔍 INICIANDO FASE DEDICADA DE DESCUBRIMIENTO BLE (%lu ms)", duration_ms);
-    ESP_LOGI(TAG, "   Escaneando dispositivos cercanos antes de iniciar WebRTC...");
-    ESP_LOGI(TAG, "=======================================================");
+    ESP_LOGI(TAG, "Iniciando fase dedicada de descubrimiento BLE (%lu ms)", duration_ms);
 
     // Permitir que el mensaje "SYSTEM READY / Owner: Lorenzo" sea visible 1.2s antes de la fase de descubrimiento
     vTaskDelay(pdMS_TO_TICKS(1200));
@@ -176,10 +173,7 @@ static void orchestrator_initial_ble_discovery_task(void *param)
 
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
 
-    ESP_LOGI(TAG, "=======================================================");
-    ESP_LOGI(TAG, "✅ FASE DEDICADA DE DESCUBRIMIENTO BLE COMPLETADA");
-    ESP_LOGI(TAG, "   Dispositivos registrados en memoria. Iniciando WebRTC...");
-    ESP_LOGI(TAG, "=======================================================");
+    ESP_LOGI(TAG, "Fase dedicada de descubrimiento BLE completada; iniciando WebRTC");
 
     s_initial_discovery_task_handle = NULL;
     orchestrator_post_event(ORCH_EVENT_DISCOVERY_COMPLETE);

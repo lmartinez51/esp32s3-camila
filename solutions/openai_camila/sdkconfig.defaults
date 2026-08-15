@@ -98,3 +98,24 @@ CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 
 # Set default target so we don't accidentally build for esp32
 CONFIG_IDF_TARGET="esp32s3"
+
+# Robot HAL (Phase 3)
+CONFIG_ROBOT_HAL=y
+CONFIG_ROBOT_PROBE_TIMEOUT_MS=400
+CONFIG_ROBOT_PROBE_CACHE_MS=10000
+
+# Robot HAL (Phase 4)
+CONFIG_ROBOT_WIFI_EXEC_TIMEOUT_MS=1500
+CONFIG_ROBOT_HTTP_COMMAND_PATH="/command"
+
+# Robot HAL (Phase 5) — IR pins are hardware-dependent: adjust per board.
+# Defaults 39/38 = legacy IR module wiring (free on ESP32-S3-BOX-3).
+# NEVER use 17 (I2S SCLK) or 18 (I2C SCL): they break audio and I2C.
+CONFIG_ROBOT_IR_TX_GPIO=39
+CONFIG_ROBOT_IR_RX_GPIO=38
+CONFIG_ROBOT_IR_LEARN_TIMEOUT_MS=2500
+
+# Robot HAL (Phase 7) — health monitor + execute watchdog/in-flight cap
+CONFIG_ROBOT_HAL_HEALTH_INTERVAL_S=60
+CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS=3000
+CONFIG_ROBOT_HAL_MAX_INFLIGHT=2

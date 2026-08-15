@@ -1489,7 +1489,7 @@ esp_err_t ble_device_start_scan(uint32_t timeout_ms)
     }
 
     scanning_active = true;
-    ESP_LOGI(TAG, "Escaneo iniciado (timeout: %lu ms)", timeout_ms);
+    ESP_LOGD(TAG, "Escaneo iniciado (timeout: %lu ms)", timeout_ms);
 
     return ESP_OK;
 }
@@ -1736,7 +1736,7 @@ static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *er
 
     if (error->status == 0)
     {
-        ESP_LOGI(TAG, "MTU negociado a %d para '%s'", mtu, device->name);
+        ESP_LOGD(TAG, "MTU negociado a %d para '%s'", mtu, device->name);
         update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_SVCS);
     }
     else
@@ -1830,7 +1830,7 @@ static void force_consistent_state(ble_device_info_t *device)
     }
     last_force_time = current_time;
 
-    ESP_LOGW(TAG, "Forzando estado consistente para device '%s'", device->name);
+    ESP_LOGD(TAG, "Forzando estado consistente para device '%s'", device->name);
 
     if (device->conn_handle != BLE_HS_CONN_HANDLE_NONE && device->conn_handle != 0)
     {
@@ -2027,9 +2027,6 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "Dispositivo desconectado (conn_handle: %d, reason: 0x%x)",
-                 event->disconnect.conn.conn_handle, event->disconnect.reason);
-
         // Always clear pending connection lock on disconnect event
         g_pending_connection.is_active = false;
 
@@ -2045,7 +2042,8 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
 
         if (device)
         {
-            ESP_LOGI(TAG, "Dispositivo '%s' desconectado (reason: 0x%x); reseteando estado a DISCONNECTED", device->name, event->disconnect.reason);
+            ESP_LOGI(TAG, "Dispositivo '%s' desconectado (reason: 0x%x); estado -> DISCONNECTED",
+                     device->name, event->disconnect.reason);
 
             if (!device->is_known)
             {
@@ -2143,16 +2141,17 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
         return;
     }
 
-    // Log del cambio de estado (usando copias seguras; nivel INFO o DEBUG según necesidades)
+    // Log del cambio de estado (receta detallada -> DEBUG; la transicion
+    // relevante para el usuario queda en el one-liner de DISCOVERY_COMPLETE)
     char addr_str[18];
     snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X",
              addr_copy[0], addr_copy[1], addr_copy[2], addr_copy[3], addr_copy[4], addr_copy[5]);
-    ESP_LOGI(TAG, "Estado del dispositivo %s (%s): %d → %d",
-             name_copy, addr_str, old_state, new_state); // Cambié a LOGI como en original para visibilidad
+    ESP_LOGD(TAG, "Estado del dispositivo %s (%s): %d → %d",
+             name_copy, addr_str, old_state, new_state);
 
     if (new_state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE)
     {
-        ESP_LOGW(TAG, "✅ Perfil completo para '%s'. Listo para guardar en NVS.", name_copy);
+        ESP_LOGI(TAG, "✅ Perfil aprendido para '%s'. Listo para guardar en NVS.", name_copy);
         // Marcar como conocido en la lista de memoria
         device->is_known = true;
         // Aquí es donde, en el futuro, llamaremos a la función para guardar en NVS.
@@ -2177,7 +2176,7 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
         device->matched_profile_index = -1;
         memset(&device->service_uuid_128, 0, sizeof(device->service_uuid_128));
         memset(&device->char_uuid_128, 0, sizeof(device->char_uuid_128));
-        ESP_LOGI(TAG, "Limpieza completa de handles y flags para dispositivo '%s'", name_copy);
+        ESP_LOGD(TAG, "Limpieza completa de handles y flags para dispositivo '%s'", name_copy);
     }
 }
 
@@ -2632,7 +2631,7 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
 
     char uuid_str[BLE_UUID_STR_LEN];
     ble_uuid_to_str(&chr->uuid.u, uuid_str);
-    ESP_LOGI(TAG, "    -> Característica encontrada: %s (handle val: 0x%04X)", uuid_str, chr->val_handle);
+    ESP_LOGD(TAG, "    -> Característica encontrada: %s (handle val: 0x%04X)", uuid_str, chr->val_handle);
 
     // Reconocer características conocidas para ELEGOO BT16 y otros perfiles
     bool is_match = is_characteristic_in_known_profiles(&chr->uuid.u, device->matched_profile_index);
@@ -2792,18 +2791,18 @@ esp_err_t ble_device_start_smart_discovery(uint32_t duration_ms)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "🚀 INICIANDO DESCUBRIMIENTO INTELIGENTE DE DISPOSITIVOS (%lu ms)", duration_ms);
+    ESP_LOGD(TAG, "🚀 INICIANDO DESCUBRIMIENTO INTELIGENTE DE DISPOSITIVOS (%lu ms)", duration_ms);
 
     if (!auto_connection_globally_enabled)
     {
-        ESP_LOGW(TAG, "⚠️ Auto-conexión está deshabilitada globalmente");
+        ESP_LOGD(TAG, "⚠️ Auto-conexión está deshabilitada globalmente");
     }
 
     // Usar la duración pasada como parámetro en lugar de un valor fijo
     esp_err_t ret = ble_device_start_scan(duration_ms);
     if (ret == ESP_OK)
     {
-        ESP_LOGI(TAG, "✅ Escaneo inteligente iniciado por %lu segundos", duration_ms / 1000);
+        ESP_LOGD(TAG, "✅ Escaneo inteligente iniciado por %lu segundos", duration_ms / 1000);
         if (auto_connection_globally_enabled)
         {
             ESP_LOGI(TAG, "💡 Los dispositivos de interés se conectarán automáticamente");
@@ -3102,7 +3101,7 @@ static esp_err_t ble_device_start_identity_scan(uint32_t timeout_ms)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Identity validation passive scan started for %lu ms; UUID=%s",
+    ESP_LOGD(TAG, "Identity validation passive scan started for %lu ms; UUID=%s",
              timeout_ms,
              BLE_IDENTITY_SERVICE_UUID_STR);
     return ESP_OK;
@@ -3235,7 +3234,7 @@ esp_err_t ble_device_prepare_for_identity_scan(uint32_t timeout_ms)
     }
 
     ble_device_drain_scan_complete_signal();
-    ESP_LOGI(TAG, "Identity scan prepare complete; GAP discovery idle");
+    ESP_LOGD(TAG, "Identity scan prepare complete; GAP discovery idle");
     return ESP_OK;
 }
 
@@ -3298,7 +3297,7 @@ esp_err_t ble_device_start_identity_validation(uint32_t timeout_ms)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Identity validation scheduled for %lu ms", timeout_ms);
+    ESP_LOGD(TAG, "Identity validation scheduled for %lu ms", timeout_ms);
     return ESP_OK;
 }
 
@@ -3319,7 +3318,7 @@ esp_err_t ble_device_configure_smart_discovery(uint32_t normal_interval_ms,
     smart_config.auto_test_commands = enable_test_commands;
     smart_config.max_retries = 2; // Valor fijo por ahora
 
-    ESP_LOGI(TAG, "⚙️ Configuración actualizada - Normal: %lus, Mantenimiento: %lus, Objetivo: %d",
+    ESP_LOGD(TAG, "⚙️ Configuración actualizada - Normal: %lus, Mantenimiento: %lus, Objetivo: %d",
              normal_interval_ms / 1000, maintenance_interval_ms / 1000, target_devices);
 
     return ESP_OK;
@@ -3420,9 +3419,9 @@ static void smart_ble_discovery_btdevices_task(void *param)
             continue;
         }
 
-        ESP_LOGI(TAG, "Tarea de Agente de Descubrimiento activada.");
+        ESP_LOGD(TAG, "Tarea de Agente de Descubrimiento activada.");
 
-        ESP_LOGI(TAG, "🤖 Tarea de Agente de Descubrimiento iniciada.");
+        ESP_LOGD(TAG, "🤖 Tarea de Agente de Descubrimiento iniciada.");
         smart_discovery_running = true;
 
         if (smart_task_mode == BLE_SMART_TASK_MODE_IDENTITY_VALIDATION)
@@ -3452,7 +3451,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                 continue;
             }
             // --- INICIO DE LA CORRECCIÓN: RESETEO INTELIGENTE DE LA LISTA ---
-            ESP_LOGI(TAG, "Limpiando lista de dispositivos transitorios para nuevo ciclo...");
+            ESP_LOGD(TAG, "Limpiando lista de dispositivos transitorios para nuevo ciclo...");
             if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
             {
 
@@ -3475,7 +3474,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
 
                 // Actualizamos el contador al número de dispositivos que hemos conservado
                 discovered_count = next_free_slot;
-                ESP_LOGI(TAG, "Limpieza completada. %d dispositivos persistentes conservados.", discovered_count);
+                ESP_LOGD(TAG, "Limpieza completada. %d dispositivos persistentes conservados.", discovered_count);
 
                 xSemaphoreGive(devices_mutex);
             }
@@ -3485,7 +3484,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
             best_candidate.rssi = -127;
 
             smart_stats.total_cycles++;
-            ESP_LOGI(TAG, "🔄 === CICLO #%lu DE DESCUBRIMIENTO INTELIGENTE ===", smart_stats.total_cycles);
+            ESP_LOGD(TAG, "🔄 === CICLO #%lu DE DESCUBRIMIENTO INTELIGENTE ===", smart_stats.total_cycles);
 
             if (smart_config.max_retries <= 0)
             {
@@ -3493,7 +3492,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                 smart_config.max_retries = 2;
             }
 
-            ESP_LOGI(TAG, "🔧 Configuración actual - Reintentos máximos: %d", smart_config.max_retries);
+            ESP_LOGD(TAG, "🔧 Configuración actual - Reintentos máximos: %d", smart_config.max_retries);
 
             // 1. Lógica de Modo Mantenimiento
             if (target_devices_reached() && !smart_config.maintenance_mode)
@@ -3539,7 +3538,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                         break;
                     }
 
-                    ESP_LOGI(TAG, "⚡️ Iniciando ráfaga de escaneo %d/%d...", i + 1, num_bursts);
+                    ESP_LOGD(TAG, "⚡️ Iniciando ráfaga de escaneo %d/%d...", i + 1, num_bursts);
 
                     // Llamamos a nuestra función de alto nivel con una duración corta
                     esp_err_t ret = ble_device_start_smart_discovery(scan_duration_per_burst_ms);
@@ -3615,7 +3614,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                     }
                     // --- FIN DEL NUEVO BLOQUE DE ACCIÓN ---
 
-                    ESP_LOGI(TAG, "✅ Escaneo por intervalos completado. Esperando que terminen las operaciones de perfilado...");
+                    ESP_LOGD(TAG, "✅ Escaneo por intervalos completado. Esperando que terminen las operaciones de perfilado...");
 
                     // TIMEOUT MÁS LARGO CON VERIFICACIONES INTELIGENTES
                     int wait_cycles = 0;
@@ -3639,7 +3638,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                         // Verificar progreso cada 5 segundos
                         if (wait_cycles % 50 == 0)
                         {
-                            ESP_LOGI(TAG, "⏳ Esperando %d operaciones de perfilado (ciclo %d/%d)",
+                            ESP_LOGD(TAG, "⏳ Esperando %d operaciones de perfilado (ciclo %d/%d)",
                                      current_ops, wait_cycles / 10, MAX_WAIT_CYCLES / 10);
 
                             // Si no hay progreso en 15 segundos, forzar limpieza
@@ -3677,7 +3676,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                     int final_ops = atomic_load(&g_active_ble_operations);
                     if (final_ops == 0)
                     {
-                        ESP_LOGI(TAG, "✅ Todas las operaciones de perfilado han terminado.");
+                        ESP_LOGD(TAG, "✅ Todas las operaciones de perfilado han terminado.");
                         discovery_successful = true;
                     }
                     else
@@ -3734,9 +3733,9 @@ static void smart_ble_discovery_btdevices_task(void *param)
                 if (devices[i].is_known)
                     known_count++;
             }
-            ESP_LOGI(TAG, "📊 ESTADÍSTICAS - Total: %d | Conectados: %d | Errores: %d | Conocidos: %d",
+            ESP_LOGD(TAG, "📊 ESTADÍSTICAS - Total: %d | Conectados: %d | Errores: %d | Conocidos: %d",
                      count, connected_count, error_count, known_count);
-            ESP_LOGI(TAG, "📈 TOTALES - Ciclos: %lu | Éxitos: %lu | Fallos: %lu",
+            ESP_LOGD(TAG, "📈 TOTALES - Ciclos: %lu | Éxitos: %lu | Fallos: %lu",
                      smart_stats.total_cycles, smart_stats.successful_discoveries,
                      smart_stats.failed_discoveries);
             heap_caps_free(devices);
@@ -3759,12 +3758,12 @@ static void smart_ble_discovery_btdevices_task(void *param)
 
             if (discovery_metrics.ciclos_vacios_consecutivos >= MAX_EMPTY_CYCLES)
             {
-                ESP_LOGI(TAG, "🛑 Parada inteligente: %" PRIu32 " ciclos sin novedades.", discovery_metrics.ciclos_vacios_consecutivos);
+                ESP_LOGD(TAG, "🛑 Parada inteligente: %" PRIu32 " ciclos sin novedades.", discovery_metrics.ciclos_vacios_consecutivos);
                 stop_now = true;
             }
             else if (ms_since_last_new >= dynamic_idle_ms)
             {
-                ESP_LOGI(TAG, "🛑 Parada inteligente: %" PRIu32 " ms sin nuevos dispositivos (umbral %" PRIu32 " ms).", ms_since_last_new, dynamic_idle_ms);
+                ESP_LOGD(TAG, "🛑 Parada inteligente: %" PRIu32 " ms sin nuevos dispositivos (umbral %" PRIu32 " ms).", ms_since_last_new, dynamic_idle_ms);
                 stop_now = true;
             }
             else if (free_heap < MIN_HEAP_BYTES)
@@ -3780,7 +3779,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
             }
 
             // Boot-Once & On-Demand: Finalizar la tarea inmediatamente después del escaneo único
-            ESP_LOGI(TAG, "💤 Escaneo único completado. Transicionando a modo silencioso en reposo.");
+            ESP_LOGD(TAG, "💤 Escaneo único completado. Transicionando a modo silencioso en reposo.");
             smart_discovery_enabled = false;
             break;
         }
@@ -3801,7 +3800,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
             xSemaphoreGive(smart_task_idle_signal);
         }
 
-        ESP_LOGW(TAG, "✅ Tarea de Agente de Descubrimiento ha completado sus ciclos.");
+        ESP_LOGD(TAG, "✅ Tarea de Agente de Descubrimiento ha completado sus ciclos.");
     }
     ESP_LOGI(TAG, "Tarea persistente de Agente de Descubrimiento saliendo.");
     smart_discovery_running = false;
@@ -3836,7 +3835,7 @@ esp_err_t ble_device_smart_system_init(void)
 
     // --- CENTRALIZAR CONFIGURACIÓN INICIAL ---
     // Llamar a la función de configuración con los valores por defecto.
-    ESP_LOGI(TAG, "Estableciendo configuración por defecto del descubrimiento inteligente...");
+    ESP_LOGD(TAG, "Estableciendo configuración por defecto del descubrimiento inteligente...");
     esp_err_t config_err = ble_device_configure_smart_discovery(
         90000,  // scan_interval_normal_ms: 1 minuto
         600000, // scan_interval_maintenance_ms: 5 minutos
@@ -4156,7 +4155,7 @@ static esp_err_t ble_device_enable_notifications(uint16_t conn_handle, uint16_t 
 
     uint8_t cccd_val[2] = {0x01, 0x00}; // Enable notifications
 
-    ESP_LOGI(TAG, "🔔 Habilitando notificaciones CCCD (conn_handle=%u, cccd_handle=0x%04X)...",
+    ESP_LOGD(TAG, "🔔 Habilitando notificaciones CCCD (conn_handle=%u, cccd_handle=0x%04X)...",
              conn_handle, cccd_handle);
 
     int rc = ble_gattc_write_flat(conn_handle, cccd_handle, cccd_val, sizeof(cccd_val), on_gatt_write_cb, (void *)s_cccd_ack_sem);
@@ -4165,7 +4164,7 @@ static esp_err_t ble_device_enable_notifications(uint16_t conn_handle, uint16_t 
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "✅ Solicitud de notificaciones CCCD enviada en handle 0x%04X", cccd_handle);
+    ESP_LOGD(TAG, "✅ Solicitud de notificaciones CCCD enviada en handle 0x%04X", cccd_handle);
     return ESP_OK;
 }
 
@@ -4201,14 +4200,14 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
 
     uint16_t payload_len = (uint16_t)strlen(payload);
 
-    ESP_LOGI(TAG, "ELEGOO COMMAND:\n  action=%s\n  handle=0x%04X\n  payload=%s",
+    ESP_LOGD(TAG, "ELEGOO COMMAND:\n  action=%s\n  handle=0x%04X\n  payload=%s",
              action_name, char_handle, payload);
 
     int write_rc = ble_gattc_write_no_rsp_flat(conn_handle, char_handle, payload, payload_len);
 
     if (write_rc == 0) {
-        ESP_LOGI(TAG, "GATT write accepted: handle=0x%04X len=%u", char_handle, payload_len);
-        ESP_LOGI(TAG, "Note: Write-Without-Response operation accepted by NimBLE host stack; physical movement is the final validation.");
+        ESP_LOGD(TAG, "GATT write accepted: handle=0x%04X len=%u", char_handle, payload_len);
+        ESP_LOGD(TAG, "Note: Write-Without-Response operation accepted by NimBLE host stack; physical movement is the final validation.");
     } else {
         ESP_LOGE(TAG, "❌ GATT write failed: handle=0x%04X rc=%d", char_handle, write_rc);
     }
@@ -4392,7 +4391,6 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
     if (cmd->expects_notification) {
         uint16_t command_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : ELEGOO_COMMAND_VALUE_HANDLE;
-        uint16_t notify_handle = ELEGOO_NOTIFY_VALUE_HANDLE;
         uint16_t cccd_handle = ELEGOO_NOTIFY_CCCD_HANDLE;
 
         ESP_LOGI(TAG, "📡 Requesting ultrasonic distance telemetry from '%s'...", target_dev.name);
@@ -4406,7 +4404,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         memset(s_last_telemetry_buf, 0, sizeof(s_last_telemetry_buf));
 
         /* Step 1: Write CCCD 0x0004 = 01 00 via Write Request and wait for ACK */
-        ESP_LOGI(TAG, "🔔 Enabling notifications (CCCD 0x%04X)...", cccd_handle);
+        ESP_LOGD(TAG, "🔔 Enabling notifications (CCCD 0x%04X)...", cccd_handle);
         esp_err_t cccd_res = ble_device_enable_notifications(current_conn_handle, cccd_handle);
         if (cccd_res != ESP_OK) {
             ESP_LOGE(TAG, "❌ CCCD enable write request failed (rc=%d). Aborting telemetry query.", cccd_res);
@@ -4416,7 +4414,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
         if (s_cccd_ack_sem != NULL) {
             if (xSemaphoreTake(s_cccd_ack_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
-                ESP_LOGI(TAG, "✅ CCCD notification subscription confirmed");
+                ESP_LOGD(TAG, "✅ CCCD notification subscription confirmed");
             } else {
                 ESP_LOGE(TAG, "❌ Timeout waiting for CCCD write ACK. Aborting telemetry query.");
                 ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -4435,14 +4433,14 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             snprintf(dynamic_payload, sizeof(dynamic_payload), "{\"N\":22,\"D1\":%lu}", duration_ms);
             payload_str = dynamic_payload;
         }
-        ESP_LOGI(TAG, "📤 Transmitting command payload: %s", payload_str);
+        ESP_LOGD(TAG, "📤 Transmitting command payload: %s", payload_str);
         int write_rc = ble_gattc_write_no_rsp_flat(current_conn_handle, command_handle, (const uint8_t *)payload_str, (uint16_t)strlen(payload_str));
         if (write_rc != 0) {
             ESP_LOGW(TAG, "⚠️ Write Without Response returned rc=%d", write_rc);
         }
 
         /* Step 4: Wait up to 1500 ms for notification on handle 0x0003 */
-        ESP_LOGI(TAG, "⏳ Waiting for telemetry notification (1500 ms)...");
+        ESP_LOGD(TAG, "⏳ Waiting for telemetry notification (1500 ms)...");
         bool telem_success = false;
         if (s_telemetry_sem != NULL && xSemaphoreTake(s_telemetry_sem, pdMS_TO_TICKS(1500)) == pdTRUE) {
             if (strlen(s_last_telemetry_buf) > 0) {
@@ -4455,7 +4453,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         }
 
         /* Step 5: Disconnect cleanly */
-        ESP_LOGI(TAG, "🔌 Disconnecting BLE session...");
+        ESP_LOGD(TAG, "🔌 Disconnecting BLE session...");
         ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
 
         if (!telem_success) {

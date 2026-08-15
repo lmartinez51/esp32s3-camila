@@ -557,13 +557,16 @@ esp_err_t esp_claw_init(void) {
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 8KB)");
+    /* Stack interno 5632 (antes 8192): HWM real ~3.6 KB (incluye init.lua +
+     * rules.json en boot); queda ~2 KB de margen. NVS/littlefs requieren
+     * stack interno — no mover a PSRAM. */
+    ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 5.5KB)");
     ESP_LOGW(TAG, "[HEAP] lua_worker:before | INTERNAL free=%u largest=%u | PSRAM free=%u largest=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 8192, NULL, 3, NULL, 1,
+    if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 5632, NULL, 3, NULL, 1,
                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;

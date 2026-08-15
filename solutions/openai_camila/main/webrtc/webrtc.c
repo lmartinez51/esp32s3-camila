@@ -37,6 +37,10 @@
 #include "media_sys.h"
 #include "orchestrator_helpers.h"
 
+#include "robot_hal.h"
+#include "robot_tools.h"
+#include "webrtc_tool_adapter.h"
+
 #define ELEMS(a) (sizeof(a) / sizeof(a[0]))
 #define TAG "OPENAI_APP"
 #define ENABLE_REALTIME_INPUT_TRANSCRIPTION 1
@@ -276,6 +280,11 @@ static void request_response_create_with_instructions(const char *instructions)
 static void request_response_create(void)
 {
     request_response_create_with_instructions(NULL);
+}
+
+void webrtc_request_response_create(void)
+{
+    request_response_create();
 }
 
 /**
@@ -698,7 +707,7 @@ static void post_response_capture_recovery_task(void *arg)
 }
 #endif
 
-static BaseType_t create_psram_task(TaskFunction_t task_fn,
+BaseType_t webrtc_create_psram_task(TaskFunction_t task_fn,
                                     const char *name,
                                     uint32_t stack_size,
                                     void *param,
@@ -726,7 +735,7 @@ static void schedule_post_response_capture_recovery(void)
         return;
     }
 
-    BaseType_t ok = create_psram_task(post_response_capture_recovery_task,
+    BaseType_t ok = webrtc_create_psram_task(post_response_capture_recovery_task,
                                            "cap_recover",
                                            3072,
                                            NULL,
@@ -1138,7 +1147,7 @@ void webrtc_init_action_queue(void)
         return;
     }
 
-    if (create_psram_task(webrtc_action_task, "webrtc_action_task", 4096, NULL, 5, NULL, 1) != pdPASS)
+    if (webrtc_create_psram_task(webrtc_action_task, "webrtc_action_task", 4096, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea webrtc_action_task");
     }
@@ -1762,77 +1771,17 @@ static int send_session_update(void)
         cJSON_AddItemToArray(tools, delete_tool_cjson);
     }
 
-    const char* ble_summary_tool_json = 
-        "{"
-        "  \"type\": \"function\","
-        "  \"name\": \"get_discovered_ble_devices\","
-        "  \"description\": \"Use this tool whenever the user asks what Bluetooth devices are discovered, saved, ready, or nearby. Returns a categorized JSON object listing controllable ready devices, offline configured devices, and raw unprofiled devices.\","
-        "  \"parameters\": {"
-        "    \"type\": \"object\","
-        "    \"properties\": {}"
-        "  }"
-        "}";
-        
-    cJSON *ble_summary_tool_cjson = cJSON_Parse(ble_summary_tool_json);
-    if (ble_summary_tool_cjson) {
-        cJSON_AddItemToArray(tools, ble_summary_tool_cjson);
+    // Robot HAL tool catalog (C1 decoupled): legacy BLE tool definitions
+    // moved to hal/robot_tools.c. Phase 6 evolved this into the dynamic
+    // category-driven catalog (unified control_robot + legacy alias).
+    int robot_tools_appended = robot_tools_append_tools_json(tools);
+    if (robot_tools_appended < 0)
+    {
+        ESP_LOGE(TAG, "Failed to append robot HAL tools");
     }
-
-    const char* ble_control_tool_json = 
-        "{"
-        "  \"type\": \"function\","
-        "  \"name\": \"control_ble_device\","
-        "  \"description\": \"Use this tool to move, control, or read telemetry from a Bluetooth smart device or robot (e.g. ELEGOO BT16, Carro). Actions: FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180, READ_ULTRASONIC, MOVE_HEAD, READ_LINE_SENSOR, SET_AUTONOMOUS_MODE.\","
-        "  \"parameters\": {"
-        "    \"type\": \"object\","
-        "    \"properties\": {"
-        "      \"device_name\": {"
-        "        \"type\": \"string\","
-        "        \"description\": \"Name or alias of the BLE device/robot (e.g., 'ELEGOO BT16', 'Carro').\""
-        "      },"
-        "      \"action\": {"
-        "        \"type\": \"string\","
-        "        \"enum\": [\"FORWARD\", \"BACKWARD\", \"LEFT\", \"RIGHT\", \"STOP\", \"SPIN_180\", \"READ_ULTRASONIC\", \"MOVE_HEAD\", \"READ_LINE_SENSOR\", \"SET_AUTONOMOUS_MODE\"],"
-        "        \"description\": \"Action command: 'FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'STOP', 'SPIN_180', 'READ_ULTRASONIC', 'MOVE_HEAD', 'READ_LINE_SENSOR', 'SET_AUTONOMOUS_MODE'.\""
-        "      },"
-        "      \"duration_ms\": {"
-        "        \"type\": \"integer\","
-        "        \"description\": \"Optional pulse duration in ms, or parameter value (e.g. servo angle 5-175 for MOVE_HEAD, mode 1 for line follower / 2 for obstacle avoidance in SET_AUTONOMOUS_MODE).\""
-        "      }"
-        "    },"
-        "    \"required\": [\"device_name\", \"action\"]"
-        "  }"
-        "}";
-
-    cJSON *ble_control_tool_cjson = cJSON_Parse(ble_control_tool_json);
-    if (ble_control_tool_cjson) {
-        cJSON_AddItemToArray(tools, ble_control_tool_cjson);
-    }
-
-    const char* ble_alias_tool_json = 
-        "{"
-        "  \"type\": \"function\","
-        "  \"name\": \"set_ble_device_alias\","
-        "  \"description\": \"Use this tool when the user asks to assign a friendly name/alias to a discovered Bluetooth device (e.g., rename ELEGOO BT16 to 'Carro').\","
-        "  \"parameters\": {"
-        "    \"type\": \"object\","
-        "    \"properties\": {"
-        "      \"device_name\": {"
-        "        \"type\": \"string\","
-        "        \"description\": \"Current name or MAC of the device (e.g., 'ELEGOO BT16').\""
-        "      },"
-        "      \"new_alias\": {"
-        "        \"type\": \"string\","
-        "        \"description\": \"New user-assigned friendly name (e.g., 'Carro', 'Foco Sala').\""
-        "      }"
-        "    },"
-        "    \"required\": [\"device_name\", \"new_alias\"]"
-        "  }"
-        "}";
-
-    cJSON *ble_alias_tool_cjson = cJSON_Parse(ble_alias_tool_json);
-    if (ble_alias_tool_cjson) {
-        cJSON_AddItemToArray(tools, ble_alias_tool_cjson);
+    else
+    {
+        ESP_LOGI(TAG, "Robot HAL tools appended: %d", robot_tools_appended);
     }
 
     // Convertir a JSON sin formato (más eficiente)
@@ -1952,7 +1901,7 @@ void start_web_search_task(const char *user, const char *query, const char *call
         return;
     }
 
-    if (create_psram_task(web_search_task, "web_search_task", WEB_SEARCH_TASK_STACK_SIZE, ctx, WEB_SEARCH_TASK_PRIORITY, NULL, APP_CPU_NUM) != pdPASS)
+    if (webrtc_create_psram_task(web_search_task, "web_search_task", WEB_SEARCH_TASK_STACK_SIZE, ctx, WEB_SEARCH_TASK_PRIORITY, NULL, APP_CPU_NUM) != pdPASS)
     {
         ESP_LOGE(TAG, "start_web_search_task: fallo al crear tarea");
         free(ctx->user);
@@ -1997,7 +1946,7 @@ static void config_mode_task(void *arg)
 void start_config_mode_task(void)
 {
     // Esta tarea no necesita pasar argumentos complejos, así que el contexto es NULL.
-    BaseType_t ok = create_psram_task(
+    BaseType_t ok = webrtc_create_psram_task(
         config_mode_task,
         "config_mode_task",
         4096, // Stack suficiente para operaciones de red y sistema
@@ -2150,7 +2099,7 @@ static void activate_mute_task(void *arg)
  */
 void start_activate_mute_task(void)
 {
-    if (create_psram_task(activate_mute_task, "activate_mute_task", 3072, NULL, 5, NULL, 1) != pdPASS)
+    if (webrtc_create_psram_task(activate_mute_task, "activate_mute_task", 3072, NULL, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create activate_mute_task");
         // Optional: Send an error back to OpenAI if the task could not be created
@@ -2236,7 +2185,7 @@ void start_control_display_task(const char *state)
     }
 
     // Tarea simple, 3k de stack es suficiente
-    if (create_psram_task(control_display_task, "display_task", 3072, ctx, 5, NULL, 1) != pdPASS)
+    if (webrtc_create_psram_task(control_display_task, "display_task", 3072, ctx, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Fallo al crear la tarea control_display_task");
         free(ctx->state);
@@ -2617,7 +2566,7 @@ static void start_automation_task(const char* call_id, const char* function_name
     }
 
     // Task Stack: 6144 bytes for native JSON parsing without IDLE starvation
-    if (create_psram_task(automation_handler_task, "auto_handler", 6144, ctx, 5, NULL, 1) != pdPASS)
+    if (webrtc_create_psram_task(automation_handler_task, "auto_handler", 6144, ctx, 5, NULL, 1) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create automation_handler_task");
         if (ctx->args_json) free(ctx->args_json);
@@ -2631,132 +2580,7 @@ static void start_automation_task(const char* call_id, const char* function_name
 // get_discovered_ble_devices incluye cadenas profundas (JSON, NVS, LCD) que
 // desbordaban la pila de 4 KB del pc_task (esp_webrtc), corrompiendo el heap y
 // congelando el sistema con el buzzer atascado. Se ejecutan aquí con pila PSRAM.
-typedef struct {
-    char call_id[128];
-    char function_name[64];
-    char *args_json;
-} ble_tool_ctx_t;
-
-static void ble_tool_handler_task(void *arg)
-{
-    ble_tool_ctx_t *ctx = (ble_tool_ctx_t *)arg;
-    if (!ctx) {
-        vTaskDelete(NULL);
-        return;
-    }
-
-    cJSON *args_root = NULL;
-    if (ctx->args_json && strlen(ctx->args_json) > 0) {
-        args_root = cJSON_Parse(ctx->args_json);
-    }
-
-    if (strcmp(ctx->function_name, "get_discovered_ble_devices") == 0)
-    {
-        ESP_LOGI(TAG, "Llamada a función detectada! Generando resumen de dispositivos BLE para Chatbot...");
-        char summary_json[1024] = {0};
-        ble_device_get_summary_for_chatbot(summary_json, sizeof(summary_json));
-        send_function_output(ctx->call_id, summary_json);
-        request_response_create();
-    }
-    else if (strcmp(ctx->function_name, "control_ble_device") == 0)
-    {
-        cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
-        cJSON *act_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "action") : NULL;
-        cJSON *dur_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms") : NULL;
-
-        const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "ELEGOO BT16";
-        const char *act_str = (cJSON_IsString(act_item) && act_item->valuestring) ? act_item->valuestring : "FORWARD";
-        uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint : 0;
-
-        ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
-                 dev_str, act_str, dur_val);
-
-        char ui_sub[64];
-        snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
-        ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
-
-        esp_err_t ctrl_err = ble_device_send_command_by_alias_or_name(dev_str, act_str, dur_val);
-        ui_clear_status_message();
-        if (ctrl_err == ESP_OK) {
-            if (strcasecmp(act_str, "READ_ULTRASONIC") == 0 || strcasecmp(act_str, "leer_ultrasonico") == 0) {
-                const char *telemetry = ble_device_get_last_telemetry();
-                char resp_buf[128];
-                snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"success\", \"distance\": \"%s\"}", (telemetry && strlen(telemetry) > 0) ? telemetry : "desconocida");
-                send_function_output(ctx->call_id, resp_buf);
-            } else {
-                send_function_output(ctx->call_id, "{\"status\": \"success\", \"message\": \"Comando BLE ejecutado correctamente\"}");
-            }
-        } else {
-            send_function_output(ctx->call_id, "{\"status\": \"error\", \"message\": \"Unable to communicate with the BLE car. Device is offline, powered off, or disconnected.\"}");
-        }
-        request_response_create();
-    }
-    else if (strcmp(ctx->function_name, "set_ble_device_alias") == 0)
-    {
-        cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
-        cJSON *alias_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "new_alias") : NULL;
-
-        const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "";
-        const char *alias_str = (cJSON_IsString(alias_item) && alias_item->valuestring) ? alias_item->valuestring : "";
-
-        ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
-
-        char ui_sub[64];
-        snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
-        ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
-
-        esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
-        ui_clear_status_message();
-        if (alias_err == ESP_OK) {
-            send_function_output(ctx->call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
-        } else {
-            send_function_output(ctx->call_id, "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
-        }
-        request_response_create();
-    }
-    else
-    {
-        ESP_LOGW(TAG, "ble_tool_handler_task: función desconocida: %s", ctx->function_name);
-    }
-
-    if (args_root) cJSON_Delete(args_root);
-    if (ctx->args_json) free(ctx->args_json);
-    free(ctx);
-    vTaskDelete(NULL);
-}
-
-static void start_ble_tool_task(const char *call_id, const char *function_name, const char *args_json)
-{
-    if (!call_id) return;
-    ble_tool_ctx_t *ctx = heap_caps_malloc(sizeof(ble_tool_ctx_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!ctx) return;
-
-    strlcpy(ctx->call_id, call_id, sizeof(ctx->call_id));
-    if (function_name) {
-        strlcpy(ctx->function_name, function_name, sizeof(ctx->function_name));
-    } else {
-        ctx->function_name[0] = '\0';
-    }
-
-    if (args_json) {
-        size_t len = strlen(args_json) + 1;
-        ctx->args_json = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (ctx->args_json) {
-            memcpy(ctx->args_json, args_json, len);
-        }
-    } else {
-        ctx->args_json = NULL;
-    }
-
-    // Stack PSRAM de 12 KB: suficiente para la cadena BLE + NVS(encolado) + LCD.
-    if (create_psram_task(ble_tool_handler_task, "ble_tool", 12288, ctx, 5, NULL, 1) != pdPASS)
-    {
-        ESP_LOGE(TAG, "Failed to create ble_tool_handler_task");
-        if (ctx->args_json) free(ctx->args_json);
-        free(ctx);
-    }
-}
-// ---------------------------------------------
+// ── MOVED to adapters/webrtc_tool_adapter.c (Phase 1, C2/C3 decoupling) ──
 
 /**
  * @brief Processes JSON data received via WebRTC.
@@ -2917,12 +2741,10 @@ static int process_json(const char *json_data, int json_size)
 
     if (!class_found)
     {
-        if (strcmp(name->valuestring, "get_discovered_ble_devices") == 0 ||
-            strcmp(name->valuestring, "control_ble_device") == 0 ||
-            strcmp(name->valuestring, "set_ble_device_alias") == 0)
+        /* ROBOT HAL TOOLS: dispatch through the protocol-agnostic adapter
+         * (table-driven, executes on a dedicated PSRAM-stack task). */
+        if (webrtc_tool_adapter_route(name->valuestring, call_id, arguments->valuestring))
         {
-            /* Ejecutar en tarea dedicada con pila PSRAM: fuera del pc_task de 4 KB */
-            start_ble_tool_task(call_id, name->valuestring, arguments->valuestring);
             class_found = true;
         }
         else if (strcmp(name->valuestring, "list_automation_rules") == 0 ||

@@ -1,0 +1,113 @@
+menu "Robot HAL"
+
+config ROBOT_HAL
+    bool "Enable Robot HAL abstraction"
+    default y
+    help
+        Protocol-agnostic device abstraction: normalized command bus,
+        driver table and device registry (main/hal, main/drivers, main/registry).
+        When disabled, the WebRTC tool adapter falls back entirely to the
+        legacy BLE control path.
+
+config ROBOT_PROBE_TIMEOUT_MS
+    int "BLE probe scan timeout (ms)"
+    range 100 2000
+    default 400
+    depends on ROBOT_HAL
+    help
+        Budget for the bounded passive scan used by BLE driver probe().
+        Drivers answer "device offline" to the LLM within this window,
+        keeping the voice round-trip responsive (< 500 ms rule).
+
+config ROBOT_PROBE_CACHE_MS
+    int "Probe presence cache TTL (ms)"
+    range 0 60000
+    default 10000
+    depends on ROBOT_HAL
+    help
+        After a successful probe/command, robot_hal_execute() skips the
+        probe for this window (presence cache). Absent results are never
+        cached, so an offline device is re-probed on every command.
+
+config ROBOT_WIFI_EXEC_TIMEOUT_MS
+    int "WiFi command I/O timeout (ms)"
+    range 100 10000
+    default 1500
+    depends on ROBOT_HAL
+    help
+        Budget for connect/send on wifi_tcp and for the HTTP request on
+        wifi_http. Keeps the command path bounded so the voice round-trip
+        stays responsive.
+
+config ROBOT_HTTP_COMMAND_PATH
+    string "HTTP REST command path"
+    default "/command"
+    depends on ROBOT_HAL
+    help
+        Path appended to http://<ip>:<port> for the wifi_http driver.
+        The driver POSTs JSON: {"action": ..., "speed": ..., "duration_ms": ...}
+
+config ROBOT_IR_TX_GPIO
+    int "IR emitter GPIO (RMT TX)"
+    range 0 47
+    default 39
+    depends on ROBOT_HAL
+    help
+        GPIO driving the IR LED (38 kHz carrier). Wired to a free pin —
+        MUST NOT collide with the ESP32-S3-BOX-3 critical pins (I2S
+        SCLK=17, I2C SCL=18, I2S/LCD/USB/etc). Default 39 matches the
+        legacy IR module wiring (RX=38, PWR=44); adjust per board.
+
+config ROBOT_IR_RX_GPIO
+    int "IR receiver GPIO (RMT RX)"
+    range 0 47
+    default 38
+    depends on ROBOT_HAL
+    help
+        GPIO wired to the TSOP38xxx IR receiver output (active-low).
+        Same pin-safety rule as the TX pin: never 17 (I2S SCLK) or
+        18 (I2C SCL) on the ESP32-S3-BOX-3. Default 38 matches the
+        legacy IR module wiring.
+
+config ROBOT_IR_LEARN_TIMEOUT_MS
+    int "IR learn capture window (ms)"
+    range 500 10000
+    default 2500
+    depends on ROBOT_HAL
+    help
+        Maximum wait for a single IR frame during LEARN_IR_CODE. The
+        voice round-trip stays bounded (< 5 s) while the user aims the
+        remote and presses a button.
+
+config ROBOT_HAL_HEALTH_INTERVAL_S
+    int "HAL health monitor interval (s)"
+    range 10 3600
+    default 60
+    depends on ROBOT_HAL
+    help
+        Period of the robot_health task: memory budget snapshot
+        (Internal + PSRAM), registry/driver counts and registry
+        integrity pass. 0 disables periodic logging (task still runs).
+
+config ROBOT_HAL_EXEC_WATCHDOG_MS
+    int "HAL execute watchdog (ms)"
+    range 500 10000
+    default 3000
+    depends on ROBOT_HAL
+    help
+        If a driver execute() exceeds this budget, robot_hal_execute()
+        logs an error (stuck-connection reaper). Drivers bound their own
+        I/O; this log catches regressions during the soak test.
+
+config ROBOT_HAL_MAX_INFLIGHT
+    int "Max in-flight ops per driver"
+    range 1 8
+    default 2
+    depends on ROBOT_HAL
+    help
+        Per-driver concurrency cap in robot_hal_execute(). All execute()
+        calls are synchronous and bounded, so the cap only trips under
+        abnormal conditions (reentrancy, stuck connection) and returns
+        ESP_ERR_TIMEOUT with a friendly message.
+
+endmenu

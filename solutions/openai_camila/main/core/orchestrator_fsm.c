@@ -23,6 +23,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -222,6 +223,29 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         s_active_webrtc_mode = ignition_mode;
 
         orchestrator_log_heap_snapshot("igniting:before_audio");
+
+#if CONFIG_DEBUG_TASK_HWM
+        /* Diagnostico: uso real de pila por tarea (HWM ya esta en bytes en
+         * este port: StackType_t=uint8_t). Permite dimensionar stacks
+         * internos sin adivinar. */
+        {
+            const UBaseType_t n_tasks = uxTaskGetNumberOfTasks();
+            TaskStatus_t *st = heap_caps_malloc(n_tasks * sizeof(TaskStatus_t),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (st != NULL)
+            {
+                const UBaseType_t got = uxTaskGetSystemState(st, n_tasks, NULL);
+                for (UBaseType_t i = 0; i < got; i++)
+                {
+                    ESP_LOGW(TAG, "[TASK] %-16s core=%d prio=%u hwm_bytes=%u",
+                             st[i].pcTaskName, (int)st[i].xCoreID,
+                             (unsigned)st[i].uxCurrentPriority,
+                             (unsigned)st[i].usStackHighWaterMark);
+                }
+                heap_caps_free(st);
+            }
+        }
+#endif /* CONFIG_DEBUG_TASK_HWM */
 
         /* Ensure UI is ready and show WebRTC Init Screen before audio loads */
         if (orchestrator_ensure_ui_ready("igniting") == ESP_OK) {

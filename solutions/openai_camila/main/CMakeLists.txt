@@ -26,6 +26,30 @@ idf_component_register(
         "ble/ble_device_callbacks.c"
         "ble/ble_device_control.c"
 
+        "hal/robot_hal.c"
+        "hal/robot_tools.c"
+        "hal/robot_health.c"
+
+        "adapters/webrtc_tool_adapter.c"
+
+        "drivers/ble/ble_transport.c"
+        "drivers/ble/ble_elegoo_bt16.c"
+        "drivers/ble/ble_generic_nus.c"
+
+        "drivers/wifi/wifi_tcp.c"
+        "drivers/wifi/wifi_http.c"
+        "drivers/wifi/wifi_arm.c"
+        "drivers/wifi/wifi_pantilt.c"
+
+        "drivers/ir/ir_rmt.c"
+        "drivers/ir/ir_nec.c"
+        "drivers/ir/ir_sony.c"
+        "drivers/ir/ir_rc5.c"
+
+        "registry/device_registry.c"
+        "registry/registry_migrate.c"
+        "registry/registry_persist.c"
+
         "ui/ui.c"
 
         "webrtc/webrtc.c"
@@ -48,6 +72,13 @@ idf_component_register(
         "audio"
         "alert"
         "ble"
+        "hal"
+        "adapters"
+        "drivers"
+        "drivers/ble"
+        "drivers/wifi"
+        "drivers/ir"
+        "registry"
         "ui"
         "webrtc"
         "openai"
