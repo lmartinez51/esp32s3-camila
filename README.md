@@ -8,7 +8,7 @@
 
 An advanced and feature-rich WebRTC framework for ESP32, specifically optimized for real-time AI communication. This project is built upon the base of the [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) and extends it with significantly more functionality, proactive behaviors, and custom integrations.
 
-**Camila** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** and running on an **ESP32‑S3‑BOX3**. The project integrates two-factor presence detection (Wi-Fi CSI radar + BLE), low-latency audio capture and playback, WebRTC streaming, BLE-driven provisioning, WiFi auto-reconnect, and an on-device LCD UI into a compact embedded system.
+**Camila** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** and running on an **ESP32‑S3‑BOX3**. The project integrates BLE smartphone proximity identity validation, low-latency audio capture and playback, WebRTC streaming, BLE-driven provisioning, WiFi auto-reconnect, and an on-device LCD UI into a compact embedded system.
 
 Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican accent modeled after Lorenzo's best friend *Giovanna Ortiz*. The assistant is designed to be friendly, brief, and humorous, and also to behave sensibly when asked to be silent — keeping the session alive and communicating via text on the display when necessary.
 
@@ -16,7 +16,7 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 
 ## ⚙️ Key Features
 
-- 📡 **Presence Detection & Beacon (BLE & ESP-NOW)** — uses BLE proximity of an authorized smartphone to validate the user's identity before waking up the assistant. It also functions as an ESP-NOW beacon, sending on-demand UDP packets to other devices.
+- 📡 **BLE Proximity Identity & Vigilante Mode** — scans for an authorized smartphone running the "Nexus" companion app over BLE upon startup to validate the user's identity before unlocking conversation. If no authorized digital key is detected within the validation window, Camila enters Vigilante (Sentinel) Mode, issuing automated security warnings and asking unauthorized persons to leave immediately. It can also function as an ESP-NOW beacon on-demand.
 - 🤖 **BLE Device & Robotics Natural Language Control & Telemetry** — real-time discovery of nearby Bluetooth devices, custom persistent NVS alias assignment (e.g. renaming ELEGOO BT16 to 'Carro'), natural language voice commands over WebRTC to control movement (FORWARD, BACKWARD, LEFT, RIGHT, STOP, SPIN_180), servo head movement (MOVE_HEAD), line tracking sensor queries (READ_LINE_SENSOR), autonomous mode switching (SET_AUTONOMOUS_MODE), and real-time ultrasonic sensor telemetry querying (READ_ULTRASONIC) for obstacle distance measurements.
 - 🛠️ **Modular Robot HAL & Multi-Protocol Drivers** — unified hardware abstraction layer (`hal/`), driver ecosystem (`drivers/`) supporting BLE (Elegoo BT16, Generic NUS, Philips Hue BLE Smart Light), IR (RMT NEC, RC5, Sony), and WiFi (Pan-Tilt, Robotic Arm, HTTP/TCP), backed by internal memory floor protection, a persistent device registry (`registry/`), and dynamic WebRTC tool adapter (`adapters/`).
 - 🎙️ **Realtime conversation** using the OpenAI **Realtime API** via WebRTC (powered by the **gpt-realtime-2.1** model).
@@ -37,9 +37,10 @@ The chatbot has access to a robust set of background functions to control the de
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
-### 🔐 Presence Detection & Beacon (BLE + ESP-NOW)
-The system employs a customized authentication mechanism to validate identity before waking up the assistant:
-- **BLE Proximity (Identity)**: A custom smartphone app called **"Nexus"** operates as an unstoppable background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE, even when the phone is locked or dozing. When Camila detects this specific UUID nearby, she confirms your identity.
+### 🔐 BLE Identity Validation & Vigilante Mode (BLE + ESP-NOW)
+The system employs a BLE proximity validation mechanism upon startup to verify the user's identity:
+- **BLE Proximity Identity Validation**: A custom smartphone companion app called **"Nexus"** operates as a background service, turning the phone into an invisible digital key. It continuously broadcasts a secret UUID over BLE. When Camila powers on, she scans for this UUID to confirm your identity ("Lorenzo").
+- **Vigilante (Sentinel) Mode**: If no authorized smartphone app is detected within the validation window upon startup, Camila enters Vigilante Mode (Protocol Zero active). In this state, conversation is locked, an alert tone sounds, and she instructs the unauthorized person to step away and leave the premises immediately.
 - **ESP-NOW UDP Beacon**: Camila can also function as a beacon on-demand, sending UDP packets via ESP-NOW to communicate with or wake up other devices in the ecosystem.
 
 ---
@@ -184,7 +185,7 @@ Below is an example of how a short mute flow is recorded and acted on in the con
 
 - **Mute/Unmute Pipeline Orchestration & Zero-Lag Muting**: The central FSM manages global mute states, executing instant zero-lag (0 ms delay) microphone capture shutdown upon voice command while keeping the WebRTC session active and synchronized via text channel notices.
 - **Resilient WebRTC SDP Signaling & Recovery**: Automatic HTTP POST retries for WebRTC SDP signaling coupled with state machine fallback (`STATE_IGNITING` UI warnings, sleep, and auto-reconnect logic) during network degradation.
-- **Vigilante Mode & Wi-Fi CSI Radar Security**: Integrates Wi-Fi Channel State Information (CSI) variance analysis for autonomous intruder detection, triggering automated WebRTC warning announcements and alert events upon motion detection.
+- **Vigilante Mode & BLE Identity Validation**: Performs an active BLE proximity validation scan upon startup to verify authorized owner identity. If an unauthorized user attempts to use the device without the digital key app, Vigilante Mode activates with Protocol Zero, issuing automated security warning announcements and asking the person to step away immediately.
 - **Non-Blocking Atomic LCD Frame-Buffer Rendering**: Single-pass atomic 1-frame LCD blitting (`ui_draw_mute_countdown_band`) with 50 ms bounded SPI timeouts (`ui_panel_try_blit`), zero Task Watchdog delays, and instant non-blocking mute countdown overlay erasure upon unmuting (`camila_ui_clear_mute_countdown`).
 - **ESP-Claw Lua 5.4 Automation VM**: An isolated FreeRTOS task running Lua 5.4 to interpret, execute, and store persistent home automation rules on LittleFS using non-blocking coroutines and UDP packet dispatching.
 - **Proactive BLE Proximity Identification & Arrival Context**: Continuously scans for the owner's smartphone BLE UUID ("Nexus" digital key), dynamically injecting personalized arrival context into the OpenAI Realtime API session upon owner presence.
