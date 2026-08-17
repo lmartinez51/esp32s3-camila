@@ -65,12 +65,13 @@ flowchart TD
         G -->|Mantener Vivo / Contexto| D
         G -->|Búsqueda Web| WS[Cliente de Búsqueda Web]
         G -->|Delegación| SA[API Asistentes Especializados]
-        G -->|Comandos del Dispositivo| HC[Control del Dispositivo]
-        HC -->|Borrar NVS| NVS[(Almacenamiento NVS)]
-        HC -->|Entrar Modo Configuración| BLE[Módulo BLE]
+        G -->|Comandos del Dispositivo| TA[Adaptador de Herramientas WebRTC]
+        TA -->|Despacho HAL| HAL[HAL Robótico y Controladores]
+        HAL <-->|Registro y Persistencia| REG[(Registro de Dispositivos / NVS)]
+        TA -->|Entrar Modo Configuración| BLE[Módulo BLE]
         G -->|Reglas de Automatización| LUA[Máquina Virtual Lua ESP-Claw]
         LUA <-->|Lectura/Escritura de Reglas| LFS[(Almacenamiento LittleFS)]
-            end
+    end
 
     subgraph Conectividad y Aprovisionamiento
         BLE <-->|Recibir Credenciales| App[App Complementaria]
@@ -220,13 +221,18 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_camila/main
+ ├── adapters/             # Adaptador de herramientas WebRTC (mapea OpenAI tools a HAL)
  ├── alert/                # Despachador de alertas
  ├── audio/                # Captura/reproducción de audio, tuberías y silencio
  ├── ble/                  # Lógica BLE central y aprovisionamiento
  ├── config/               # Gestor de ajustes y configuración NVS
  ├── core/                 # Aplicación principal y orquestación de alto nivel
+ ├── drivers/              # Controladores de hardware (BLE, IR, WiFi)
+ ├── hal/                  # Capa de Abstracción de Robótica Modular y monitor de salud
  ├── hardware/             # Códec/I2C, periféricos de placa
  ├── openai/               # Asistentes, búsqueda web y señalización Realtime
+ ├── registry/             # Registro de dispositivos y persistencia NVS
+ ├── sensing/              # Sensor de presencia y baliza ESP-NOW
  ├── ui/                   # Renderizado LCD, mapeo de caracteres y UI
  └── webrtc/               # Integración WebRTC y manejo de eventos
 ```

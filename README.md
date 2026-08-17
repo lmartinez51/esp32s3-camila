@@ -69,12 +69,13 @@ flowchart TD
         G -->|Keep Alive / Context| D
         G -->|Web Search| WS[Web Search Client]
         G -->|Delegation| SA[Specialized Assistants API]
-        G -->|Device Commands| HC[Device Control]
-        HC -->|Erase NVS| NVS[(NVS Storage)]
-        HC -->|Enter Config Mode| BLE[BLE Module]
+        G -->|Device Commands| TA[WebRTC Tool Adapter]
+        TA -->|HAL Dispatch| HAL[Robot HAL & Drivers]
+        HAL <-->|Registry & Persistence| REG[(Device Registry / NVS)]
+        TA -->|Enter Config Mode| BLE[BLE Module]
         G -->|Automation Rules| LUA[ESP-Claw Lua VM]
         LUA <-->|Read/Write Rules| LFS[(LittleFS Storage)]
-            end
+    end
 
     subgraph Connectivity & Provisioning
         BLE <-->|Receive Credentials| App[Companion App]
@@ -224,13 +225,18 @@ idf.py -p <PORT> flash monitor
 
 ```
 /solutions/openai_camila/main
+ ├── adapters/             # WebRTC tool adapter (maps OpenAI tools to HAL)
  ├── alert/                # Alert dispatcher
  ├── audio/                # Audio capture/playback, pipeline control, and mute logic
  ├── ble/                  # BLE central logic and provisioning
  ├── config/               # Settings manager, NVS setup
  ├── core/                 # Main app and high-level orchestration
+ ├── drivers/              # Hardware drivers (BLE, IR, WiFi)
+ ├── hal/                  # Modular Robot Hardware Abstraction Layer & health monitor
  ├── hardware/             # Codec/I2C init, board peripherals
  ├── openai/               # Assistant logic, Web Search, Realtime API signaling
+ ├── registry/             # Device registry & NVS persistence
+ ├── sensing/              # Proximity sensing & ESP-NOW beaconing
  ├── ui/                   # LCD rendering, charset mapping, and UI logic
  └── webrtc/               # WebRTC integration and event handling
 ```
