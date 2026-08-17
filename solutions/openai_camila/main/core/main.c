@@ -149,10 +149,10 @@ static void thread_scheduler(const char *thread_name, media_lib_thread_cfg_t *th
         thread_cfg->priority   = 15;
         thread_cfg->core_id    = 1;
     }
-    /* Audio decoder task — Core 1, medium priority */
+    /* Audio decoder task — Core 1, high priority */
     if (strcmp(thread_name, "Adec") == 0) {
         thread_cfg->stack_size = 24 * 1024;
-        thread_cfg->priority   = 10;
+        thread_cfg->priority   = 15;
         thread_cfg->core_id    = 1;
     }
     /* Video encoder task */
@@ -162,25 +162,30 @@ static void thread_scheduler(const char *thread_name, media_lib_thread_cfg_t *th
 #endif
         thread_cfg->priority = 10;
     }
-#ifdef WEBRTC_SUPPORT_OPUS
-    /* Audio encoder task — only when OPUS is enabled */
+    /* Audio encoder task */
     if (strcmp(thread_name, "aenc") == 0) {
         thread_cfg->stack_size = 40 * 1024;
-        thread_cfg->priority   = 10;
+        thread_cfg->priority   = 15;
+        thread_cfg->core_id    = 0;
     }
-    /* Audio source reading task — Core 0, high priority */
+    /* Audio source reading task — Core 0, high priority (AFE fetch) */
     if (strcmp(thread_name, "SrcRead") == 0) {
         thread_cfg->stack_size = 40 * 1024;
         thread_cfg->priority   = 16;
         thread_cfg->core_id    = 0;
     }
-    /* Audio buffer input task — Core 0, medium priority */
-    if (strcmp(thread_name, "buffer_in") == 0) {
-        thread_cfg->stack_size = 6 * 1024;
-        thread_cfg->priority   = 10;
+    /* Audio source pipeline task */
+    if (strcmp(thread_name, "AUD_SRC") == 0) {
+        thread_cfg->stack_size = 20 * 1024;
+        thread_cfg->priority   = 16;
         thread_cfg->core_id    = 0;
     }
-#endif
+    /* Audio buffer input task — Core 0, high priority */
+    if (strcmp(thread_name, "buffer_in") == 0) {
+        thread_cfg->stack_size = 6 * 1024;
+        thread_cfg->priority   = 15;
+        thread_cfg->core_id    = 0;
+    }
 }
 
 /* ── BLE Provisioning Helper ────────────────────────────────────────────── */

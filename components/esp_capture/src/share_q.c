@@ -30,6 +30,12 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <errno.h>
+
+/* Espera máxima por un slot libre del ring antes de descartar el frame nuevo.
+ * 100 ms << latencia de congestión del sink (segundos), suficiente para que
+ * el consumidor habitual (media_send_task) libere si está haciendo progreso. */
+#define SHARE_Q_WAIT_TIMEOUT_MS 100
 
 typedef struct {
     int   ref_count;
@@ -78,6 +84,9 @@ share_q_t *share_q_create(share_q_cfg_t *cfg)
             if (q->user_q[i].q == NULL) {
                 goto _exit;
             }
+            /* Las colas internas del share_q alimentan sinks de audio: send
+             * acotado con drop-oldest para no bloquear al productor (AFE). */
+            msg_q_set_send_timeout(q->user_q[i].q, SHARE_Q_WAIT_TIMEOUT_MS);
         }
         q->valid_count = cfg->user_count;
     }
@@ -194,8 +203,27 @@ int share_q_add(share_q_t *q, void *item)
     // Check if the next write position will overwrite an unreleased item
     int next_wp = (q->wp + 1) % q->cfg.q_count;
     while (next_wp == q->rp) {
-        // Queue is full, cannot add new item
-        pthread_cond_wait(&q->cond, &q->lock);
+        // Queue is full, cannot add new item: wait bounded, then drop the NEW
+        // item to break producer stalls (AFE ring overflow). The release model
+        // is FIFO, so a dropped item is harmless: later releases still drain
+        // the underlying frame queues.
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += SHARE_Q_WAIT_TIMEOUT_MS / 1000;
+        ts.tv_nsec += (SHARE_Q_WAIT_TIMEOUT_MS % 1000) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_nsec -= 1000000000L;
+            ts.tv_sec++;
+        }
+        int wait_ret = pthread_cond_timedwait(&q->cond, &q->lock, &ts);
+        if (wait_ret == ETIMEDOUT) {
+            static uint32_t ring_drop_counter = 0;
+            if ((ring_drop_counter++ % 32) == 0) {
+                printf("share_q ring full: dropping new frame to keep pipeline alive\n");
+            }
+            pthread_mutex_unlock(&q->lock);
+            return -1;
+        }
     }
     // Add into items first
     share_item_t *q_item = q->items + q->wp;

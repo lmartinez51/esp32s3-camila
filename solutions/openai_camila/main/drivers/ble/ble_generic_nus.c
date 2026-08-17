@@ -64,24 +64,18 @@ static esp_err_t ble_generic_probe(robot_driver_t *drv,
                                    bool *present)
 {
     (void)drv;
-    if (!ep || !present)
+    (void)ep;
+    if (!present)
     {
         return ESP_ERR_INVALID_ARG;
     }
 
-    bool has_addr = false;
-    for (int i = 0; i < 6; i++)
-    {
-        has_addr |= (ep->addr[i] != 0);
-    }
-    if (!has_addr)
-    {
-        *present = true; /* sin MAC no hay forma de sondear: asumir presente */
-        return ESP_OK;
-    }
-
-    return ble_transport_probe_addr(ep->addr, ep->addr_type,
-                                    CONFIG_ROBOT_PROBE_TIMEOUT_MS, present);
+    /* Bypass passive scan pre-probe for BLE devices.
+     * BLE advertising intervals can exceed short passive probe windows, causing
+     * false OFFLINE responses. We bypass pre-probe and let bounded connect
+     * determine availability in execute(). */
+    *present = true;
+    return ESP_OK;
 }
 
 static robot_result_code_t ble_generic_map_error(esp_err_t err)

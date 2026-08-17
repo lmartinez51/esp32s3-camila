@@ -79,7 +79,22 @@ static void _media_send(void *ctx)
                 .data = audio_frame.data,
                 .size = audio_frame.size,
             };
+            int64_t send_start_us = esp_timer_get_time();
             esp_peer_send_audio(rtc->pc, &audio_send_frame);
+            int64_t send_elapsed_us = esp_timer_get_time() - send_start_us;
+            if (send_elapsed_us > 100000) {
+                /* Watchdog diagnóstico: esp_peer_send_audio bloquea cuando el
+                 * canal está congestionado; si excede ~2 frames, es la señal
+                 * temprana del AFE stall (backpressure). Throttle 1/s. */
+                static uint32_t last_slow_log_ms = 0;
+                uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                if (now_ms - last_slow_log_ms > 1000) {
+                    last_slow_log_ms = now_ms;
+                    ESP_LOGW(TAG, "esp_peer_send_audio tardó %lld ms (congestión del canal; "
+                                  "aud_send_num=%u)",
+                             (long long)(send_elapsed_us / 1000), rtc->aud_send_num);
+                }
+            }
             rtc->aud_send_pts = audio_frame.pts;
             rtc->aud_send_num++;
             rtc->aud_send_size += audio_frame.size;

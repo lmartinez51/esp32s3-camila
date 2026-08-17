@@ -3030,7 +3030,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         ESP_LOGI(TAG, "Data Channel Connected - sending session.update");
         g_realtime_session_ready = false;
         xEventGroupSetBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
-        xEventGroupClearBits(app_startup_event_group, WEBRTC_API_ERROR_BIT | WEBRTC_DISCONNECTED_BIT);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_API_ERROR_BIT | WEBRTC_DISCONNECTED_BIT | WEBRTC_STARTING_BIT);
         schedule_session_update();
         break;
 
@@ -3041,7 +3041,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         ESP_LOGW(TAG, "Data Channel Disconnected");
         log_data_channel_snapshot("data-channel-disconnected");
         reset_realtime_interaction_state();
-        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT | WEBRTC_STARTING_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
         display_camila_session_state(CAMILA_STATE_SAD, "data_channel_disconnected");
@@ -3054,7 +3054,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         ESP_LOGW(TAG, "WebRTC Disconnected");
         log_data_channel_snapshot("webrtc-disconnected");
         reset_realtime_interaction_state();
-        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT | WEBRTC_STARTING_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
         display_camila_session_state(CAMILA_STATE_SAD, "webrtc_disconnected");
@@ -3077,7 +3077,7 @@ static int webrtc_event_handler(esp_webrtc_event_t *event, void *ctx)
         ESP_LOGE(TAG, "WebRTC Connection Failed");
         log_data_channel_snapshot("connect-failed");
         reset_realtime_interaction_state();
-        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT | WEBRTC_STARTING_BIT);
         xEventGroupSetBits(app_startup_event_group, WEBRTC_DISCONNECTED_BIT);
         orchestrator_post_event(ORCH_EVENT_WEBRTC_DISCONNECTED);
         display_camila_session_state(CAMILA_STATE_SAD, "webrtc_connect_failed");
@@ -3161,8 +3161,18 @@ int start_webrtc(webrtc_session_mode_t mode)
 
     xEventGroupClearBits(app_startup_event_group, WEBRTC_CONNECTED_BIT | WEBRTC_DISCONNECTED_BIT);
 
+    /* Marcar "WebRTC arrancando": el BLE Central lo usa para pausar escaneo
+     * y reconexiones mientras la llamada se establece (ver ble_is_webrtc_active). */
+    xEventGroupSetBits(app_startup_event_group, WEBRTC_STARTING_BIT);
+
     esp_peer_default_cfg_t peer_cfg = {
         .agent_recv_timeout = 500,
+        .rtp_cfg = {
+            /* Cola de envío más pequeña: reduce la latencia de congestión del
+             * pipe de audio (~256 frames por defecto). Si el canal se atasca,
+             * esp_peer_send_audio tarda menos en fallar y el AFE no se llena. */
+            .send_queue_num = 96,
+        },
     };
 
     esp_webrtc_cfg_t cfg = {
@@ -3195,6 +3205,7 @@ int start_webrtc(webrtc_session_mode_t mode)
     {
         g_webrtc_session_mode = WEBRTC_SESSION_MODE_FRIENDLY;
         ESP_LOGE(TAG, "❌ Fail to open webrtc (error code: %d)", ret);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_STARTING_BIT);
         return ret;
     }
 
@@ -3222,6 +3233,7 @@ int start_webrtc(webrtc_session_mode_t mode)
     if (ret != 0)
     {
         ESP_LOGE(TAG, "❌ Fail to start webrtc (error code: %d)", ret);
+        xEventGroupClearBits(app_startup_event_group, WEBRTC_STARTING_BIT);
         if (xSemaphoreTake(g_webrtc_mutex, pdMS_TO_TICKS(500)) == pdTRUE)
         {
             if (webrtc == new_handle)
@@ -3264,6 +3276,9 @@ void query_webrtc(void)
 int stop_webrtc(void)
 {
     esp_webrtc_handle_t handle = NULL;
+
+    /* La llamada terminó: liberar el gate de arranque para el BLE Central. */
+    xEventGroupClearBits(app_startup_event_group, WEBRTC_STARTING_BIT);
 
     if (ensure_webrtc_mutex() != ESP_OK)
     {

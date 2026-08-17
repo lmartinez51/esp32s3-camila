@@ -1200,18 +1200,18 @@ void camila_ui_show_avatar(void)
     draw_screen_border(COLOR_CYAN_BGR565, 2);
 
     // 1. Top Demo Tech Header (y = 14)
-    const char *header_text = "ESP32-S3 / OPENAI REALTIME";
+    const char *header_text = "ESP32-S3/OPENAI";
     int header_map[32];
     int header_chars = convert_string_to_char_map(header_text, header_map, 32);
     if (header_chars > 0)
     {
-        int header_w = header_chars * CHAR_WIDTH + (header_chars - 1) * CHAR_SPACING_SCALE_1X;
+        int header_w = header_chars * (CHAR_WIDTH * 2)+ (header_chars - 1) * CHAR_SPACING_SCALE_2X;
         int x = (BSP_LCD_H_RES - header_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, 14, header_map, header_chars, COLOR_CYAN_BGR565, 1);
+        display_text(x, 18, header_map, header_chars, COLOR_MAGENTA_BGR565, 2);
     }
     // Horizontal divider line at y = 28 (w = 272, h = 1)
-    draw_filled_rect(24, 28, 272, 1, COLOR_CYAN_BGR565);
+    draw_filled_rect(24, 44, 272, 2, COLOR_CYAN_BGR565);
 
     // 2. Center Hero Title (y = 106)
     const char *title_text = "AI'M CAMILA";
@@ -1222,10 +1222,10 @@ void camila_ui_show_avatar(void)
         int title_w = title_chars * (CHAR_WIDTH * 2) + (title_chars - 1) * CHAR_SPACING_SCALE_2X;
         int x = (BSP_LCD_H_RES - title_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, 106, title_map, title_chars, COLOR_MAGENTA_BGR565, 2);
+        display_text(x, 106, title_map, title_chars, COLOR_CYAN_BGR565, 2);
     }
     // Centered accent divider line at y = 131 (x = 120, w = 80, h = 2)
-    draw_filled_rect(120, 131, 80, 2, COLOR_CYAN_BGR565);
+    draw_filled_rect(75, 131, 170, 2, COLOR_CYAN_BGR565);
 
     // 3. Dynamic Subtitle & Mute State Handling (y = 144)
     draw_avatar_subtitle_line();

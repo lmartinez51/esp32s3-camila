@@ -90,8 +90,8 @@ static const char *const s_robot_tool_jsons[] = {
     "      },"
     "      \"category\": {"
     "        \"type\": \"string\","
-    "        \"enum\": [\"car\", \"arm\", \"pantilt\", \"generic\"],"
-    "        \"description\": \"Optional device class (default 'car'). 'arm' and 'pantilt' use the TCP servo-controller protocol.\""
+    "        \"enum\": [\"car\", \"arm\", \"pantilt\", \"light\", \"generic\"],"
+    "        \"description\": \"Optional device class (default 'car'). 'arm' and 'pantilt' use the TCP servo-controller protocol, 'light' for smart lights.\""
     "      }"
     "    },"
     "    \"required\": [\"device_name\", \"ip_address\", \"port\", \"protocol\"]"
@@ -154,28 +154,28 @@ static int robot_tools_build_control_robot(cJSON *tools)
     cJSON_AddStringToObject(tool, "description",
                             "Use this tool to move, control, or read telemetry from any registered robot device: "
                             "Bluetooth cars (e.g. ELEGOO BT16), WiFi/network robots by IP (tcp/http), robotic arms, "
-                            "pan-tilt mounts, and IR-controlled devices (NEC/Sony/RC5). "
+                            "pan-tilt mounts, IR-controlled devices (NEC/Sony/RC5), and smart lights. "
                             "Available actions depend on the device type.");
 
     cJSON *dev_name = cJSON_CreateObject();
     cJSON_AddStringToObject(dev_name, "type", "string");
     cJSON_AddStringToObject(dev_name, "description",
-                            "Name or alias of the registered device (e.g., 'Carro', 'Brazo', 'TV Sala').");
+                            "Name or alias of the registered device (e.g., 'Carro', 'Brazo', 'TV Sala', 'Luz').");
     cJSON_AddItemToObject(props, "device_name", dev_name);
 
     cJSON *dev_type = cJSON_CreateObject();
     cJSON_AddStringToObject(dev_type, "type", "string");
     cJSON *dev_type_enum = cJSON_CreateStringArray(
-        (const char *const[]){"car", "arm", "pantilt", "ir", "generic"}, 5);
+        (const char *const[]){"car", "arm", "pantilt", "ir", "light", "generic"}, 6);
     cJSON_AddItemToObject(dev_type, "enum", dev_type_enum);
     cJSON_AddStringToObject(dev_type, "description",
-                            "Optional device class hint: 'car', 'arm', 'pantilt', 'ir', 'generic'.");
+                            "Optional device class hint: 'car', 'arm', 'pantilt', 'ir', 'light', 'generic'.");
     cJSON_AddItemToObject(props, "device_type", dev_type);
 
     cJSON *action = cJSON_CreateObject();
     cJSON_AddStringToObject(action, "type", "string");
     cJSON *action_enum = cJSON_CreateArray();
-    for (int a = ROBOT_ACTION_FORWARD; a <= ROBOT_ACTION_LEARN_IR_CODE; a++)
+    for (int a = ROBOT_ACTION_FORWARD; a <= ROBOT_ACTION_SET_BRIGHTNESS; a++)
     {
         if ((caps_union & (1u << (robot_action_id_t)a)) != 0)
         {
@@ -206,6 +206,14 @@ static int robot_tools_build_control_robot(cJSON *tools)
     cJSON_AddStringToObject(axis, "description",
                             "Optional axis id for MOVE_AXIS (0=base, 1=shoulder, 2=elbow, 3=gripper).");
     cJSON_AddItemToObject(props, "axis_id", axis);
+
+    cJSON *bright = cJSON_CreateObject();
+    cJSON_AddStringToObject(bright, "type", "integer");
+    cJSON_AddNumberToObject(bright, "minimum", 0);
+    cJSON_AddNumberToObject(bright, "maximum", 100);
+    cJSON_AddStringToObject(bright, "description",
+                            "Brightness percentage level for lights (1-100)");
+    cJSON_AddItemToObject(props, "brightness_pct", bright);
 
     cJSON *ir_proto = cJSON_CreateObject();
     cJSON_AddStringToObject(ir_proto, "type", "string");

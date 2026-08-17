@@ -298,6 +298,16 @@ static esp_err_t registry_persist_ensure_worker(void)
     esp_err_t err = ESP_OK;
     if (s_registry_worker == NULL)
     {
+        /* Guard: verificar si hay suficiente memoria SRAM interna contigua antes de intentar spawn */
+        const size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (largest_block < (REGISTRY_WORKER_STACK + 512))
+        {
+            ESP_LOGW(TAG, "Memoria interna contigua insuficiente (%u B < %u B) para worker de persistencia; operacion retenida en cola",
+                     (unsigned)largest_block, (unsigned)(REGISTRY_WORKER_STACK + 512));
+            xSemaphoreGive(s_registry_spawn_lock);
+            return ESP_OK;
+        }
+
         if (xTaskCreatePinnedToCore(registry_worker_task,
                                     "reg_persist",
                                     REGISTRY_WORKER_STACK,
@@ -307,7 +317,7 @@ static esp_err_t registry_persist_ensure_worker(void)
                                     REGISTRY_WORKER_CORE) != pdPASS)
         {
             s_registry_worker = NULL;
-            ESP_LOGE(TAG, "No se pudo recrear la tarea de persistencia");
+            ESP_LOGW(TAG, "No se pudo recrear la tarea de persistencia reg_persist (memoria insuficiente)");
             err = ESP_ERR_NO_MEM;
         }
         else

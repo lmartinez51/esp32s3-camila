@@ -263,6 +263,15 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         }
         orchestrator_log_heap_snapshot("igniting:audio_ready");
 
+        /* BLE Central fuera del camino antes de arrancar WebRTC: el BLE Central
+         * comparte radio, stack y memoria con el audio/WebRTC. Detener la tarea
+         * smart y el escaneo evita que un perfilado en curso pise el arranque
+         * de la llamada (la ruta amistosa NO libera BLE antes de ignición). */
+        if (ble_device_stop_smart_task() != ESP_OK) {
+            ESP_LOGW(TAG, "STATE_IGNITING: no se pudo detener la tarea smart BLE; continuando de todos modos");
+        }
+        ble_device_stop_scan();
+
         int ret = start_webrtc(ignition_mode);
         s_ignition_webrtc_mode = WEBRTC_SESSION_MODE_FRIENDLY;
         if (ret != 0) {

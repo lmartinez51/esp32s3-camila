@@ -38,6 +38,8 @@
 #include "webrtc.h"
 #include "ui.h"
 #include "ble_device_control.h"
+#include "ble_hue.h"
+#include "ble_generic_nus.h"
 #include "robot_hal.h"
 #include "registry_migrate.h"
 #include "wifi_session_state.h"
@@ -82,6 +84,7 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     cJSON *dur_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms") : NULL;
     cJSON *ang_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "angle_deg") : NULL;
     cJSON *axis_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "axis_id") : NULL;
+    cJSON *bright_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "brightness_pct") : NULL;
     cJSON *proto_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_protocol") : NULL;
     cJSON *addr_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_address") : NULL;
     cJSON *cmd_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_command") : NULL;
@@ -114,6 +117,20 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     hal_params.duration_ms = dur_val;
     hal_params.angle_deg = (cJSON_IsNumber(ang_item)) ? (int32_t)ang_item->valueint : 0;
     hal_params.axis_id = (cJSON_IsNumber(axis_item)) ? (uint8_t)axis_item->valueint : 0;
+    if (cJSON_IsNumber(bright_item))
+    {
+        int val = bright_item->valueint;
+        if (val < 0) val = 0;
+        if (val > 100) val = 100;
+        hal_params.brightness_pct = (uint8_t)val;
+    }
+    else if (cJSON_IsString(bright_item) && bright_item->valuestring)
+    {
+        int val = atoi(bright_item->valuestring);
+        if (val < 0) val = 0;
+        if (val > 100) val = 100;
+        hal_params.brightness_pct = (uint8_t)val;
+    }
     if (cJSON_IsString(proto_item) && proto_item->valuestring)
     {
         if (strcasecmp(proto_item->valuestring, "sony") == 0)
@@ -135,6 +152,10 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     robot_action_id_t hal_action = robot_action_from_string(act_str);
     const bool is_ir_action = (hal_action == ROBOT_ACTION_SEND_IR_COMMAND ||
                                hal_action == ROBOT_ACTION_LEARN_IR_CODE);
+    const bool is_light_action = (hal_action == ROBOT_ACTION_TURN_ON ||
+                                  hal_action == ROBOT_ACTION_TURN_OFF ||
+                                  hal_action == ROBOT_ACTION_TOGGLE ||
+                                  hal_action == ROBOT_ACTION_SET_BRIGHTNESS);
     esp_err_t hal_err = robot_hal_execute(dev_str, hal_action, &hal_params, &hal_res);
     if (hal_err == ESP_OK && hal_res.code == ROBOT_RESULT_OK)
     {
@@ -149,7 +170,14 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
         else
         {
             const robot_device_t *hal_dev = robot_hal_get_device(dev_str);
-            if (hal_dev != NULL && hal_dev->protocol == ROBOT_PROTOCOL_WIFI)
+            if (hal_dev != NULL && hal_dev->category == ROBOT_CATEGORY_LIGHT)
+            {
+                char resp_buf[256];
+                snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"success\", \"message\": \"%s\"}",
+                         (hal_res.detail[0] != '\0') ? hal_res.detail : "Comando de luz ejecutado correctamente");
+                send_function_output(call_id, resp_buf);
+            }
+            else if (hal_dev != NULL && hal_dev->protocol == ROBOT_PROTOCOL_WIFI)
             {
                 send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Comando ejecutado correctamente\"}");
             }
@@ -172,13 +200,13 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
         ESP_LOGW(TAG, "📡 Probe fail-fast: '%s' respondió OFFLINE", dev_str);
         send_function_output(call_id, "{\"status\": \"error\", \"message\": \"El dispositivo está apagado o fuera de alcance (offline).\"}");
     }
-    else if (is_ir_action)
+    else if (is_ir_action || is_light_action)
     {
-        /* IR: el detalle del HAL es la respuesta definitiva (sin fallback). */
+        /* IR / Luz: el detalle del HAL es la respuesta definitiva (sin fallback). */
         ui_clear_status_message();
         char resp_buf[256];
         snprintf(resp_buf, sizeof(resp_buf), "{\"status\": \"error\", \"message\": \"%s\"}",
-                 (hal_res.detail[0] != '\0') ? hal_res.detail : "No se pudo ejecutar el comando IR");
+                 (hal_res.detail[0] != '\0') ? hal_res.detail : "No se pudo ejecutar el comando");
         send_function_output(call_id, resp_buf);
     }
     else if (hal_action == ROBOT_ACTION_NONE || hal_err == ESP_ERR_NOT_FOUND)
@@ -239,23 +267,67 @@ static void handle_set_ble_device_alias(const char *call_id, const char *args_js
     snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
+    /* 1. Asignar alias en la lista BLE en memoria y encolar NVS */
     esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
-    ui_clear_status_message();
-    if (alias_err == ESP_OK)
+
+    /* 2. Registro directo e inmediato en el HAL registry activo */
+    ble_device_info_t *found = ble_device_find_by_name(dev_str);
+    if (!found)
     {
-        /* Phase 7: el alias legacy vive en NVS; re-sincronizamos el
-         * registry HAL (migración idempotente) para que el dispositivo
-         * renombrado quede controlable por el path multi-protocolo. */
-        const char *ssid = wifi_session_get_connected_ssid();
-        if (ssid != NULL && ssid[0] != '\0')
+        found = ble_device_find_by_name(alias_str);
+    }
+
+    if (found != NULL)
+    {
+        robot_device_t hal_dev = {0};
+        strlcpy(hal_dev.alias, alias_str, sizeof(hal_dev.alias));
+        hal_dev.protocol = ROBOT_PROTOCOL_BLE;
+
+        bool is_light = (found->type == BLE_DEVICE_TYPE_LIGHT) ||
+                        (ble_device_detect_type_from_name(found->name) == BLE_DEVICE_TYPE_LIGHT) ||
+                        (ble_device_detect_type_from_name(alias_str) == BLE_DEVICE_TYPE_LIGHT);
+
+        if (is_light)
         {
-            int migrated = 0;
-            if (robot_registry_migrate_legacy_ble(ssid, &migrated) == ESP_OK)
-            {
-                ESP_LOGI(TAG, "Registry HAL re-sincronizado tras alias (%d dispositivos)", migrated);
-            }
+            hal_dev.category = ROBOT_CATEGORY_LIGHT;
+            strlcpy(hal_dev.driver_profile_id, BLE_HUE_PROFILE_ID, sizeof(hal_dev.driver_profile_id));
         }
-        send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado en NVS exitosamente\"}");
+        else if (strcasestr(found->name, "ELEGOO") != NULL || strcasestr(alias_str, "carro") != NULL)
+        {
+            hal_dev.category = ROBOT_CATEGORY_CAR;
+            strlcpy(hal_dev.driver_profile_id, "elegoo_bt16", sizeof(hal_dev.driver_profile_id));
+        }
+        else
+        {
+            hal_dev.category = ROBOT_CATEGORY_GENERIC;
+            strlcpy(hal_dev.driver_profile_id, BLE_GENERIC_NUS_PROFILE_ID, sizeof(hal_dev.driver_profile_id));
+        }
+
+        memcpy(hal_dev.endpoint.addr, found->addr, 6);
+        hal_dev.endpoint.addr_type = found->addr_type;
+        snprintf(hal_dev.endpoint.endpoint, sizeof(hal_dev.endpoint.endpoint),
+                 "%02X:%02X:%02X:%02X:%02X:%02X",
+                 found->addr[0], found->addr[1], found->addr[2],
+                 found->addr[3], found->addr[4], found->addr[5]);
+        hal_dev.id = registry_device_id(hal_dev.endpoint.endpoint);
+        hal_dev.endpoint.value_handle = found->char_val_handle;
+
+        esp_err_t reg_err = robot_hal_register_device(&hal_dev);
+        if (reg_err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "Dispositivo '%s' registrado en HAL (driver: %s, category: %d)",
+                     hal_dev.alias, hal_dev.driver_profile_id, (int)hal_dev.category);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "robot_hal_register_device devolvio: %s", esp_err_to_name(reg_err));
+        }
+    }
+
+    ui_clear_status_message();
+    if (alias_err == ESP_OK || found != NULL)
+    {
+        send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado y registrado en HAL exitosamente\"}");
     }
     else
     {
@@ -325,6 +397,10 @@ static void handle_set_device_endpoint(const char *call_id, const char *args_jso
     if (strcasecmp(cat, "generic") == 0)
     {
         category = ROBOT_CATEGORY_GENERIC;
+    }
+    else if (strcasecmp(cat, "light") == 0)
+    {
+        category = ROBOT_CATEGORY_LIGHT;
     }
     else if (strcasecmp(cat, "arm") == 0)
     {

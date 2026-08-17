@@ -29,12 +29,11 @@
 #define DATA_Q_DATA_ARRIVE_BITS  (1)
 #define DATA_Q_DATA_CONSUME_BITS (2)
 #define DATA_Q_USER_FREE_BITS    (4)
+/* Espera acotada por slot/consumo: evita bloqueos indefinidos del productor
+ * (el antiguo MEDIA_LIB_MAX_LOCK_TIME = 0xFFFFFFFF era un espera infinita). */
+#define DATA_Q_WAIT_TIMEOUT_MS   (100)
 
 #define _SET_BITS(group, bit)    media_lib_event_group_set_bits((media_lib_event_grp_handle_t) group, bit)
-// Need manual clear bits
-#define _WAIT_BITS(group, bit)                                                                           \
-    media_lib_event_group_wait_bits((media_lib_event_grp_handle_t) group, bit, MEDIA_LIB_MAX_LOCK_TIME); \
-    media_lib_event_group_clr_bits(group, bit)
 
 #define _MUTEX_LOCK(mutex)   media_lib_mutex_lock((media_lib_mutex_handle_t) mutex, MEDIA_LIB_MAX_LOCK_TIME)
 #define _MUTEX_UNLOCK(mutex) media_lib_mutex_unlock((media_lib_mutex_handle_t) mutex)
@@ -55,9 +54,12 @@ static int data_queue_wait_data(data_queue_t *q)
 {
     q->user++;
     _MUTEX_UNLOCK(q->lock);
-    _WAIT_BITS(q->event, DATA_Q_DATA_ARRIVE_BITS);
+    uint32_t got = media_lib_event_group_wait_bits((media_lib_event_grp_handle_t) q->event,
+                                                   DATA_Q_DATA_ARRIVE_BITS, DATA_Q_WAIT_TIMEOUT_MS);
+    media_lib_event_group_clr_bits(q->event, DATA_Q_DATA_ARRIVE_BITS);
     _MUTEX_LOCK(q->lock);
-    int ret = (q->quit) ? -1 : 0;
+    /* Timeout sin datos: ret != 0 para que el llamador NO siga esperando. */
+    int ret = (q->quit) ? -1 : (got ? 0 : -1);
     q->user--;
     data_queue_release_user(q);
     return ret;
@@ -73,9 +75,11 @@ static int data_queue_wait_consume(data_queue_t *q)
 {
     q->user++;
     _MUTEX_UNLOCK(q->lock);
-    _WAIT_BITS(q->event, DATA_Q_DATA_CONSUME_BITS);
+    uint32_t got = media_lib_event_group_wait_bits((media_lib_event_grp_handle_t) q->event,
+                                                   DATA_Q_DATA_CONSUME_BITS, DATA_Q_WAIT_TIMEOUT_MS);
+    media_lib_event_group_clr_bits(q->event, DATA_Q_DATA_CONSUME_BITS);
     _MUTEX_LOCK(q->lock);
-    int ret = (q->quit) ? -1 : 0;
+    int ret = (q->quit) ? -1 : (got ? 0 : -1);
     q->user--;
     data_queue_release_user(q);
     return ret;
@@ -84,7 +88,9 @@ static int data_queue_wait_consume(data_queue_t *q)
 static int data_queue_wait_user(data_queue_t *q)
 {
     _MUTEX_UNLOCK(q->lock);
-    _WAIT_BITS(q->event, DATA_Q_USER_FREE_BITS);
+    media_lib_event_group_wait_bits((media_lib_event_grp_handle_t) q->event,
+                                    DATA_Q_USER_FREE_BITS, DATA_Q_WAIT_TIMEOUT_MS);
+    media_lib_event_group_clr_bits(q->event, DATA_Q_USER_FREE_BITS);
     _MUTEX_LOCK(q->lock);
     return 0;
 }

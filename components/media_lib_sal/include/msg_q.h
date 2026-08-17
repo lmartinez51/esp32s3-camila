@@ -79,6 +79,24 @@ int msg_q_send(msg_q_handle_t q, void *msg, int size);
 int msg_q_recv(msg_q_handle_t q, void *msg, int size, bool no_wait);
 
 /**
+ * @brief  Set send timeout for a queue (drop-oldest on overflow)
+ *
+ * When timeout_ms > 0, msg_q_send waits up to timeout_ms for free space;
+ * if the queue is still full, the OLDEST queued message is dropped and the
+ * new one is accepted. This guarantees the producer never blocks
+ * indefinitely. Default is 0 (legacy blocking behavior).
+ *
+ * @param[in]   q          Message queue handle
+ * @param[in]   timeout_ms Send timeout in ms (0 = block forever)
+ *
+ * @return
+ *       - 0    On success
+ *       - -1   On failure
+ *
+ */
+int msg_q_set_send_timeout(msg_q_handle_t q, int timeout_ms);
+
+/**
  * @brief  Get items number in message queue
  *
  * @param[in]   q        Message queue handle

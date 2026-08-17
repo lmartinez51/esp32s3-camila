@@ -35,6 +35,7 @@ idf_component_register(
         "drivers/ble/ble_transport.c"
         "drivers/ble/ble_elegoo_bt16.c"
         "drivers/ble/ble_generic_nus.c"
+        "drivers/ble/ble_hue.c"
 
         "drivers/wifi/wifi_tcp.c"
         "drivers/wifi/wifi_http.c"

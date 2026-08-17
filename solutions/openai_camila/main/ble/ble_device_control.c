@@ -46,6 +46,10 @@
 #endif
 
 #define DISCOVERY_TIMEOUT_MS 10000
+/* Error personalizado (rango de app 0x120+, esp_err.h no define BUSY):
+ * GAP ocupado (escaneo o conexión en curso) -> la ráfaga smart omite el
+ * ciclo sin esperar el semáforo de escaneo. */
+#define BLE_ERR_GAP_BUSY (0x120)
 #define AUTO_CONNECT_ENABLED 0
 #define AUTO_CONNECT_MIN_RSSI -75        // Solo conectar si señal es buena
 #define AUTO_CONNECT_MAX_SIMULTANEOUS 2  // Máximo 2 conexiones simultáneas
@@ -66,9 +70,32 @@
 #define DECR_ACTIVE_OPS()                                                 \
     do                                                                    \
     {                                                                     \
-        int old = atomic_fetch_sub(&g_active_ble_operations, 1);          \
-        ESP_LOGD(TAG, "g_active_ble_operations: %d -> %d", old, old - 1); \
+        int old = atomic_load(&g_active_ble_operations);                  \
+        while (old > 0) {                                                 \
+            if (atomic_compare_exchange_weak(&g_active_ble_operations, &old, old - 1)) { \
+                break;                                                    \
+            }                                                             \
+        }                                                                 \
+        if (old <= 0) {                                                   \
+            ESP_LOGW(TAG, "g_active_ble_operations ya era %d: decremento espurio ignorado", old); \
+        }                                                                 \
+        else {                                                            \
+            ESP_LOGD(TAG, "g_active_ble_operations: %d -> %d", old, old - 1); \
+        }                                                                 \
     } while (0)
+
+static bool ble_is_webrtc_active(void)
+{
+    if (app_startup_event_group != NULL) {
+        EventBits_t bits = xEventGroupGetBits(app_startup_event_group);
+        /* WEBRTC_STARTING_BIT cubre la ventana entre start_webrtc() y el data
+         * channel: antes no había gate y las ops BLE pisaban el arranque. */
+        if (bits & (WEBRTC_CONNECTED_BIT | WEBRTC_STARTING_BIT)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /**
  * @brief Número de ciclos de descubrimiento consecutivos sin encontrar
@@ -106,7 +133,7 @@
 #define BLE_CONTROL_WORKER_PRIORITY (tskIDLE_PRIORITY + 3)
 #define BLE_SMART_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
 #define BLE_RUNTIME_TASK_CORE 0
-#define BLE_RUNTIME_TASK_STACK_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+#define BLE_RUNTIME_TASK_STACK_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define BLE_STAGING_BUFFER_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 #define BLE_CENTRAL_MIN_INTERNAL_FREE_BYTES (1536)
@@ -225,6 +252,54 @@ static const ble_uuid128_t s_identity_service_uuid = {
     },
 };
 
+static const ble_uuid128_t s_hue_service_uuid =
+    BLE_UUID128_INIT(0x1e, 0x7f, 0x2b, 0xd8, 0x52, 0xe6, 0xab, 0x93,
+                     0xa7, 0x47, 0x80, 0xde, 0xbd, 0x32, 0x2c, 0x93);
+
+static const ble_uuid128_t s_hue_on_off_char_uuid =
+    BLE_UUID128_INIT(0x13, 0x91, 0x90, 0x60, 0x5d, 0xe2, 0x90, 0xb5,
+                     0xc2, 0x4b, 0x94, 0xeb, 0x01, 0x00, 0x88, 0xbe);
+
+static const ble_uuid128_t s_hue_brightness_char_uuid =
+    BLE_UUID128_INIT(0x13, 0x91, 0x90, 0x60, 0x5d, 0xe2, 0x90, 0xb5,
+                     0xc2, 0x4b, 0x94, 0xeb, 0x02, 0x00, 0x88, 0xbe);
+
+/* Protocolo Hue BLE canónico (verificado con nRF Connect en 'Bathroom'):
+ * servicio 932c32bd-0000-47a2-835a-a8d455b859dd, chars 0002 (Light State) y
+ * 0003 (State per Attribute): writes de 4 bytes [attr, valor, 0x00, 0x00]. */
+static const ble_uuid128_t s_hue_light_service_uuid =
+    BLE_UUID128_INIT(0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83,
+                     0xa2, 0x47, 0x00, 0x00, 0xbd, 0x32, 0x2c, 0x93);
+
+static const ble_uuid128_t s_hue_light_state_char_uuid =
+    BLE_UUID128_INIT(0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83,
+                     0xa2, 0x47, 0x02, 0x00, 0xbd, 0x32, 0x2c, 0x93);
+
+static const ble_uuid128_t s_hue_light_state_attr_char_uuid =
+    BLE_UUID128_INIT(0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83,
+                     0xa2, 0x47, 0x03, 0x00, 0xbd, 0x32, 0x2c, 0x93);
+
+/* ── Tuya Smart Bulb (protocolo BLE Tuya) ─────────────────────────────── */
+
+/* Service UUID Tuya: 00001912-0000-1000-8000-00805F9B34FB */
+static const ble_uuid128_t s_tuya_service_uuid =
+    BLE_UUID128_INIT(0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+                     0x00, 0x10, 0x00, 0x00, 0x12, 0x19, 0x00, 0x00);
+
+#define BLE_TUYA_SERVICE_UUID16    0x1912   /* Servicio de control Tuya         */
+#define BLE_TUYA_WRITE_CHAR_UUID16 0x2AE2   /* Característica de comando (write) */
+#define BLE_TUYA_DATA_CHAR_UUID16  0x2AE1   /* Característica de datos (notify)  */
+
+/* Rango de servicios GATT estándar (GAP, GATT, Device Info, ...): nunca
+ * contienen características de control y bloquean la búsqueda del servicio real. */
+#define BLE_STD_SERVICE_MIN 0x1800
+#define BLE_STD_SERVICE_MAX 0x1810
+
+/* Índices de perfil virtuales para auto-matching (no persistidos) */
+#define PROFILE_INDEX_TUYA   997
+#define PROFILE_INDEX_HUE    998
+#define PROFILE_INDEX_ELEGOO 999
+
 typedef enum
 {
     BLE_OP_DISCONNECT,
@@ -239,7 +314,8 @@ static struct
     uint8_t addr[6];
     uint8_t addr_type;
     bool is_active;
-    bool cancelled; // true si la operación on-demand fue abortada por timeout
+    bool cancelled;     // true si la operación on-demand fue abortada por timeout
+    bool is_profiling;  // true si la conexión en vuelo pertenece al perfilado smart (única que INCR ops)
 } g_pending_connection;
 
 typedef struct
@@ -1146,6 +1222,17 @@ static bool target_devices_reached(void)
  */
 static void attempt_device_reconnection(void)
 {
+    if (ble_is_webrtc_active())
+    {
+        /* Suspender reconexión automática en segundo plano durante llamadas WebRTC activas */
+        return;
+    }
+
+    uint8_t target_addr[6] = {0};
+    uint8_t target_addr_type = 0;
+    char target_name[BLE_DEVICE_MAX_NAME_LEN] = {0};
+    bool found = false;
+
     if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
     {
         return;
@@ -1158,17 +1245,21 @@ static void attempt_device_reconnection(void)
         // Solo intentar reconectar si el dispositivo es conocido y está desconectado
         if (device->is_known && device->state == BLE_DEVICE_STATE_DISCONNECTED)
         {
-
-            // --- REEMPLAZA EL BLOQUE ANTIGUO CON ESTO ---
-            ESP_LOGI(TAG, "Intentando reconectar con dispositivo conocido: %s", device->name);
-            ble_device_connect(device->addr, device->addr_type);
-            // Salimos del bucle para manejar una conexión a la vez
+            memcpy(target_addr, device->addr, 6);
+            target_addr_type = device->addr_type;
+            strlcpy(target_name, device->name, sizeof(target_name));
+            found = true;
             break;
-            // ---------------------------------------------
         }
     }
 
     xSemaphoreGive(devices_mutex);
+
+    if (found)
+    {
+        ESP_LOGI(TAG, "Intentando reconectar con dispositivo conocido: %s", target_name);
+        ble_device_connect(target_addr, target_addr_type);
+    }
 }
 
 /**
@@ -1202,6 +1293,29 @@ static void cleanup_stale_connections(void)
 }
 
 /**
+ * @brief Detecta si la lista de dispositivos contiene un ELEGOO BT16 / "Carro".
+ * Se usa para decidir si el relax de sm_sec_lvl es necesario (FIX 9).
+ */
+static bool device_list_has_elegoo(void)
+{
+    bool found = false;
+    if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+    {
+        for (int i = 0; i < discovered_count && !found; i++)
+        {
+            if (strcasestr(discovered_devices[i].name, "ELEGOO") != NULL ||
+                strcasestr(discovered_devices[i].alias, "Carro") != NULL ||
+                discovered_devices[i].matched_profile_index == PROFILE_INDEX_ELEGOO)
+            {
+                found = true;
+            }
+        }
+        xSemaphoreGive(devices_mutex);
+    }
+    return found;
+}
+
+/**
  * @brief Initialize BLE device control module
  * @param callbacks Callbacks for device events
  * @return ESP_OK on success, error code on failure
@@ -1209,16 +1323,6 @@ static void cleanup_stale_connections(void)
 esp_err_t ble_device_control_start(ble_device_callbacks_t *callbacks)
 {
     ble_log_memory_snapshot("start:entry");
-
-    if (ble_hs_cfg.sm_sec_lvl >= 2) {
-        const int prev_sec_lvl = ble_hs_cfg.sm_sec_lvl;
-        ble_hs_cfg.sm_sec_lvl = 0;
-        ESP_LOGW(TAG,
-                 "ble_hs_cfg.sm_sec_lvl lowered from %d to 0: CONFIG_BT_NIMBLE_SM_LVL=2 forces NimBLE "
-                 "(ble_att_svr_rx_notify) to silently discard all incoming GATT notifications on "
-                 "unencrypted links; ELEGOO BT16 telemetry requires this relaxation.",
-                 prev_sec_lvl);
-    }
 
     if (module_initialized)
     {
@@ -1329,6 +1433,22 @@ esp_err_t ble_device_control_start(ble_device_callbacks_t *callbacks)
 
     ESP_LOGI(TAG, "[BLE_NVS] Carga síncrona completada.");
     nvs_loading_complete = true;
+
+    /* FIX 9: rebajar sm_sec_lvl SOLO si hay un dispositivo ELEGOO/Carro
+     * conocido (el relax haría que NimBLE descartara notificaciones GATT en
+     * enlaces sin cifrar para el resto de dispositivos). La lista ya contiene
+     * los dispositivos NVS cargados en esta misma función. */
+    if (ble_hs_cfg.sm_sec_lvl >= 2 && device_list_has_elegoo())
+    {
+        const int prev_sec_lvl = ble_hs_cfg.sm_sec_lvl;
+        ble_hs_cfg.sm_sec_lvl = 0;
+        ESP_LOGW(TAG,
+                 "ble_hs_cfg.sm_sec_lvl lowered from %d to 0 (dispositivo ELEGOO/Carro conocido): "
+                 "CONFIG_BT_NIMBLE_SM_LVL=2 forces NimBLE (ble_att_svr_rx_notify) to silently "
+                 "discard all incoming GATT notifications on unencrypted links; ELEGOO BT16 "
+                 "telemetry requires this relaxation.",
+                 prev_sec_lvl);
+    }
 
     module_initialized = true;
     ble_log_memory_snapshot("start:complete");
@@ -1484,6 +1604,14 @@ esp_err_t ble_device_start_scan(uint32_t timeout_ms)
 
     if (rc != 0)
     {
+        if (rc == BLE_HS_EBUSY)
+        {
+            /* GAP ocupado (conexión o escaneo en curso): NO reportar éxito,
+             * el llamador (ráfaga smart) debe omitir el ciclo sin esperar
+             * scan_complete_semaphore. */
+            ESP_LOGW(TAG, "Escaneo omitido: exploracion o conexion GAP activa (EBUSY)");
+            return BLE_ERR_GAP_BUSY;
+        }
         ESP_LOGE(TAG, "Error iniciando escaneo: %d", rc);
         return ESP_FAIL;
     }
@@ -1527,6 +1655,29 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Serialización GAP: si NimBLE ya está en un ble_gap_connect en curso,
+     * rechazar el nuevo intento en vez de corromper el g_pending_connection
+     * del intento en vuelo (los handlers GAP resuelven el dispositivo por él). */
+    if (ble_gap_conn_active())
+    {
+        ESP_LOGW(TAG, "Conexión a %02x:%02x omitida: ya hay una conexión GAP en curso",
+                 device_addr[0], device_addr[1]);
+        return BLE_ERR_GAP_BUSY;
+    }
+
+    /* Si hay un escaneo en curso, cancelarlo primero: NimBLE no permite
+     * escaneo y conexión simultáneos (el segundo fallaría con EBUSY). */
+    if (scanning_active || ble_device_gap_discovery_active())
+    {
+        esp_err_t cancel_err = ble_device_cancel_scan_and_wait(1000);
+        if (cancel_err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "No se pudo cancelar escaneo antes de conectar: %s",
+                     esp_err_to_name(cancel_err));
+            return cancel_err;
+        }
+    }
+
     /* Cada intento de conexión es una intención fresca: anula cancelaciones previas */
     g_pending_connection.cancelled = false;
 
@@ -1534,8 +1685,18 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
     ble_device_info_t *device = find_device_by_addr_internal(device_addr);
     if (!device)
     {
-        ESP_LOGE(TAG, "Dispositivo no encontrado en la lista");
-        return ESP_ERR_NOT_FOUND;
+        ESP_LOGI(TAG, "Dispositivo no encontrado en lista descubierta; creando entrada on-demand");
+        ble_device_info_t new_dev = {0};
+        memcpy(new_dev.addr, device_addr, 6);
+        new_dev.addr_type = addr_type;
+        new_dev.state = BLE_DEVICE_STATE_DISCONNECTED;
+        add_or_update_discovered_device(&new_dev);
+        device = find_device_by_addr_internal(device_addr);
+        if (!device)
+        {
+            ESP_LOGE(TAG, "Dispositivo no encontrado en la lista");
+            return ESP_ERR_NOT_FOUND;
+        }
     }
 
     // NUEVA VALIDACIÓN: Verificar si ya existe una conexión activa
@@ -1572,6 +1733,15 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
     ESP_LOGI(TAG, "Conectando a dispositivo: %s", device->name);
     update_device_state(device_addr, BLE_DEVICE_STATE_CONNECTING);
 
+    /* Registrar la intención de conexión: los handlers GAP resuelven el
+     * dispositivo fallido/desconectado a través de g_pending_connection.
+     * NO tocar is_profiling aquí: el llamador (tarea smart) lo marca ANTES de
+     * llamar y los handlers GAP lo limpian cuando la op concluye. */
+    memcpy(g_pending_connection.addr, device_addr, 6);
+    g_pending_connection.addr_type = addr_type;
+    g_pending_connection.is_active = true;
+    g_pending_connection.cancelled = false;
+
     // Resto del código de conexión...
     struct ble_gap_conn_params conn_params = {0};
     conn_params.scan_itvl = 0x0010;
@@ -1597,6 +1767,7 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
     if (rc != 0)
     {
         ESP_LOGE(TAG, "Error iniciando conexión: %d", rc);
+        g_pending_connection.is_active = false;
         update_device_state(device_addr, BLE_DEVICE_STATE_ERROR);
         return ESP_FAIL;
     }
@@ -1643,13 +1814,43 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
         device.last_seen = xTaskGetTickCount();
         device.state = BLE_DEVICE_STATE_DISCONNECTED;
 
-        // Extraer nombre del dispositivo si está disponible
+        // Extraer nombre y UUIDs del dispositivo si están disponibles
         struct ble_hs_adv_fields fields;
-        if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) == 0 && fields.name)
+        if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) == 0)
         {
-            size_t name_len = MIN(fields.name_len, BLE_DEVICE_MAX_NAME_LEN - 1);
-            memcpy(device.name, fields.name, name_len);
-            device.name[name_len] = '\0';
+            if (fields.name)
+            {
+                size_t name_len = MIN(fields.name_len, BLE_DEVICE_MAX_NAME_LEN - 1);
+                memcpy(device.name, fields.name, name_len);
+                device.name[name_len] = '\0';
+            }
+            else
+            {
+                snprintf(device.name, sizeof(device.name), "Unknown_%02X%02X",
+                         device.addr[4], device.addr[5]);
+            }
+
+            // Check 16-bit UUIDs for Philips Hue Light Service (0xFE0F)
+            for (int u = 0; u < fields.num_uuids16; u++)
+            {
+                if (BLE_UUID16(&fields.uuids16[u].u)->value == 0xFE0F)
+                {
+                    device.type = BLE_DEVICE_TYPE_LIGHT;
+                    break;
+                }
+            }
+            // Check 128-bit UUIDs for Philips Hue Light Service
+            if (device.type == BLE_DEVICE_TYPE_UNKNOWN)
+            {
+                for (int u = 0; u < fields.num_uuids128; u++)
+                {
+                    if (ble_uuid_cmp(&fields.uuids128[u].u, &s_hue_service_uuid.u) == 0)
+                    {
+                        device.type = BLE_DEVICE_TYPE_LIGHT;
+                        break;
+                    }
+                }
+            }
         }
         else
         {
@@ -1657,8 +1858,11 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
                      device.addr[4], device.addr[5]);
         }
 
-        // Detectar tipo
-        device.type = ble_device_detect_type_from_name(device.name);
+        // Detectar tipo por nombre si no fue detectado por UUID
+        if (device.type == BLE_DEVICE_TYPE_UNKNOWN)
+        {
+            device.type = ble_device_detect_type_from_name(device.name);
+        }
 
         if (device.name[0] != '\0' && strncmp(device.name, "Unknown_", 8) != 0)
         {
@@ -1724,36 +1928,21 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t mtu, void *arg)
+/**
+ * @brief Inicia el descubrimiento de servicios GATT para un dispositivo conectado.
+ *
+ * Flujo compartido tras el intercambio de MTU, tanto si este fue exitoso como si
+ * el peer ya lo realizó al conectar (BLE_HS_EALREADY, típico en focos Tuya).
+ */
+static int start_service_discovery(uint16_t conn_handle, ble_device_info_t *device)
 {
-    ble_device_info_t *device = (ble_device_info_t *)arg;
-
     if (!device)
     {
-        ESP_LOGE(TAG, "Device pointer is NULL in MTU exchange callback");
+        ESP_LOGE(TAG, "Device pointer is NULL al iniciar descubrimiento de servicios");
         return -1;
     }
 
-    if (error->status == 0)
-    {
-        ESP_LOGD(TAG, "MTU negociado a %d para '%s'", mtu, device->name);
-        update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_SVCS);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Error en MTU exchange para '%s': %d", device->name, error->status);
-        // NUEVA LÓGICA: No continuar si el error es crítico
-        if (error->status == BLE_HS_ENOTCONN || error->status == BLE_HS_ENOTSYNCED)
-        {
-            ESP_LOGE(TAG, "Error crítico en MTU, terminando conexión para '%s'", device->name);
-            ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-            mark_device_as_error_and_disconnect(device);
-            return -1;
-        }
-
-        // Para otros errores, continuar con un MTU por defecto
-        ESP_LOGW(TAG, "Continuando con MTU por defecto para '%s'", device->name);
-    }
+    update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_SVCS);
 
     // Proceder al descubrimiento de servicios directamente
     ESP_LOGI(TAG, "Iniciando descubrimiento de servicios para '%s'...", device->name);
@@ -1781,6 +1970,40 @@ static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *er
     return 0;
 }
 
+static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t mtu, void *arg)
+{
+    ble_device_info_t *device = (ble_device_info_t *)arg;
+
+    if (!device)
+    {
+        ESP_LOGE(TAG, "Device pointer is NULL in MTU exchange callback");
+        return -1;
+    }
+
+    if (error->status == 0)
+    {
+        ESP_LOGD(TAG, "MTU negociado a %d para '%s'", mtu, device->name);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Error en MTU exchange para '%s': %d", device->name, error->status);
+        // NUEVA LÓGICA: No continuar si el error es crítico
+        if (error->status == BLE_HS_ENOTCONN || error->status == BLE_HS_ENOTSYNCED)
+        {
+            ESP_LOGE(TAG, "Error crítico en MTU, terminando conexión para '%s'", device->name);
+            ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            mark_device_as_error_and_disconnect(device);
+            return -1;
+        }
+
+        // Para otros errores, continuar con un MTU por defecto
+        ESP_LOGW(TAG, "Continuando con MTU por defecto para '%s'", device->name);
+    }
+
+    // Proceder al descubrimiento de servicios directamente
+    return start_service_discovery(conn_handle, device);
+}
+
 static bool is_device_state_consistent(ble_device_info_t *device)
 {
     if (!device)
@@ -1804,6 +2027,12 @@ static bool is_device_state_consistent(ble_device_info_t *device)
                device->conn_handle != 0 &&
                device->pairing_char_handle == 0 &&
                device->char_val_handle == 0;
+
+    case BLE_DEVICE_STATE_DISCOVERY_COMPLETE:
+        /* El enlace se mantiene vivo tras aprender el perfil (keep-alive):
+         * requiere una conexión real como CONNECTED. */
+        return device->conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+               device->conn_handle != 0;
 
     case BLE_DEVICE_STATE_ERROR:
         return true; // Error state es válido en cualquier configuración
@@ -1882,6 +2111,7 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             event->type == BLE_GAP_EVENT_DISCONNECT)
         {
             g_pending_connection.is_active = false;
+            g_pending_connection.is_profiling = false;
             atomic_store(&g_active_ble_operations, 0);
         }
         return 0;
@@ -1909,6 +2139,7 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                 {
                     device->conn_handle = event->connect.conn_handle;
                     device->char_val_handle = 0;
+                    device->char_discovered = false; // Perfil de la sesión previa no aplica a este enlace
                     update_device_state(device->addr, BLE_DEVICE_STATE_CONNECTED);
 
                     if (device_callbacks.on_device_connected)
@@ -1931,7 +2162,14 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                     // NO forzar bonding - dejar que el foco lo inicie si es necesario
                     ESP_LOGI(TAG, "Saltando iniciación manual de bonding. Procediendo con MTU...");
                     int rc_mtu = ble_gattc_exchange_mtu(device->conn_handle, on_mtu_exchange, device);
-                    if (rc_mtu != 0)
+                    if (rc_mtu == BLE_HS_EALREADY)
+                    {
+                        // El peer ya intercambió la MTU al conectar (típico en focos Tuya):
+                        // EALREADY no es un error; continuar con el descubrimiento de servicios.
+                        ESP_LOGW(TAG, "MTU ya negociada para '%s' (EALREADY); continuando con descubrimiento de servicios", device->name);
+                        rc_mtu = start_service_discovery(device->conn_handle, device);
+                    }
+                    else if (rc_mtu != 0)
                     {
                         ESP_LOGE(TAG, "Error iniciando MTU exchange: %d", rc_mtu);
                         ble_gap_terminate(device->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -1949,18 +2187,23 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             ble_device_info_t *failed_device = find_device_by_addr_internal(g_pending_connection.addr);
             if (failed_device)
             {
-                // Si el dispositivo no era conocido, estábamos perfilándolo.
-                // Debemos decrementar el contador para desbloquear la tarea principal.
-                if (!failed_device->is_known)
+                /* Solo el perfilado smart INCR ops; una conexión on-demand o
+                 * reconexión NUNCA debe decrementar (decremento espurio = underflow). */
+                if (g_pending_connection.is_profiling && !failed_device->is_known)
                 {
                     DECR_ACTIVE_OPS();
                 }
+                g_pending_connection.is_profiling = false;
                 update_device_state(failed_device->addr, BLE_DEVICE_STATE_ERROR);
             }
             else
             {
                 ESP_LOGE(TAG, "No se pudo encontrar el dispositivo del intento de conexión fallido en la lista.");
-                DECR_ACTIVE_OPS();
+                if (g_pending_connection.is_profiling)
+                {
+                    DECR_ACTIVE_OPS();
+                }
+                g_pending_connection.is_profiling = false;
             }
             /* Signal on-demand caller that connection failed */
             if (s_ondemand_conn_sem != NULL) {
@@ -2013,6 +2256,23 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         break;
     }
 
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        ESP_LOGW(TAG, "🔁 Evento de Pairing Repetido para conn_handle %d; autorizando reintento",
+                 event->repeat_pairing.conn_handle);
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+
+    case BLE_GAP_EVENT_PASSKEY_ACTION: {
+        ESP_LOGI(TAG, "🔑 Evento Passkey Action (action=%d) para conn_handle %d",
+                 event->passkey.params.action, event->passkey.conn_handle);
+        struct ble_sm_io pkey = {0};
+        pkey.action = event->passkey.params.action;
+        if (event->passkey.params.action == BLE_SM_IOACT_NUMCMP) {
+            pkey.numcmp_accept = 1;
+        }
+        ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+        return 0;
+    }
+
     case BLE_GAP_EVENT_ENC_CHANGE:
         ESP_LOGI(TAG, "🔐 Evento de Encriptación Cambiada (status: %d)", event->enc_change.status);
         if (event->enc_change.status == 0)
@@ -2047,7 +2307,13 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
 
             if (!device->is_known)
             {
-                DECR_ACTIVE_OPS();
+                /* Solo decrementar si esta desconexión cierra una op de
+                 * perfilado smart aún en vuelo (la única que INCR ops). */
+                if (g_pending_connection.is_profiling)
+                {
+                    DECR_ACTIVE_OPS();
+                }
+                g_pending_connection.is_profiling = false;
             }
 
             /* If link drops while GATT discovery/profiling was active, unblock on-demand caller immediately */
@@ -2154,9 +2420,26 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
         ESP_LOGI(TAG, "✅ Perfil aprendido para '%s'. Listo para guardar en NVS.", name_copy);
         // Marcar como conocido en la lista de memoria
         device->is_known = true;
-        // Aquí es donde, en el futuro, llamaremos a la función para guardar en NVS.
-        // Por ahora, nos desconectamos para poder escanear otros dispositivos.
-        ble_device_disconnect(addr_copy);
+        /* La op de perfilado smart concluyó: el dispositivo ya es conocido. */
+        g_pending_connection.is_profiling = false;
+        /* KEEP-ALIVE: mantener el enlace en vez de desconectar. Esto evita
+         * re-descubrir GATT (+2.5s) en cada comando: ble_transport reutiliza
+         * la conexión (estado CONNECTED/DISCOVERY_COMPLETE). El enlace se
+         * cierra cuando el peer termina, vía telemetría ELEGOO o al parar el módulo. */
+        if (device->matched_profile_index == PROFILE_INDEX_ELEGOO ||
+            strcasestr(device->name, "ELEGOO") != NULL ||
+            strcasestr(device->alias, "Carro") != NULL)
+        {
+            if (ble_hs_cfg.sm_sec_lvl >= 2)
+            {
+                const int prev_sec_lvl = ble_hs_cfg.sm_sec_lvl;
+                ble_hs_cfg.sm_sec_lvl = 0;
+                ESP_LOGW(TAG,
+                         "ble_hs_cfg.sm_sec_lvl lowered from %d to 0: dispositivo ELEGOO/Carro "
+                         "aprendido, telemetría requiere el relax (FIX 9).",
+                         prev_sec_lvl);
+            }
+        }
     }
     else if (new_state == BLE_DEVICE_STATE_ERROR && old_state >= BLE_DEVICE_STATE_CONNECTED)
     {
@@ -2442,7 +2725,7 @@ int ble_device_get_discovered_list(ble_device_info_t devices[], int max_devices)
 
     xSemaphoreGive(devices_mutex);
 
-    ESP_LOGI(TAG, "Devolviendo %d dispositivos de %d total", count, discovered_count);
+    ESP_LOGD(TAG, "Devolviendo %d dispositivos de %d total", count, discovered_count);
     return count;
 }
 
@@ -2520,7 +2803,10 @@ ble_device_type_t ble_device_detect_type_from_name(const char *name)
     if (strstr(lower_name, "light") || strstr(lower_name, "lamp") ||
         strstr(lower_name, "bulb") || strstr(lower_name, "led") ||
         strstr(lower_name, "luz") || strstr(lower_name, "lámpara") ||
-        strstr(lower_name, "bathroom") || strstr(lower_name, "baño") || strstr(lower_name, "pasillo"))
+        strstr(lower_name, "lampara") || strstr(lower_name, "foco") ||
+        strstr(lower_name, "hue") || strstr(lower_name, "philips") ||
+        strstr(lower_name, "bathroom") || strstr(lower_name, "baño") ||
+        strstr(lower_name, "pasillo"))
     {
         return BLE_DEVICE_TYPE_LIGHT;
     }
@@ -2549,14 +2835,26 @@ ble_device_type_t ble_device_detect_type_from_name(const char *name)
  */
 static bool is_service_in_known_profiles(const ble_uuid_t *uuid, int *out_profile_index)
 {
-    if (uuid->type != BLE_UUID_TYPE_128)
+    if (!uuid)
         return false;
+
+    /* Los servicios GATT estándar (GAP/GATT/Device Info, 0x1800..0x1810) nunca
+     * son servicios de control; ignorar perfiles aprendidos sobre ellos. */
+    if (uuid->type == BLE_UUID_TYPE_16)
+    {
+        uint16_t svc16 = BLE_UUID16(uuid)->value;
+        if (svc16 >= BLE_STD_SERVICE_MIN && svc16 <= BLE_STD_SERVICE_MAX)
+            return false;
+    }
 
     // Buscar en el array global cargado desde NVS
     for (int i = 0; i < g_known_profiles_count; i++)
     {
+        const ble_uuid_t *pu = &g_known_profiles[i].service_uuid.u;
+        if (pu->type != uuid->type)
+            continue;
         // Acceder al campo .u de ble_uuid128_t para obtener ble_uuid_t
-        if (ble_uuid_cmp(&g_known_profiles[i].service_uuid.u, uuid) == 0)
+        if (ble_uuid_cmp(pu, uuid) == 0)
         {
             if (out_profile_index)
                 *out_profile_index = i;
@@ -2610,8 +2908,34 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
         else if (device->char_discovered)
         {
             ESP_LOGW(TAG, "✅ Perfil del dispositivo '%s' aprendido exitosamente (Handle GATT: 0x%04X).", device->name, device->char_val_handle);
+            /* Keep-alive: el descubrimiento GATT de ESTA conexión terminó; pasar
+             * a DISCOVERY_COMPLETE (el enlace se mantiene vivo). El executor
+             * on-demand solo considera lista la conexión en este estado, evitando
+             * escribir antes del fin del perfilado (EBUSY 6 / ATT 0x07). */
+            update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+            if (!device->is_known)
+            {
+                device->is_known = true;
+                device->is_configured = true;
+                nvs_save_discovered_device_async(device);
+            }
+        }
+        else if (device->type == BLE_DEVICE_TYPE_LIGHT && device->pairing_char_handle > 0)
+        {
+            /* Luz con servicio conocido pero sin char de control estándar:
+             * promover el char vendor candidato para no matar el enlace; el
+             * driver intentará su propio descubrimiento al escribir. */
+            device->char_val_handle = device->pairing_char_handle;
+            device->pairing_char_handle = 0;
+            device->char_discovered = true;
+            device->is_configured = true;
+            ESP_LOGW(TAG, "⚡ Luz '%s' sin char de control estándar; promoviendo candidata 0x%04X (el driver validará).", device->name, device->char_val_handle);
             update_device_state(device->addr, BLE_DEVICE_STATE_CONNECTED);
-            nvs_save_discovered_device_async(device);
+            if (!device->is_known)
+            {
+                device->is_known = true;
+                nvs_save_discovered_device_async(device);
+            }
         }
         else
         {
@@ -2631,15 +2955,48 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
 
     char uuid_str[BLE_UUID_STR_LEN];
     ble_uuid_to_str(&chr->uuid.u, uuid_str);
-    ESP_LOGD(TAG, "    -> Característica encontrada: %s (handle val: 0x%04X)", uuid_str, chr->val_handle);
+    ESP_LOGI(TAG, "    -> Característica encontrada: %s (handle val: 0x%04X, props 0x%02X)", uuid_str, chr->val_handle, chr->properties);
 
     // Reconocer características conocidas para ELEGOO BT16 y otros perfiles
     bool is_match = is_characteristic_in_known_profiles(&chr->uuid.u, device->matched_profile_index);
     bool is_elegoo_write_chr = (chr->uuid.u.type == BLE_UUID_TYPE_16 && 
                                 (BLE_UUID16(&chr->uuid.u)->value == 0xFFE1 || BLE_UUID16(&chr->uuid.u)->value == 0xFFE2));
     
-    if (!is_match && (is_elegoo_write_chr || strstr(device->name, "ELEGOO") != NULL || strstr(device->alias, "Carro") != NULL || device->matched_profile_index == 999)) {
+    if (!is_match && (is_elegoo_write_chr || strcasestr(device->name, "ELEGOO") != NULL || strcasestr(device->alias, "Carro") != NULL || device->matched_profile_index == 999)) {
         is_match = true;
+    }
+
+    bool is_hue_chr = (chr->uuid.u.type == BLE_UUID_TYPE_128 &&
+                       (ble_uuid_cmp(&chr->uuid.u, &s_hue_on_off_char_uuid.u) == 0 ||
+                        ble_uuid_cmp(&chr->uuid.u, &s_hue_brightness_char_uuid.u) == 0 ||
+                        ble_uuid_cmp(&chr->uuid.u, &s_hue_light_state_char_uuid.u) == 0 ||
+                        ble_uuid_cmp(&chr->uuid.u, &s_hue_light_state_attr_char_uuid.u) == 0));
+    bool is_tuya_write_chr = (chr->uuid.u.type == BLE_UUID_TYPE_16 &&
+                              BLE_UUID16(&chr->uuid.u)->value == BLE_TUYA_WRITE_CHAR_UUID16);
+    /* Para luces solo se aceptan características de control reales (Hue 128-bit,
+     * Tuya 0x2AE2, o FFE1/FFE2 vía el perfil 999). NO aceptar características
+     * arbitrarias del primer servicio: p. ej. 0x2A05 (Service Changed) es solo
+     * lectura y un write devolvería Write Not Permitted. */
+    if (!is_match && (is_hue_chr || is_tuya_write_chr)) {
+        is_match = true;
+    }
+
+    /* Luz con servicio no estándar (p. ej. 0xFE0F con chars 0xFFF1/0xFFF2):
+     * aceptar la primera característica 16-bit de rango vendor (fuera de
+     * 0x2A00-0x2BFF, que son las estándar de GATT) que sea escribible. */
+    bool is_vendor16 = (chr->uuid.u.type == BLE_UUID_TYPE_16 &&
+                        (BLE_UUID16(&chr->uuid.u)->value < 0x2A00 || BLE_UUID16(&chr->uuid.u)->value > 0x2BFF));
+    bool is_writable = ((chr->properties & (BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP)) != 0);
+    if (!is_match && device->type == BLE_DEVICE_TYPE_LIGHT && is_vendor16 && is_writable) {
+        is_match = true;
+        ESP_LOGW(TAG, "  ⚡ Char vendor escribible '%s' (0x%04X) aceptada como control para '%s'.", uuid_str, chr->val_handle, device->name);
+    }
+    /* Último recurso para luces: recordar el primer char vendor aunque no sea
+     * escribible (algunos focos declaran mal las propiedades); se promueve en
+     * EDONE si nada más calificó. */
+    if (!is_match && device->type == BLE_DEVICE_TYPE_LIGHT && is_vendor16 && device->pairing_char_handle == 0) {
+        device->pairing_char_handle = chr->val_handle;
+        ESP_LOGW(TAG, "  ⚡ Último recurso: char vendor '%s' (0x%04X) candidata para '%s'.", uuid_str, chr->val_handle, device->name);
     }
 
     if (is_match)
@@ -2648,15 +3005,33 @@ static int on_characteristic_discovered(uint16_t conn_handle, const struct ble_g
         device->char_discovered = true;
         device->is_configured = true;
         
-        // Para ELEGOO BT16 / ElegooKit App, 0xFFE2 (handle 0x0006) es la característica oficial de comandos.
-        // Si se encuentra 0xFFE2, asignamos prioridad sobre 0xFFE1 (notificación).
-        if (device->char_val_handle == 0 || (chr->uuid.u.type == BLE_UUID_TYPE_16 && BLE_UUID16(&chr->uuid.u)->value == 0xFFE2)) {
-            device->char_val_handle = chr->val_handle;
-            ESP_LOGW(TAG, "  🎯 ELEGOO BT16 Control Handle asignado a 0x%04X (%s)", chr->val_handle, uuid_str);
+        if (device->type == BLE_DEVICE_TYPE_LIGHT || device->matched_profile_index == 998) {
+            // Prioridad a On/Off handle (be880001) para handle de control
+            if (device->char_val_handle == 0 || (chr->uuid.u.type == BLE_UUID_TYPE_128 && ble_uuid_cmp(&chr->uuid.u, &s_hue_on_off_char_uuid.u) == 0)) {
+                device->char_val_handle = chr->val_handle;
+                ESP_LOGW(TAG, "  🎯 Hue Control Handle asignado a 0x%04X (%s)", chr->val_handle, uuid_str);
+            }
+        }
+        else {
+            if (device->char_val_handle == 0 || (chr->uuid.u.type == BLE_UUID_TYPE_16 && BLE_UUID16(&chr->uuid.u)->value == 0xFFE2)) {
+                device->char_val_handle = chr->val_handle;
+                ESP_LOGW(TAG, "  🎯 Control Handle asignado a 0x%04X (%s)", chr->val_handle, uuid_str);
+            }
         }
 
-        if (device->char_uuid_128.u.type == 0 && chr->uuid.u.type == BLE_UUID_TYPE_128) {
-            memcpy(&device->char_uuid_128, &chr->uuid.u128, sizeof(ble_uuid128_t));
+        if (device->char_uuid_128.u.type == 0)
+        {
+            if (chr->uuid.u.type == BLE_UUID_TYPE_128)
+            {
+                memcpy(&device->char_uuid_128, &chr->uuid.u128, sizeof(ble_uuid128_t));
+            }
+            else if (chr->uuid.u.type == BLE_UUID_TYPE_16)
+            {
+                /* Codificar UUID de 16 bits para persistencia NVS */
+                memset(&device->char_uuid_128, 0, sizeof(device->char_uuid_128));
+                device->char_uuid_128.u.type = BLE_UUID_TYPE_16;
+                memcpy(device->char_uuid_128.value, &BLE_UUID16(&chr->uuid.u)->value, sizeof(uint16_t));
+            }
         }
     }
     return 0;
@@ -2674,6 +3049,21 @@ static int on_service_discovered(uint16_t conn_handle, const struct ble_gatt_err
         ESP_LOGI(TAG, "Descubrimiento de servicios completo para '%s'.", device->name);
         if (device->state < BLE_DEVICE_STATE_DISCOVERING_CHRS)
         {
+            if (device->pairing_service_start_handle > 0)
+            {
+                /* Ningún servicio de control real (p. ej. 932c32bd Hue o 1912
+                 * Tuya): usar el candidato vendor (p. ej. 0xFE0F). El driver
+                 * validará el char escribible al conectarse. */
+                ESP_LOGW(TAG, "Sin servicio de control conocido; descubriendo chars del candidato 0x%04X-0x%04X...",
+                         device->pairing_service_start_handle, device->pairing_service_end_handle);
+                device->matched_profile_index = PROFILE_INDEX_HUE;
+                device->type = BLE_DEVICE_TYPE_LIGHT;
+                update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_CHRS);
+                ble_gattc_disc_all_chrs(conn_handle, device->pairing_service_start_handle,
+                                        device->pairing_service_end_handle,
+                                        on_characteristic_discovered, device);
+                return 0;
+            }
             ESP_LOGW(TAG, "No se encontraron servicios de perfiles conocidos para '%s'", device->name);
             mark_device_as_error_and_disconnect(device);
         }
@@ -2686,17 +3076,70 @@ static int on_service_discovered(uint16_t conn_handle, const struct ble_gatt_err
 
     char uuid_str[BLE_UUID_STR_LEN];
     ble_uuid_to_str(&service->uuid.u, uuid_str);
+
+    /* Saltar servicios GATT estándar (GAP/GATT/Device Info...): nunca contienen
+     * características de control y, si se aceptan, bloquean la detección del
+     * servicio real (p. ej. el 0x1801 de un foco Tuya). */
+    if (service->uuid.u.type == BLE_UUID_TYPE_16)
+    {
+        uint16_t svc16 = BLE_UUID16(&service->uuid.u)->value;
+        if (svc16 >= BLE_STD_SERVICE_MIN && svc16 <= BLE_STD_SERVICE_MAX)
+        {
+            ESP_LOGD(TAG, "  -> Servicio estándar ignorado: %s", uuid_str);
+            return 0;
+        }
+    }
     ESP_LOGI(TAG, "  -> Servicio encontrado: %s", uuid_str);
 
     int profile_index = -1;
     bool is_match = is_service_in_known_profiles(&service->uuid.u, &profile_index);
     if (!is_match && service->uuid.u.type == BLE_UUID_TYPE_16 && BLE_UUID16(&service->uuid.u)->value == 0xFFE0) {
         is_match = true;
-        profile_index = 999;
+        profile_index = PROFILE_INDEX_ELEGOO;
     }
-    if (!is_match && (strstr(device->name, "ELEGOO") != NULL || strstr(device->alias, "Carro") != NULL)) {
+    if (!is_match && (strcasestr(device->name, "ELEGOO") != NULL || strcasestr(device->alias, "Carro") != NULL)) {
         is_match = true;
-        profile_index = 999;
+        profile_index = PROFILE_INDEX_ELEGOO;
+    }
+
+    /* Auto-Profile Tuya Smart Bulb (0x1912 / 00001912-...) */
+    bool is_tuya_service = (service->uuid.u.type == BLE_UUID_TYPE_16 && BLE_UUID16(&service->uuid.u)->value == BLE_TUYA_SERVICE_UUID16) ||
+                           (service->uuid.u.type == BLE_UUID_TYPE_128 && ble_uuid_cmp(&service->uuid.u, &s_tuya_service_uuid.u) == 0);
+    if (!is_match && is_tuya_service) {
+        is_match = true;
+        profile_index = PROFILE_INDEX_TUYA;
+        device->type = BLE_DEVICE_TYPE_LIGHT;
+    }
+
+    /* Auto-Profile matching para Philips Hue BLE Light (932c32bd..., o nombres de lámpara) */
+    bool is_hue_light_service = (service->uuid.u.type == BLE_UUID_TYPE_128 &&
+                                 (ble_uuid_cmp(&service->uuid.u, &s_hue_light_service_uuid.u) == 0 ||
+                                  ble_uuid_cmp(&service->uuid.u, &s_hue_service_uuid.u) == 0));
+    if (!is_match && is_hue_light_service) {
+        is_match = true;
+        profile_index = PROFILE_INDEX_HUE;
+        device->type = BLE_DEVICE_TYPE_LIGHT;
+    }
+
+    /* Coincidencia DÉBIL (servicio vendor 0xFE0F o nombre tipo luz): NO aceptar
+     * aún. Un foco Hue-compatible expone 0xFE0F (chars 97fe6561-...) ANTES del
+     * servicio real 932c32bd; aceptarlo bloquearía el descubrimiento del de
+     * control. Se guarda el rango como candidato y se sigue escaneando. */
+    bool is_weak_hue_match = (service->uuid.u.type == BLE_UUID_TYPE_16 && BLE_UUID16(&service->uuid.u)->value == 0xFE0F) ||
+                             (strcasestr(device->name, "Hue") != NULL || strcasestr(device->alias, "Hue") != NULL ||
+                              strcasestr(device->name, "Bathroom") != NULL || strcasestr(device->alias, "Bathroom") != NULL ||
+                              strcasestr(device->name, "lamp") != NULL || strcasestr(device->alias, "lamp") != NULL ||
+                              strcasestr(device->name, "luz") != NULL || strcasestr(device->alias, "luz") != NULL ||
+                              strcasestr(device->name, "foco") != NULL || strcasestr(device->alias, "foco") != NULL ||
+                              strcasestr(device->name, "philips") != NULL || strcasestr(device->alias, "philips") != NULL ||
+                              device->type == BLE_DEVICE_TYPE_LIGHT);
+    if (!is_match && is_weak_hue_match && device->pairing_service_start_handle == 0)
+    {
+        device->pairing_service_start_handle = service->start_handle;
+        device->pairing_service_end_handle = service->end_handle;
+        device->type = BLE_DEVICE_TYPE_LIGHT;
+        ESP_LOGW(TAG, "  ⏳ Servicio débil '%s' guardado como candidato (0x%04X-0x%04X); siguiendo escaneo...",
+                 uuid_str, service->start_handle, service->end_handle);
     }
 
     if (is_match)
@@ -2706,9 +3149,19 @@ static int on_service_discovered(uint16_t conn_handle, const struct ble_gatt_err
 
         update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_CHRS);
 
-        if (device->service_uuid_128.u.type == 0 && service->uuid.u.type == BLE_UUID_TYPE_128)
+        if (device->service_uuid_128.u.type == 0)
         {
-            memcpy(&device->service_uuid_128, &service->uuid.u128, sizeof(ble_uuid128_t));
+            if (service->uuid.u.type == BLE_UUID_TYPE_128)
+            {
+                memcpy(&device->service_uuid_128, &service->uuid.u128, sizeof(ble_uuid128_t));
+            }
+            else if (service->uuid.u.type == BLE_UUID_TYPE_16)
+            {
+                /* Codificar UUID de 16 bits para persistencia NVS */
+                memset(&device->service_uuid_128, 0, sizeof(device->service_uuid_128));
+                device->service_uuid_128.u.type = BLE_UUID_TYPE_16;
+                memcpy(device->service_uuid_128.value, &BLE_UUID16(&service->uuid.u)->value, sizeof(uint16_t));
+            }
         }
 
         ble_gattc_disc_all_chrs(conn_handle, service->start_handle, service->end_handle,
@@ -3530,6 +3983,13 @@ static void smart_ble_discovery_btdevices_task(void *param)
 
                 for (int i = 0; i < num_bursts; i++)
                 {
+                    // VERIFICAR SI HAY LLAMADA WEBRTC ACTIVA O CONEXIÓN A DEMANDA ACTIVA
+                    if (ble_is_webrtc_active() || g_pending_connection.is_active || (atomic_load(&g_active_ble_operations) > 0))
+                    {
+                        ESP_LOGD(TAG, "Omitiendo ráfaga de escaneo: llamada WebRTC activa o conexión BLE a demanda en curso");
+                        break;
+                    }
+
                     // VERIFICAR MEMORIA ANTES DE CADA RÁFAGA
                     free_heap = esp_get_free_heap_size();
                     if (free_heap < MIN_HEAP_BYTES * 1.5)
@@ -3552,6 +4012,12 @@ static void smart_ble_discovery_btdevices_task(void *param)
                             cycle_failed = true;
                             break;
                         }
+                    }
+                    else if (ret == BLE_ERR_GAP_BUSY)
+                    {
+                        /* GAP ocupado (conexión en curso): la ráfaga se omite
+                         * sin esperar el semáforo; el ciclo continúa normal. */
+                        ESP_LOGW(TAG, "Ráfaga de escaneo %d omitida: GAP ocupado (EBUSY)", i + 1);
                     }
                     else
                     {
@@ -3597,19 +4063,25 @@ static void smart_ble_discovery_btdevices_task(void *param)
                             memcpy(g_pending_connection.addr, best_candidate.addr, 6);
                             g_pending_connection.addr_type = best_candidate.addr_type;
                             g_pending_connection.is_active = true;
+                            g_pending_connection.is_profiling = true;
                             xSemaphoreGive(devices_mutex);
                         }
 
+                        /* INCR ANTES de iniciar la conexión: el evento GAP de
+                         * fallo puede llegar de forma asíncrona y debe poder
+                         * hacer DECR simétrico. Si ble_gap_connect se rechaza
+                         * (rc != 0), hacemos DECR aquí mismo (no habrá evento). */
+                        INCR_ACTIVE_OPS();
+
                         // 2. Ahora, iniciar la operación de conexión
                         esp_err_t conn_result = ble_device_connect(best_candidate.addr, best_candidate.addr_type);
-                        if (conn_result == ESP_OK)
+                        if (conn_result != ESP_OK)
                         {
-                            INCR_ACTIVE_OPS();
-                        }
-                        else
-                        {
-                            // Si el inicio falla, limpiar el expediente inmediatamente
+                            // Si el inicio falla, limpiar el expediente y balancear el INCR
+                            ESP_LOGW(TAG, "Perfilado rechazado por ble_device_connect: %s", esp_err_to_name(conn_result));
                             g_pending_connection.is_active = false;
+                            g_pending_connection.is_profiling = false;
+                            DECR_ACTIVE_OPS();
                         }
                     }
                     // --- FIN DEL NUEVO BLOQUE DE ACCIÓN ---
@@ -4011,6 +4483,9 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
 
         bool is_saved_or_configured = dev->is_known || (dev->alias[0] != '\0');
         bool is_connected = (dev->state == BLE_DEVICE_STATE_CONNECTED || dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+        bool is_light = (dev->type == BLE_DEVICE_TYPE_LIGHT) ||
+                        (ble_device_detect_type_from_name(dev->name) == BLE_DEVICE_TYPE_LIGHT) ||
+                        (ble_device_detect_type_from_name(dev->alias) == BLE_DEVICE_TYPE_LIGHT);
 
         if (is_saved_or_configured) {
             if (is_connected) {
@@ -4019,7 +4494,11 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
                 count_a++;
             } else {
                 if (count_b > 0) strlcat(cat_b, ", ", sizeof(cat_b));
-                snprintf(cat_b + strlen(cat_b), sizeof(cat_b) - strlen(cat_b), "\"%s\"", display_str);
+                if (is_light) {
+                    snprintf(cat_b + strlen(cat_b), sizeof(cat_b) - strlen(cat_b), "\"%s [configured (standby/on-demand)]\"", display_str);
+                } else {
+                    snprintf(cat_b + strlen(cat_b), sizeof(cat_b) - strlen(cat_b), "\"%s [standby/on-demand]\"", display_str);
+                }
                 count_b++;
             }
         } else {
@@ -4034,7 +4513,7 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
     }
 
     snprintf(json_buf, max_len,
-             "{\"listos_presentes\": [%s], \"configurados_apagados\": [%s], \"descubiertos_sin_perfil_count\": %d, \"descubiertos_nombres\": [%s]}",
+             "{\"conectados_activos\": [%s], \"configurados_standby_on_demand\": [%s], \"descubiertos_sin_perfil_count\": %d, \"descubiertos_nombres\": [%s]}",
              cat_a, cat_b, count_c, cat_c);
 
     return ESP_OK;
@@ -4072,12 +4551,24 @@ esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new
 
     if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         for (int i = 0; i < discovered_count; i++) {
-            if (strstr(discovered_devices[i].name, current_name) != NULL ||
-                (strlen(discovered_devices[i].alias) > 0 && strstr(discovered_devices[i].alias, current_name) != NULL) ||
-                (strstr(current_name, "ELEGOO") != NULL && strstr(discovered_devices[i].name, "ELEGOO") != NULL)) {
+            if (strcasestr(discovered_devices[i].name, current_name) != NULL ||
+                (strlen(discovered_devices[i].alias) > 0 && strcasestr(discovered_devices[i].alias, current_name) != NULL) ||
+                (strcasestr(current_name, "ELEGOO") != NULL && strcasestr(discovered_devices[i].name, "ELEGOO") != NULL)) {
                 strlcpy(discovered_devices[i].alias, new_alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
                 discovered_devices[i].is_configured = true;
+
+                /* Auto-classify light type if name/alias matches */
+                if (discovered_devices[i].type == BLE_DEVICE_TYPE_UNKNOWN || discovered_devices[i].type == BLE_DEVICE_TYPE_CUSTOM) {
+                    ble_device_type_t det_type = ble_device_detect_type_from_name(discovered_devices[i].name);
+                    if (det_type == BLE_DEVICE_TYPE_UNKNOWN) {
+                        det_type = ble_device_detect_type_from_name(new_alias);
+                    }
+                    if (det_type != BLE_DEVICE_TYPE_UNKNOWN) {
+                        discovered_devices[i].type = det_type;
+                    }
+                }
+
                 esp_err_t nvs_err = nvs_save_discovered_device_async(&discovered_devices[i]);
                 xSemaphoreGive(devices_mutex);
                 if (nvs_err == ESP_OK) {
@@ -4271,7 +4762,14 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
     uint16_t current_conn_handle = target_dev.conn_handle;
     uint16_t write_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : 0x0006;
 
-    if (current_conn_handle == BLE_HS_CONN_HANDLE_NONE || current_conn_handle == 0 || target_dev.state != BLE_DEVICE_STATE_CONNECTED) {
+    /* KEEP-ALIVE: un enlace aprendido (DISCOVERY_COMPLETE) con handle válido
+     * se reutiliza, igual que ble_transport; solo conectar si no hay enlace. */
+    bool link_alive = (current_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+                       current_conn_handle != 0 &&
+                       (target_dev.state == BLE_DEVICE_STATE_CONNECTED ||
+                        target_dev.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE));
+
+    if (!link_alive) {
         ESP_LOGI(TAG, "Iniciando conexión bajo demanda con %s...", target_dev.name);
         ble_log_memory_snapshot("ble_central:ondemand_connect_during_audio");
 
@@ -4330,9 +4828,13 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                                 linked = true;
                                 phase2_deadline = now_ms + phase2_timeout_ms;
                             }
-                            if (dev->char_discovered &&
-                                (dev->state == BLE_DEVICE_STATE_CONNECTED || dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE)) {
-                                if (dev->char_val_handle > 0) write_handle = dev->char_val_handle;
+                            /* SOLO se considera lista la conexión tras el descubrimiento
+                             * GATT COMPLETO de esta sesión (DISCOVERY_COMPLETE + perfil
+                             * válido): escribir antes colisiona con el descubrimiento
+                             * (EBUSY 6) o apunta a handles sin perfil (ATT 0x07). */
+                            if (dev->char_discovered && dev->char_val_handle > 0 &&
+                                dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) {
+                                write_handle = dev->char_val_handle;
                                 conn_success = true;
                             }
                         } else if (linked) {
@@ -4374,9 +4876,10 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             }
 
             if (!linked && now_ms >= phase1_deadline) {
-                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión con '%s' (fase 1: %lu ms)",
+                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión con '%s' (fase 1: %lu ms); cancelando intento GAP",
                          target_dev.name, (unsigned long)phase1_timeout_ms);
                 g_pending_connection.cancelled = true;
+                ble_gap_conn_cancel();
                 break;
             }
         }

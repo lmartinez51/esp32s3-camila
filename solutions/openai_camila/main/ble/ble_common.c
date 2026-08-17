@@ -12,6 +12,8 @@
 
 static const char *TAG = "BLE_COMMON";
 
+void ble_store_config_init(void);
+
 static SemaphoreHandle_t sync_semaphore = NULL;
 static SemaphoreHandle_t host_stop_semaphore = NULL;
 
@@ -153,6 +155,8 @@ esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+
+    ble_store_config_init();
 
     s_ble_common_configured = true;
     s_ble_state = BLE_COMMON_STATE_INITIALIZING;

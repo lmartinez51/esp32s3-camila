@@ -110,6 +110,9 @@ typedef struct capture_t {
     bool                         fetching_audio;
     bool                         fetching_video;
     bool                         started;
+    uint8_t                     *audio_drop_scratch; /* Buffer de descarte por congestión del sink */
+    uint32_t                     audio_drop_scratch_size;
+    uint32_t                     audio_drop_frames;
     media_lib_event_grp_handle_t event_group;
     media_lib_mutex_handle_t     api_lock;
 } capture_t;
@@ -343,8 +346,37 @@ static void audio_src_thread(void *arg)
         int frame_size = sizeof(esp_capture_stream_frame_t) + capture->audio_frame_size;
         uint8_t *data = data_queue_get_buffer(capture->audio_src_q, frame_size);
         if (data == NULL) {
-            ESP_LOGE(TAG, "Failed to get buffer from audio src queue");
-            break;
+            /* Congestión del sink: el ring interno está lleno (espera acotada).
+             * NO salir del hilo: mantener fetch() vivo drena el ring del AFE y
+             * evita "AFE_VC: Ringbuffer of AFE is full". Fetch + descarte. */
+            if (capture->cfg.audio_src) {
+                if (capture->audio_drop_scratch == NULL ||
+                    capture->audio_drop_scratch_size < (uint32_t)frame_size) {
+                    if (capture->audio_drop_scratch) {
+                        media_lib_free(capture->audio_drop_scratch);
+                        capture->audio_drop_scratch = NULL;
+                    }
+                    capture->audio_drop_scratch = media_lib_malloc(frame_size);
+                    capture->audio_drop_scratch_size =
+                        (capture->audio_drop_scratch) ? frame_size : 0;
+                }
+                if (capture->audio_drop_scratch) {
+                    esp_capture_stream_frame_t *drop = (esp_capture_stream_frame_t *)capture->audio_drop_scratch;
+                    drop->stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO;
+                    drop->data = (uint8_t *)capture->audio_drop_scratch + sizeof(esp_capture_stream_frame_t);
+                    drop->size = capture->audio_frame_size;
+                    int drop_ret = capture->cfg.audio_src->read_frame(capture->cfg.audio_src, drop);
+                    if (drop_ret == ESP_CAPTURE_ERR_OK) {
+                        capture->audio_drop_frames++;
+                        if ((capture->audio_drop_frames % 50) == 1) {
+                            ESP_LOGW(TAG, "Audio sink congestion: dropped %u frames (AFE kept drained)",
+                                     (unsigned)capture->audio_drop_frames);
+                        }
+                    }
+                }
+            }
+            media_lib_thread_sleep(20);
+            continue;
         }
         esp_capture_stream_frame_t *frame = (esp_capture_stream_frame_t *)data;
         frame->stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO;
@@ -765,6 +797,10 @@ static int start_path(capture_path_t *path)
             path->audio_q = msg_q_create(5, sizeof(esp_capture_stream_frame_t));
             if (path->audio_q == NULL) {
                 ESP_LOGE(TAG, "Failed to create audio q");
+            } else {
+                /* Send acotado con drop-oldest: evita que aenc/share_q se
+                 * bloqueen para siempre si el sink (media_send_task) se atasca. */
+                msg_q_set_send_timeout(path->audio_q, 100);
             }
         }
         // TODO support muxer when path_if not existed
@@ -1611,6 +1647,10 @@ int esp_capture_close(esp_capture_handle_t h)
     if (capture->sync_handle) {
         esp_capture_sync_destroy(capture->sync_handle);
         capture->sync_handle = NULL;
+    }
+    if (capture->audio_drop_scratch) {
+        media_lib_free(capture->audio_drop_scratch);
+        capture->audio_drop_scratch = NULL;
     }
     media_lib_free(capture);
     return ESP_CAPTURE_ERR_OK;

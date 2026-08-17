@@ -29,6 +29,8 @@
 #include <unistd.h>
 #include "pthread.h"
 #include "stdbool.h"
+#include "time.h"
+#include "errno.h"
 
 typedef struct msg_q_t {
    pthread_mutex_t data_mutex;
@@ -42,6 +44,7 @@ typedef struct msg_q_t {
    bool            quit;
    bool            reset;
    int             user;
+   int             send_timeout_ms;   /* >0: send acotado con drop-oldest */
 } msg_q_t;
 
 msg_q_handle_t msg_q_create(int msg_number, int msg_size) {
@@ -82,6 +85,16 @@ msg_q_handle_t msg_q_create_by_name(const char* name, int msg_size, int msg_numb
     return q;
 }
 
+int msg_q_set_send_timeout(msg_q_handle_t q, int timeout_ms) {
+    if (q) {
+        pthread_mutex_lock(&(q->data_mutex));
+        q->send_timeout_ms = (timeout_ms > 0) ? timeout_ms : 0;
+        pthread_mutex_unlock(&(q->data_mutex));
+        return 0;
+    }
+    return -1;
+}
+
 int msg_q_wait_consume(msg_q_handle_t q) {
     int ret = -1;
     if (q) {
@@ -113,6 +126,35 @@ int msg_q_send(msg_q_handle_t q, void* msg, int size) {
         //printf("msg buffer %s filled %d total:%d\n", q->name, q->filled, q->number);
         while (q->quit == false && q->filled >= q->number && q->reset == false) {
             //printf("msg buffer %s full\n", q->name);
+            if (q->send_timeout_ms > 0) {
+                /* Espera acotada: si sigue lleno, descartar el mensaje MÁS
+                 * ANTIGUO y aceptar el nuevo (drop-oldest). Evita que un
+                 * productor se bloquee para siempre (AFE ring overflow). */
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_sec += q->send_timeout_ms / 1000;
+                ts.tv_nsec += (q->send_timeout_ms % 1000) * 1000000L;
+                if (ts.tv_nsec >= 1000000000L) {
+                    ts.tv_nsec -= 1000000000L;
+                    ts.tv_sec++;
+                }
+                q->user++;
+                int wait_ret = pthread_cond_timedwait(&(q->data_cond), &(q->data_mutex), &ts);
+                q->user--;
+                if (wait_ret == ETIMEDOUT) {
+                    static uint32_t drop_counter = 0;
+                    if ((drop_counter++ % 128) == 0) {
+                        printf("msg_q '%s' overflow: dropping oldest message\n", q->name);
+                    }
+                    q->cur = (q->cur + 1) % q->number;
+                    q->filled--;
+                    break;
+                }
+                if (wait_ret != 0) {
+                    break; // otro error de espera: dejar de esperar
+                }
+                continue;
+            }
             q->user++;
             pthread_cond_wait(&(q->data_cond), &(q->data_mutex));
             q->user--;

@@ -17,6 +17,7 @@
 #include "nvs_setup.h"
 #include "robot_hal.h"
 #include "ble_generic_nus.h"
+#include "ble_hue.h"
 #include "registry_persist.h"
 
 #define TAG "REG_MIGRATE"
@@ -59,6 +60,15 @@ static robot_category_t ble_elegoo_guess_category(const char *name, const char *
     {
         return ROBOT_CATEGORY_CAR;
     }
+    if (ble_elegoo_contains_ci(name, "hue") || ble_elegoo_contains_ci(alias, "hue") ||
+        ble_elegoo_contains_ci(name, "lamp") || ble_elegoo_contains_ci(alias, "lamp") ||
+        ble_elegoo_contains_ci(name, "luz") || ble_elegoo_contains_ci(alias, "luz") ||
+        ble_elegoo_contains_ci(name, "foco") || ble_elegoo_contains_ci(alias, "foco") ||
+        ble_elegoo_contains_ci(name, "bulb") || ble_elegoo_contains_ci(alias, "bulb") ||
+        ble_elegoo_contains_ci(name, "philips") || ble_elegoo_contains_ci(alias, "philips"))
+    {
+        return ROBOT_CATEGORY_LIGHT;
+    }
     return ROBOT_CATEGORY_GENERIC;
 }
 
@@ -79,7 +89,7 @@ esp_err_t robot_registry_migrate_legacy_ble(const char *ssid, int *migrated)
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (profiles == NULL)
     {
-        ESP_LOGE(TAG, "Sin memoria PSRAM para cargar perfiles NVS");
+        ESP_LOGE(TAG, "Sin memoria PSRAM para buffer de migración NVS");
         return ESP_ERR_NO_MEM;
     }
 
@@ -108,9 +118,7 @@ esp_err_t robot_registry_migrate_legacy_ble(const char *ssid, int *migrated)
         dev.protocol = ROBOT_PROTOCOL_BLE;
         dev.category = ble_elegoo_guess_category(p->name, p->alias);
 
-        /* Auto-detección de perfil de driver (Phase 3): el servicio NUS
-         * (Nordic UART) va al driver genérico; todo lo demás conserva el
-         * driver ELEGOO (comportamiento actual). */
+        /* Auto-detección de perfil de driver (Phase 3+): NUS, Hue, o ELEGOO. */
         ble_elegoo_format_uuid(dev.endpoint.service_uuid, sizeof(dev.endpoint.service_uuid),
                                p->service_uuid.value);
         ble_elegoo_format_uuid(dev.endpoint.char_uuid, sizeof(dev.endpoint.char_uuid),
@@ -119,6 +127,13 @@ esp_err_t robot_registry_migrate_legacy_ble(const char *ssid, int *migrated)
         {
             strlcpy(dev.driver_profile_id, BLE_GENERIC_NUS_PROFILE_ID,
                     sizeof(dev.driver_profile_id));
+        }
+        else if (strcasecmp(dev.endpoint.service_uuid, BLE_HUE_SERVICE_UUID_STR) == 0 ||
+                 dev.category == ROBOT_CATEGORY_LIGHT)
+        {
+            strlcpy(dev.driver_profile_id, BLE_HUE_PROFILE_ID,
+                    sizeof(dev.driver_profile_id));
+            dev.category = ROBOT_CATEGORY_LIGHT;
         }
         else
         {

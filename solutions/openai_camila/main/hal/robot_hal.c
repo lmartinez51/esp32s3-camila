@@ -34,9 +34,10 @@
 #if !defined(CONFIG_ROBOT_HAL_MAX_INFLIGHT)
 #define CONFIG_ROBOT_HAL_MAX_INFLIGHT 2
 #endif
-#if !defined(CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS)
-#define CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS 3000
+#ifdef CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS
+#undef CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS
 #endif
+#define CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS 6000
 
 static SemaphoreHandle_t s_registry_mutex = NULL;
 static robot_device_t *s_devices = NULL; /* PSRAM-backed registry array */
@@ -183,6 +184,58 @@ esp_err_t robot_hal_register_device(const robot_device_t *dev)
     return ESP_OK;
 }
 
+static const char *robot_hal_normalize_alias(const char *input)
+{
+    if (!input) return "";
+
+    while (*input == ' ' || *input == '\t') {
+        input++;
+    }
+
+    static const char *prefixes[] = {
+        "foco de la ", "foco de los ", "foco del ", "foco de ", "foco ",
+        "luz de la ", "luz de los ", "luz del ", "luz de ", "luz ",
+        "lampara de la ", "lampara del ", "lampara de ", "lampara ",
+        "el ", "la ", "los ", "las ", "un ", "una "
+    };
+
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        size_t len = strlen(prefixes[i]);
+        if (strncasecmp(input, prefixes[i], len) == 0) {
+            return input + len;
+        }
+    }
+    return input;
+}
+
+static bool robot_hal_alias_matches(const char *registered, const char *search)
+{
+    if (!registered || !search || registered[0] == '\0' || search[0] == '\0') {
+        return false;
+    }
+
+    /* 1. Coincidencia case-insensitive directa */
+    if (strcasecmp(registered, search) == 0) {
+        return true;
+    }
+
+    /* 2. Coincidencia normalizada sin prefijos conversacionales */
+    const char *norm_reg = robot_hal_normalize_alias(registered);
+    const char *norm_search = robot_hal_normalize_alias(search);
+
+    if (strcasecmp(norm_reg, norm_search) == 0) {
+        return true;
+    }
+
+    /* 3. Subcadena en cualquier direccion */
+    if ((strlen(norm_search) >= 3 && strcasestr(norm_reg, norm_search) != NULL) ||
+        (strlen(norm_reg) >= 3 && strcasestr(norm_search, norm_reg) != NULL)) {
+        return true;
+    }
+
+    return false;
+}
+
 const robot_device_t *robot_hal_get_device(const char *alias)
 {
     if (!alias || s_devices == NULL)
@@ -193,12 +246,30 @@ const robot_device_t *robot_hal_get_device(const char *alias)
     const robot_device_t *found = NULL;
     if (xSemaphoreTake(s_registry_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
+        /* Pase 1: Coincidencia exacta / directa por alias o endpoint */
         for (size_t i = 0; i < s_device_count; i++)
         {
-            if (strcmp(s_devices[i].alias, alias) == 0)
+            if (strcasecmp(s_devices[i].alias, alias) == 0 ||
+                strcasecmp(s_devices[i].endpoint.endpoint, alias) == 0)
             {
                 found = &s_devices[i];
                 break;
+            }
+        }
+
+        /* Pase 2: Coincidencia difusa / normalizada (ej. "Luz de la regadera" -> "Regadera") */
+        if (found == NULL)
+        {
+            for (size_t i = 0; i < s_device_count; i++)
+            {
+                if (robot_hal_alias_matches(s_devices[i].alias, alias) ||
+                    robot_hal_alias_matches(s_devices[i].endpoint.endpoint, alias))
+                {
+                    found = &s_devices[i];
+                    ESP_LOGI(TAG, "Dispositivo '%s' encontrado por coincidencia difusa con '%s'",
+                             s_devices[i].alias, alias);
+                    break;
+                }
             }
         }
         xSemaphoreGive(s_registry_mutex);
@@ -421,6 +492,11 @@ robot_action_id_t robot_action_from_string(const char *s)
     /* IR */
     if (strcasecmp(s, "SEND_IR_COMMAND") == 0) return ROBOT_ACTION_SEND_IR_COMMAND;
     if (strcasecmp(s, "LEARN_IR_CODE") == 0) return ROBOT_ACTION_LEARN_IR_CODE;
+    /* Light */
+    if (strcasecmp(s, "TURN_ON") == 0) return ROBOT_ACTION_TURN_ON;
+    if (strcasecmp(s, "TURN_OFF") == 0) return ROBOT_ACTION_TURN_OFF;
+    if (strcasecmp(s, "TOGGLE") == 0) return ROBOT_ACTION_TOGGLE;
+    if (strcasecmp(s, "SET_BRIGHTNESS") == 0) return ROBOT_ACTION_SET_BRIGHTNESS;
     /* ELEGOO-specific strings stay legacy-only until Phase 2 driver extraction */
     return ROBOT_ACTION_NONE;
 }
@@ -451,6 +527,10 @@ const char *robot_action_to_string(robot_action_id_t action)
     case ROBOT_ACTION_CENTER: return "CENTER";
     case ROBOT_ACTION_SEND_IR_COMMAND: return "SEND_IR_COMMAND";
     case ROBOT_ACTION_LEARN_IR_CODE: return "LEARN_IR_CODE";
+    case ROBOT_ACTION_TURN_ON: return "TURN_ON";
+    case ROBOT_ACTION_TURN_OFF: return "TURN_OFF";
+    case ROBOT_ACTION_TOGGLE: return "TOGGLE";
+    case ROBOT_ACTION_SET_BRIGHTNESS: return "SET_BRIGHTNESS";
     default: return "NONE";
     }
 }

@@ -24,6 +24,7 @@ extern EventGroupHandle_t app_startup_event_group;
 #define WIFI_DISCONNECTED_BIT BIT3 // Bandera para notificar perdida de WiFi
 #define WEBRTC_DISCONNECTED_BIT BIT4 // Bandera para notificar caida de WebRTC
 #define LUA_INIT_DONE_BIT BIT5 // Bandera para notificar que Lua completó su init en PSRAM
+#define WEBRTC_STARTING_BIT BIT6 // Bandera para notificar que WebRTC está arrancando (aún sin data channel)
 
 
 typedef enum

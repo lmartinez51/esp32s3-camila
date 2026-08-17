@@ -222,9 +222,11 @@ esp_err_t ble_transport_connect_and_wait(const uint8_t addr[6], uint8_t addr_typ
     ble_device_info_t dev = {0};
     if (!ble_transport_snapshot_device(addr, &dev))
     {
-        ESP_LOGW(TAG, "connect: MAC %02X:%02X:%02X:%02X:%02X:%02X no esta en la tabla",
+        ESP_LOGI(TAG, "connect: MAC %02X:%02X:%02X:%02X:%02X:%02X no esta en snapshot; iniciando conexion on-demand",
                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-        return ESP_ERR_NOT_FOUND;
+        memcpy(dev.addr, addr, 6);
+        dev.addr_type = addr_type;
+        dev.state = BLE_DEVICE_STATE_DISCONNECTED;
     }
 
     /* Reutilizar conexion ya lista (el legado ya la descubrio). */
@@ -320,7 +322,12 @@ esp_err_t ble_transport_connect_and_wait(const uint8_t addr[6], uint8_t addr_typ
 
         if (!linked && now >= phase1_deadline)
         {
-            ESP_LOGW(TAG, "connect: timeout de enlace (fase 1: %lu ms)", (unsigned long)phase1_timeout_ms);
+            ESP_LOGW(TAG, "connect: timeout de enlace (fase 1: %lu ms); cancelando intento GAP para evitar conexion zombi", (unsigned long)phase1_timeout_ms);
+            int rc_cancel = ble_gap_conn_cancel();
+            if (rc_cancel != 0 && rc_cancel != BLE_HS_EALREADY)
+            {
+                ESP_LOGD(TAG, "ble_gap_conn_cancel rc=%d", rc_cancel);
+            }
             break;
         }
     }

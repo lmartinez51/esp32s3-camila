@@ -80,40 +80,40 @@ void erase_nvs(void)
 }
 
 /**
- * Inicializa el mutex para acceso seguro a NVS
+ * Inicializa el mutex recursivo para acceso seguro a NVS
  */
 void nvs_setup_mutex_init(void)
 {
     if (nvs_mutex == NULL)
     {
-        nvs_mutex = xSemaphoreCreateMutex();
+        nvs_mutex = xSemaphoreCreateRecursiveMutex();
         if (nvs_mutex == NULL)
         {
-            ESP_LOGE(TAG, "❌ Error creando mutex para NVS");
+            ESP_LOGE(TAG, "❌ Error creando mutex recursivo para NVS");
         }
         else
         {
-            ESP_LOGI(TAG, "✅ Mutex NVS inicializado correctamente");
+            ESP_LOGI(TAG, "✅ Mutex recursivo NVS inicializado correctamente");
         }
     }
 }
 
 /**
- * Funciones para lock/unlock de NVS
+ * Funciones para lock/unlock recursivo de NVS
  */
 void nvs_lock(void)
 {
     if (nvs_mutex)
-        xSemaphoreTake(nvs_mutex, portMAX_DELAY);
+        xSemaphoreTakeRecursive(nvs_mutex, portMAX_DELAY);
 }
 
 /**
- * Funciones para lock/unlock de NVS
+ * Funciones para lock/unlock recursivo de NVS
  */
 void nvs_unlock(void)
 {
     if (nvs_mutex)
-        xSemaphoreGive(nvs_mutex);
+        xSemaphoreGiveRecursive(nvs_mutex);
 }
 
 /* ----------------- Helpers internos ----------------- */
@@ -273,7 +273,7 @@ esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device)
 /* ----------------- Persistencia NVS asíncrona (fuera de rutas de tiempo real) ----------------- */
 
 #define NVS_SAVE_QUEUE_LEN 4
-#define NVS_SAVE_WORKER_STACK 4096
+#define NVS_SAVE_WORKER_STACK 3072
 #define NVS_SSID_BUF_SIZE 33
 
 typedef struct
@@ -283,11 +283,19 @@ typedef struct
 } nvs_save_req_t;
 
 static QueueHandle_t s_nvs_save_queue = NULL;
+static TaskHandle_t s_nvs_save_worker = NULL;
+
+#define NVS_WORKER_IDLE_TIMEOUT_MS 500
 
 /**
  * Tarea de baja prioridad que ejecuta exclusivamente las escrituras NVS.
  * Usa pila INTERNA (no PSRAM): las operaciones de flash deshabilitan la
  * caché durante la escritura y el stack no puede residir en PSRAM.
+ *
+ * Patrón bajo demanda (idéntico a REG_PERSIST): tras NVS_WORKER_IDLE_TIMEOUT_MS
+ * sin operaciones encoladas, la tarea se auto-elimina y libera su stack interno
+ * (3072 B + TCB). El próximo enqueue la recrea. Esto mantiene libre un bloque
+ * contiguo en la RAM interna (crítico para el alloc DMA de AES/DTLS de 1200 B).
  */
 static void nvs_save_worker_task(void *arg)
 {
@@ -295,7 +303,7 @@ static void nvs_save_worker_task(void *arg)
     nvs_save_req_t req;
     for (;;)
     {
-        if (xQueueReceive(s_nvs_save_queue, &req, portMAX_DELAY) == pdTRUE)
+        if (xQueueReceive(s_nvs_save_queue, &req, pdMS_TO_TICKS(NVS_WORKER_IDLE_TIMEOUT_MS)) == pdTRUE)
         {
             esp_err_t err = save_device_profile(req.ssid, &req.profile);
             if (err != ESP_OK)
@@ -304,6 +312,14 @@ static void nvs_save_worker_task(void *arg)
                          req.profile.name[0] ? req.profile.name : "(sin nombre)",
                          esp_err_to_name(err));
             }
+        }
+        else
+        {
+            /* Inactividad prolongada: liberar stack interno (patrón REG_PERSIST). */
+            ESP_LOGI(TAG, "Worker NVS en reposo: stack interno liberado (%d B + TCB)",
+                     NVS_SAVE_WORKER_STACK);
+            s_nvs_save_worker = NULL;
+            vTaskDelete(NULL);
         }
     }
 }
@@ -338,13 +354,7 @@ esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device)
             ESP_LOGE(TAG, "Error creando cola de guardado NVS");
             return ESP_ERR_NO_MEM;
         }
-        if (xTaskCreatePinnedToCore(nvs_save_worker_task, "nvs_save", NVS_SAVE_WORKER_STACK,
-                                    NULL, 5, NULL, 0) != pdPASS)
-        {
-            ESP_LOGE(TAG, "Error creando tarea de guardado NVS");
-            return ESP_ERR_NO_MEM;
-        }
-        ESP_LOGI(TAG, "Tarea de guardado NVS asíncrona creada");
+        ESP_LOGI(TAG, "Cola de guardado NVS creada");
     }
 
     nvs_save_req_t req = {0};
@@ -364,6 +374,26 @@ esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device)
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "Perfil encolado para persistir: '%s'", req.profile.name);
+
+    /* Asegurar el worker DESPUÉS del send (patrón REG_PERSIST): si se
+     * auto-eliminó por inactividad, se recrea y drena la cola (incluida la
+     * operación recién encolada). El send primero evita que el worker se
+     * destruya con trabajo pendiente. */
+    if (s_nvs_save_worker == NULL)
+    {
+        TaskHandle_t worker = NULL;
+        if (xTaskCreatePinnedToCore(nvs_save_worker_task, "nvs_save", NVS_SAVE_WORKER_STACK,
+                                    NULL, 5, &worker, 0) == pdPASS)
+        {
+            s_nvs_save_worker = worker;
+            ESP_LOGI(TAG, "Tarea de guardado NVS asíncrona creada");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "No se pudo crear tarea de guardado NVS; operacion retenida en cola");
+        }
+    }
+
     return ESP_OK;
 }
 
@@ -423,7 +453,7 @@ int load_devices_for_ssid(const char *ssid, device_profile_nvs_t *profiles, int 
 
     nvs_setup_mutex_init();
 
-    if (xSemaphoreTake(nvs_mutex, pdMS_TO_TICKS(5000)) != pdTRUE)
+    if (xSemaphoreTakeRecursive(nvs_mutex, pdMS_TO_TICKS(5000)) != pdTRUE)
     {
         ESP_LOGE(TAG, "Timeout obteniendo mutex NVS");
         return 0;
@@ -434,7 +464,7 @@ int load_devices_for_ssid(const char *ssid, device_profile_nvs_t *profiles, int 
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "nvs_open falló: %s", esp_err_to_name(err));
-        xSemaphoreGive(nvs_mutex);
+        xSemaphoreGiveRecursive(nvs_mutex);
         return 0;
     }
 
@@ -484,7 +514,7 @@ int load_devices_for_ssid(const char *ssid, device_profile_nvs_t *profiles, int 
     }
 
     nvs_close(h);
-    xSemaphoreGive(nvs_mutex);
+    xSemaphoreGiveRecursive(nvs_mutex);
 
     ESP_LOGI(TAG, "Carga completada. Encontrados %d dispositivos para SSID: %s", count, ssid);
     return count;

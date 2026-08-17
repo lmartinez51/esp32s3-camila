@@ -22,6 +22,7 @@
 #include "wifi_session_state.h"
 #include "ble_elegoo_bt16.h"
 #include "ble_generic_nus.h"
+#include "ble_hue.h"
 #include "wifi_tcp.h"
 #include "wifi_http.h"
 #include "wifi_arm.h"
@@ -111,6 +112,14 @@ esp_err_t robot_registry_init(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
     {
         ESP_LOGE(TAG, "Fallo registrando driver ble_generic_nus: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* Driver de luz inteligente Philips Hue BLE. */
+    err = robot_hal_register_driver(ble_hue_get_driver());
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGE(TAG, "Fallo registrando driver ble_hue: %s", esp_err_to_name(err));
         return err;
     }
 

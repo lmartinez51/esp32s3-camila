@@ -244,6 +244,17 @@ static void simple_capture_aenc_thread(void *arg)
         frame.stream_type = ESP_CAPTURE_STREAM_TYPE_AUDIO;
         int ret = capture->src_cfg.acquire_src_frame(capture->src_cfg.src_ctx, &frame, false);
         if (ret != ESP_CAPTURE_ERR_OK) {
+            /* Timeout de espera acotada por congestión transitoria: reintentar
+             * en vez de matar el hilo. (El stop llega como frame size==0 con ret OK). */
+            if (ret == ESP_CAPTURE_ERR_INTERNAL || ret == ESP_CAPTURE_ERR_TIMEOUT ||
+                ret == ESP_CAPTURE_ERR_NOT_FOUND) {
+                static uint32_t aenc_acquire_retries = 0;
+                if ((aenc_acquire_retries++ % 50) == 0) {
+                    ESP_LOGW(TAG, "Acquire audio frame timeout (ret %d); reintentando (pipeline vivo)", ret);
+                }
+                media_lib_thread_sleep(10);
+                continue;
+            }
             ESP_LOGE(TAG, "Fail to acquire audio frame ret %d", ret);
             break;
         }
@@ -259,8 +270,15 @@ static void simple_capture_aenc_thread(void *arg)
         int frame_size = res->audio_frame_size + sizeof(esp_capture_stream_frame_t);
         uint8_t *data = data_queue_get_buffer(res->audio_q, frame_size);
         if (data == NULL) {
-            ESP_LOGE(TAG, "Fail to get audio fifo buffer");
-            break;
+            /* Congestión del sink: liberar el frame de origen y reintentar.
+             * Antes esto mataba el hilo sin liberar (leak + pipeline muerto). */
+            capture->src_cfg.release_src_frame(capture->src_cfg.src_ctx, &frame);
+            static uint32_t aenc_outq_retries = 0;
+            if ((aenc_outq_retries++ % 50) == 0) {
+                ESP_LOGW(TAG, "Audio out queue llena; reintentando (pipeline vivo)");
+            }
+            media_lib_thread_sleep(10);
+            continue;
         }
         out_frame.pts = frame.pts;
         out_frame.data = data + sizeof(esp_capture_stream_frame_t);
@@ -278,10 +296,18 @@ static void simple_capture_aenc_thread(void *arg)
             continue;
         }
         data_queue_send_buffer(res->audio_q, out_frame.size + sizeof(esp_capture_stream_frame_t));
-        capture->src_cfg.frame_processed(capture->src_cfg.src_ctx, ESP_CAPTURE_PATH_PRIMARY, &out_frame);
+        int fproc_ret = capture->src_cfg.frame_processed(capture->src_cfg.src_ctx, ESP_CAPTURE_PATH_PRIMARY, &out_frame);
         if (frame.data == NULL && frame.size == 0) {
             ESP_LOGI(TAG, "Stop frame is received");
             break;
+        }
+        if (fproc_ret != 0 && fproc_ret != ESP_CAPTURE_ERR_NOT_SUPPORTED && fproc_ret != ESP_CAPTURE_ERR_NOT_FOUND) {
+            /* share_q_add descartó el frame (ring lleno): normal bajo congestión,
+             * solo informar; el pipeline sigue vivo. */
+            static uint32_t aenc_drop_frames = 0;
+            if ((aenc_drop_frames++ % 50) == 0) {
+                ESP_LOGW(TAG, "frame_processed devolvió %d; frame descartado por congestión", fproc_ret);
+            }
         }
     }
     ESP_LOGI(TAG, "Audio encoder thread exit");

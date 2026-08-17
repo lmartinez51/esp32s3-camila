@@ -46,6 +46,7 @@ typedef enum
     ROBOT_CATEGORY_ARM,            /* Robotic arms (4-DOF / 6-DOF)        */
     ROBOT_CATEGORY_PAN_TILT,       /* Pan-Tilt camera mounts              */
     ROBOT_CATEGORY_IR_ACTUATOR,    /* Generic IR-controlled devices       */
+    ROBOT_CATEGORY_LIGHT,          /* Smart lights (BLE/WiFi bulbs/strips)*/
     ROBOT_CATEGORY_GENERIC
 } robot_category_t;
 
@@ -78,7 +79,12 @@ typedef enum
     ROBOT_ACTION_CENTER,
     /* IR */
     ROBOT_ACTION_SEND_IR_COMMAND,
-    ROBOT_ACTION_LEARN_IR_CODE
+    ROBOT_ACTION_LEARN_IR_CODE,
+    /* Light */
+    ROBOT_ACTION_TURN_ON,
+    ROBOT_ACTION_TURN_OFF,
+    ROBOT_ACTION_TOGGLE,
+    ROBOT_ACTION_SET_BRIGHTNESS
 } robot_action_id_t;
 
 /* ── IR protocols (Phase 5) ──────────────────────────────────────────── */
@@ -102,6 +108,7 @@ typedef struct
     uint32_t ir_command;
     const uint32_t *raw_timings; /* RAW pulse train (PSRAM alloc) */
     uint16_t raw_len;
+    uint8_t  brightness_pct; /* 0..100 (%) for lights         */
 } robot_action_params_t;
 
 /* ── Result codes ────────────────────────────────────────────────────── */
