@@ -137,6 +137,10 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con Camil
 - **Asignar Apodo a Dispositivo BLE**:
   - *"Camila, ponle de apodo 'Carro' al dispositivo ELEGOO BT16."*
   - **Acción**: Ejecuta `set_ble_device_alias`.
+- **Controlar Focos / Iluminación BLE Inteligente**:
+  - *"Camila, apaga la luz de la recámara."*
+  - *"Camila, pon el foco de la sala en color azul al 80% de brillo."*
+  - **Acción**: Ejecuta `control_ble_device` (con acciones `LIGHT_OFF`, `LIGHT_ON`, `SET_BRIGHTNESS`, `SET_COLOR`).
 - **Controlar Robot / Dispositivo BLE**:
   - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."*
   - *"Camila, ¿a qué distancia está el obstáculo?"*

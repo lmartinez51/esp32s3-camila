@@ -141,6 +141,10 @@ You can control various device features simply by talking to Camila. Here are so
 - **Set BLE Device Alias**:
   - *"Camila, ponle de apodo 'Carro' al dispositivo ELEGOO BT16."* (Context: "Camila, rename ELEGOO BT16 to 'Carro'.")
   - **Action**: Triggers `set_ble_device_alias`.
+- **Control BLE Smart Lights & Peripherals**:
+  - *"Camila, apaga la luz de la recámara."* (Context: "Camila, turn off the bedroom light.")
+  - *"Camila, pon el foco de la sala en color azul al 80% de brillo."* (Context: "Camila, set the living room light to blue at 80% brightness.")
+  - **Action**: Triggers `control_ble_device` (with actions `LIGHT_OFF`, `LIGHT_ON`, `SET_BRIGHTNESS`, `SET_COLOR`).
 - **Control BLE Robot / Device**:
   - *"Camila, avanza el Carro hacia adelante 2 segundos y luego gira a la izquierda."* (Context: "Camila, drive the car forward for 2 seconds then turn left.")
   - *"Camila, ¿a qué distancia hay un obstáculo?"* (Context: "Camila, how far is the obstacle?")
