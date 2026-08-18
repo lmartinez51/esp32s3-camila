@@ -46,7 +46,12 @@
 #define IR_RMT_RX_FILTER_NS      200000u   /* ignore < 200 us pulses  */
 #define IR_RMT_RX_IDLE_NS        50000000u /* 50 ms idle -> frame end */
 
-#define IR_LEARN_NVS_NAMESPACE   "robot_registry"
+/* Namespace dedicado a codigos IR aprendidos (separado de `robot_registry`
+ * del HAL: el borrado de uno no debe tocar al otro). Hasta la v1 los blobs
+ * lr_* vivieron dentro de `robot_registry`; ir_learn_nvs_migrate_legacy()
+ * los mueve a `ir_codes` en el primer arranque del motor. */
+#define IR_LEARN_NVS_NAMESPACE       "ir_codes"
+#define IR_LEARN_NVS_NAMESPACE_LEGACY "robot_registry"
 #define IR_LEARN_KEY_PREFIX      "lr_"
 #define IR_LEARN_MAGIC           0x494C4D52u /* "ILMR" */
 #define IR_LEARN_VERSION         1u
@@ -701,6 +706,9 @@ typedef enum
 {
     IR_LEARN_OP_SAVE = 1,
     IR_LEARN_OP_LOAD_ALL,
+    IR_LEARN_OP_DELETE,
+    IR_LEARN_OP_DELETE_ALL,
+    IR_LEARN_OP_MIGRATE,
 } ir_learn_op_t;
 
 typedef struct
@@ -834,6 +842,178 @@ static void ir_learn_nvs_load_all(void)
     ESP_LOGI(TAG, "Codigos IR aprendidos: %d cargados de NVS", loaded);
 }
 
+/* Migracion one-shot: los blobs lr_* historicamente viven en el namespace
+ * `robot_registry` (compartido con el HAL registry). Se reescriben en
+ * `ir_codes` y se borran del legado — idempotente y sin perdida: si el
+ * destino ya tiene la clave, el origen se limpia igualmente. */
+static void ir_learn_nvs_migrate_legacy(void)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    nvs_handle_t legacy;
+    if (nvs_open(IR_LEARN_NVS_NAMESPACE_LEGACY, NVS_READONLY, &legacy) != ESP_OK)
+    {
+        nvs_unlock();
+        return;
+    }
+
+    nvs_handle_t target;
+    if (nvs_open(IR_LEARN_NVS_NAMESPACE, NVS_READWRITE, &target) != ESP_OK)
+    {
+        nvs_close(legacy);
+        nvs_unlock();
+        ESP_LOGW(TAG, "Migracion IR: no se pudo abrir '%s'", IR_LEARN_NVS_NAMESPACE);
+        return;
+    }
+
+    int migrated = 0;
+    nvs_iterator_t it = NULL;
+    esp_err_t res = nvs_entry_find(NULL, IR_LEARN_NVS_NAMESPACE_LEGACY,
+                                   NVS_TYPE_BLOB, &it);
+    while (res == ESP_OK)
+    {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        if (strncmp(info.key, IR_LEARN_KEY_PREFIX, strlen(IR_LEARN_KEY_PREFIX)) == 0)
+        {
+            /* Static: el worker es una unica tarea; un local de 2 KB
+             * agotaria su stack de 4096 B. */
+            static ir_learn_blob_t blob;
+            memset(&blob, 0, sizeof(blob));
+            size_t len = sizeof(blob);
+            if (nvs_get_blob(legacy, info.key, &blob, &len) == ESP_OK &&
+                len == sizeof(blob) && blob.magic == IR_LEARN_MAGIC &&
+                blob.version == IR_LEARN_VERSION &&
+                blob.pulse_count <= IR_LEARN_MAX_PULSES &&
+                blob.crc32 == ir_learn_blob_crc(&blob))
+            {
+                char new_key[16];
+                snprintf(new_key, sizeof(new_key), IR_LEARN_KEY_PREFIX "%08lx",
+                         (unsigned long)blob.id);
+                size_t have = 0;
+                const esp_err_t gerr = nvs_get_blob(target, new_key, NULL, &have);
+                if (gerr == ESP_ERR_NVS_NOT_FOUND)
+                {
+                    if (nvs_set_blob(target, new_key, &blob, sizeof(blob)) == ESP_OK)
+                    {
+                        migrated++;
+                    }
+                }
+                else if (gerr != ESP_OK)
+                {
+                    ESP_LOGW(TAG, "Migracion IR: fallo verificando %s", new_key);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Migracion IR: blob legado %s corrupto, omitido", info.key);
+            }
+        }
+        res = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+
+    if (migrated > 0 && nvs_commit(target) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Migracion IR: commit de destino fallo");
+    }
+    nvs_close(target);
+
+    /* Limpieza del legado: los blobs validos ya viven en `ir_codes` y los
+     * corruptos no tienen valor — el namespace queda libre para el HAL. */
+    nvs_close(legacy);
+    if (nvs_open(IR_LEARN_NVS_NAMESPACE_LEGACY, NVS_READWRITE, &legacy) == ESP_OK)
+    {
+        int erased = 0;
+        nvs_iterator_t rit = NULL;
+        res = nvs_entry_find(NULL, IR_LEARN_NVS_NAMESPACE_LEGACY, NVS_TYPE_BLOB, &rit);
+        while (res == ESP_OK)
+        {
+            nvs_entry_info_t info;
+            nvs_entry_info(rit, &info);
+            if (strncmp(info.key, IR_LEARN_KEY_PREFIX, strlen(IR_LEARN_KEY_PREFIX)) == 0 &&
+                nvs_erase_key(legacy, info.key) == ESP_OK)
+            {
+                erased++;
+            }
+            res = nvs_entry_next(&rit);
+        }
+        nvs_release_iterator(rit);
+        if (erased > 0)
+        {
+            nvs_commit(legacy);
+        }
+        nvs_close(legacy);
+    }
+
+    nvs_unlock();
+
+    if (migrated > 0)
+    {
+        ESP_LOGI(TAG, "Migracion IR: %d codigo(s) movidos de '%s' a '%s'",
+                 migrated, IR_LEARN_NVS_NAMESPACE_LEGACY, IR_LEARN_NVS_NAMESPACE);
+    }
+}
+
+static void ir_learn_nvs_delete(uint32_t id)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    nvs_handle_t handle;
+    if (nvs_open(IR_LEARN_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK)
+    {
+        char key[16];
+        snprintf(key, sizeof(key), IR_LEARN_KEY_PREFIX "%08lx", (unsigned long)id);
+        const esp_err_t err = nvs_erase_key(handle, key);
+        if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND)
+        {
+            nvs_commit(handle);
+            ESP_LOGI(TAG, "Codigo IR id=%08lx eliminado de NVS", (unsigned long)id);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Fallo borrando codigo IR %s: %s", key, esp_err_to_name(err));
+        }
+        nvs_close(handle);
+    }
+    nvs_unlock();
+}
+
+static void ir_learn_nvs_delete_all(void)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    nvs_handle_t handle;
+    if (nvs_open(IR_LEARN_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK)
+    {
+        int erased = 0;
+        nvs_iterator_t it = NULL;
+        esp_err_t res = nvs_entry_find(NULL, IR_LEARN_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+        while (res == ESP_OK)
+        {
+            nvs_entry_info_t info;
+            nvs_entry_info(it, &info);
+            if (strncmp(info.key, IR_LEARN_KEY_PREFIX, strlen(IR_LEARN_KEY_PREFIX)) == 0 &&
+                nvs_erase_key(handle, info.key) == ESP_OK)
+            {
+                erased++;
+            }
+            res = nvs_entry_next(&it);
+        }
+        nvs_release_iterator(it);
+        if (erased > 0)
+        {
+            nvs_commit(handle);
+        }
+        nvs_close(handle);
+        ESP_LOGI(TAG, "%d codigo(s) IR eliminados de NVS", erased);
+    }
+    nvs_unlock();
+}
+
 static void ir_learn_worker_task(void *arg)
 {
     (void)arg;
@@ -852,8 +1032,37 @@ static void ir_learn_worker_task(void *arg)
         {
             ir_learn_nvs_load_all();
         }
+        else if (item->op == IR_LEARN_OP_DELETE)
+        {
+            ir_learn_nvs_delete(item->blob.id);
+        }
+        else if (item->op == IR_LEARN_OP_DELETE_ALL)
+        {
+            ir_learn_nvs_delete_all();
+        }
+        else if (item->op == IR_LEARN_OP_MIGRATE)
+        {
+            ir_learn_nvs_migrate_legacy();
+        }
         heap_caps_free(item);
     }
+}
+
+/* ¿Puede `b` (nuevo) colapsar sobre `a` (ya en cola)? SAVE/DELETE solo
+ * sobre el mismo id; las demas (LOAD_ALL / DELETE_ALL / MIGRATE) colapsan
+ * consigo mismas (ejecutarlas dos veces es redundante). */
+static bool ir_learn_collapsible(const ir_learn_queue_item_t *a,
+                                 const ir_learn_queue_item_t *b)
+{
+    if (a->op != b->op)
+    {
+        return false;
+    }
+    if (a->op == IR_LEARN_OP_SAVE || a->op == IR_LEARN_OP_DELETE)
+    {
+        return a->blob.id == b->blob.id;
+    }
+    return true;
 }
 
 static esp_err_t ir_learn_enqueue(const ir_learn_queue_item_t *item)
@@ -872,9 +1081,43 @@ static esp_err_t ir_learn_enqueue(const ir_learn_queue_item_t *item)
     *copy = *item;
     if (xQueueSend(s_learn_queue, &copy, 0) != pdTRUE)
     {
+        /* Cola llena → coalescing: reemplazar la operacion pendiente del
+         * mismo tipo+id (el ultimo estado gana) en lugar de descartar. */
+        ir_learn_queue_item_t *replacement = NULL;
+        for (int i = 0; i < IR_LEARN_QUEUE_LEN && replacement == NULL; i++)
+        {
+            ir_learn_queue_item_t *queued = NULL;
+            if (xQueueReceive(s_learn_queue, &queued, 0) != pdTRUE)
+            {
+                break;
+            }
+            if (queued != NULL)
+            {
+                if (ir_learn_collapsible(queued, item))
+                {
+                    *queued = *item;
+                    replacement = queued;
+                }
+                else if (xQueueSend(s_learn_queue, &queued, 0) != pdTRUE)
+                {
+                    heap_caps_free(queued); /* inalcanzable: slot recien vaciado */
+                }
+            }
+        }
         heap_caps_free(copy);
-        ESP_LOGW(TAG, "Cola de aprendizaje llena, persistencia omitida");
-        return ESP_ERR_TIMEOUT;
+        if (replacement == NULL)
+        {
+            ESP_LOGW(TAG, "Cola de aprendizaje llena, persistencia omitida");
+            return ESP_ERR_TIMEOUT;
+        }
+        if (xQueueSend(s_learn_queue, &replacement, 0) != pdTRUE)
+        {
+            heap_caps_free(replacement);
+            ESP_LOGW(TAG, "Cola de aprendizaje llena, persistencia omitida");
+            return ESP_ERR_TIMEOUT;
+        }
+        ESP_LOGD(TAG, "Operacion IR colapsada con una pendiente equivalente (op=%d, id=%08lx)",
+                 (int)item->op, (unsigned long)item->blob.id);
     }
     return ESP_OK;
 }
@@ -941,6 +1184,63 @@ const ir_decoded_t *ir_learn_get(uint32_t id, const ir_pulse_t **pulses,
     }
     xSemaphoreGive(s_learn_mutex);
     return NULL;
+}
+
+static void ir_learn_cache_evict_locked(uint32_t id)
+{
+    ir_learn_entry_t *slot = ir_learn_find(id);
+    if (slot != NULL)
+    {
+        free(slot->pulses);
+        slot->pulses = NULL;
+        slot->pulse_count = 0;
+        slot->decoded.valid = false;
+    }
+}
+
+static void ir_learn_cache_clear_locked(void)
+{
+    for (size_t i = 0; i < IR_LEARN_CACHE_MAX; i++)
+    {
+        if (s_learn_cache[i].pulses != NULL)
+        {
+            free(s_learn_cache[i].pulses);
+            s_learn_cache[i].pulses = NULL;
+        }
+        s_learn_cache[i].pulse_count = 0;
+        s_learn_cache[i].decoded.valid = false;
+    }
+}
+
+esp_err_t ir_learn_delete(uint32_t id)
+{
+    if (s_learn_mutex == NULL || s_learn_queue == NULL)
+    {
+        /* Motor nunca arrancado: nada aprendido ni persistido por aqui. */
+        return ESP_OK;
+    }
+    if (xSemaphoreTake(s_learn_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        ir_learn_cache_evict_locked(id);
+        xSemaphoreGive(s_learn_mutex);
+    }
+    const ir_learn_queue_item_t item = { .op = IR_LEARN_OP_DELETE, .blob = { .id = id } };
+    return ir_learn_enqueue(&item);
+}
+
+esp_err_t ir_learn_delete_all(void)
+{
+    if (s_learn_mutex == NULL || s_learn_queue == NULL)
+    {
+        return ESP_OK;
+    }
+    if (xSemaphoreTake(s_learn_mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        ir_learn_cache_clear_locked();
+        xSemaphoreGive(s_learn_mutex);
+    }
+    const ir_learn_queue_item_t item = { .op = IR_LEARN_OP_DELETE_ALL };
+    return ir_learn_enqueue(&item);
 }
 
 /* ── Engine init (lazy: se ejecuta en el primer uso real) ────────────── */
@@ -1050,6 +1350,20 @@ static esp_err_t ir_rmt_engine_boot(void)
     {
         ESP_LOGE(TAG, "No se pudo crear la tarea de aprendizaje IR");
         return ESP_ERR_NO_MEM;
+    }
+
+    /* Migracion one-shot encolada antes del LOAD_ALL: los blobs lr_* que
+     * aun vivan en `robot_registry` (v1) se mueven a `ir_codes`. */
+    ir_learn_queue_item_t *mig = heap_caps_malloc(sizeof(ir_learn_queue_item_t),
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mig != NULL)
+    {
+        memset(mig, 0, sizeof(*mig));
+        mig->op = IR_LEARN_OP_MIGRATE;
+        if (xQueueSend(s_learn_queue, &mig, 0) != pdTRUE)
+        {
+            heap_caps_free(mig);
+        }
     }
 
     /* LOAD_ALL se encola como item HEAP (PSRAM) — nunca como local de

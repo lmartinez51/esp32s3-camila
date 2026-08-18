@@ -6,6 +6,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "network_storage.h"
+#include "nvs_guard.h" // mutex global NVS compartido con el resto del proyecto
 
 #define STORAGE_NAMESPACE "wifi_config"
 #define MAX_SAVED_NETWORKS 3
@@ -48,11 +49,15 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
         return ESP_ERR_INVALID_ARG;
     }
 
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Error abriendo NVS: %s", esp_err_to_name(err));
+        nvs_unlock();
         return err;
     }
 
@@ -72,10 +77,13 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
             {
                 ESP_LOGE(TAG, "Error actualizando password para '%s': %s", ssid, esp_err_to_name(err));
                 nvs_close(nvs_handle);
+                nvs_unlock();
                 return err;
             }
 
-            return commit_and_close(nvs_handle, "Password actualizada para SSID existente", ssid);
+            err = commit_and_close(nvs_handle, "Password actualizada para SSID existente", ssid);
+            nvs_unlock();
+            return err;
         }
     }
 
@@ -97,10 +105,13 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
             {
                 ESP_LOGE(TAG, "Error guardando nueva red '%s': %s", ssid, esp_err_to_name(err));
                 nvs_close(nvs_handle);
+                nvs_unlock();
                 return err;
             }
 
-            return commit_and_close(nvs_handle, "Nueva red WiFi guardada en slot vacio", ssid);
+            err = commit_and_close(nvs_handle, "Nueva red WiFi guardada en slot vacio", ssid);
+            nvs_unlock();
+            return err;
         }
     }
 
@@ -115,6 +126,7 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
     {
         ESP_LOGE(TAG, "Error borrando '%s': %s", key_ssid, esp_err_to_name(err));
         nvs_close(nvs_handle);
+        nvs_unlock();
         return err;
     }
 
@@ -123,6 +135,7 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
     {
         ESP_LOGE(TAG, "Error borrando '%s': %s", key_password, esp_err_to_name(err));
         nvs_close(nvs_handle);
+        nvs_unlock();
         return err;
     }
 
@@ -153,6 +166,7 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
                 ESP_LOGE(TAG, "Error rotando credencial WiFi %d -> %d: %s",
                          i, i - 1, esp_err_to_name(err));
                 nvs_close(nvs_handle);
+                nvs_unlock();
                 return err;
             }
         }
@@ -171,7 +185,9 @@ esp_err_t network_save_wifi_credentials(const char *ssid, const char *password)
         return err;
     }
 
-    return commit_and_close(nvs_handle, "Nueva red WiFi guardada reemplazando la mas antigua", ssid);
+    err = commit_and_close(nvs_handle, "Nueva red WiFi guardada reemplazando la mas antigua", ssid);
+    nvs_unlock();
+    return err;
 }
 
 bool network_get_saved_credentials(int index, char *ssid, char *password)
@@ -181,11 +197,15 @@ bool network_get_saved_credentials(int index, char *ssid, char *password)
         return false;
     }
 
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "No se pudo abrir NVS para leer SSID/Password");
+        nvs_unlock();
         return false;
     }
 
@@ -200,6 +220,7 @@ bool network_get_saved_credentials(int index, char *ssid, char *password)
                 nvs_get_str(nvs_handle, key_password, password, &pass_size) == ESP_OK);
 
     nvs_close(nvs_handle);
+    nvs_unlock();
     return ret;
 }
 
@@ -211,11 +232,15 @@ bool network_delete_wifi_credential_by_ssid(const char *ssid_to_delete)
         return false;
     }
 
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Error abriendo NVS para borrar WiFi: %s", esp_err_to_name(err));
+        nvs_unlock();
         return false;
     }
 
@@ -260,6 +285,7 @@ bool network_delete_wifi_credential_by_ssid(const char *ssid_to_delete)
     }
 
     nvs_close(nvs_handle);
+    nvs_unlock();
 
     if (!found_and_deleted)
     {
@@ -334,10 +360,14 @@ esp_err_t network_delete_all_wifi_credentials(void)
 
     ESP_LOGW(TAG, "Iniciando borrado de TODAS las credenciales WiFi guardadas...");
 
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Error abriendo NVS namespace '%s': %s", STORAGE_NAMESPACE, esp_err_to_name(err));
+        nvs_unlock();
         return err;
     }
 
@@ -382,6 +412,7 @@ esp_err_t network_delete_all_wifi_credentials(void)
     }
 
     nvs_close(nvs_handle);
+    nvs_unlock();
 
     if (overall_err == ESP_OK)
     {

@@ -82,6 +82,22 @@ esp_err_t registry_save_device_async(const robot_device_t *dev);
  */
 esp_err_t registry_persist_load_all(void);
 
+/**
+ * @brief Queue an async erase of one persisted device (key `dev_<crc32>`).
+ * Idempotent: erasing a non-existent id succeeds. Metadata
+ * (magic/version/device_count) is refreshed within the same worker pass.
+ * @param id Stable device id (CRC32 of endpoint).
+ * @return ESP_OK when queued, ESP_ERR_INVALID_ARG for id == 0.
+ */
+esp_err_t registry_delete_device_async(uint32_t id);
+
+/**
+ * @brief Queue an async wipe of every persisted device and the namespace
+ * metadata (all `dev_*`, `magic`, `version`, `device_count`).
+ * @return ESP_OK when queued.
+ */
+esp_err_t registry_persist_erase_all(void);
+
 #ifdef __cplusplus
 }
 #endif

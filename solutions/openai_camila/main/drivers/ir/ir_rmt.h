@@ -11,8 +11,11 @@
  * presence) — IR emitters are always "reachable".
  *
  * Learned codes are kept in a RAM cache and persisted to NVS namespace
- * `robot_registry` under keys `lr_<crc32>` by a dedicated worker task
- * (INTERNAL SRAM stack, core 0, serialized with the legacy nvs mutex).
+ * `ir_codes` under keys `lr_<crc32>` by a dedicated worker task (INTERNAL
+ * SRAM stack, core 0, serialized with the legacy nvs mutex). Legacy blobs
+ * that still live in `robot_registry` (v1) are migrated one-shot at engine
+ * boot. Erase APIs (ir_learn_delete / ir_learn_delete_all) evict the RAM
+ * cache and queue the NVS removal on the same worker.
  *
  * @author Lorenzo Martínez
  * @date 2026
@@ -133,6 +136,19 @@ esp_err_t ir_learn_save(uint32_t id, const ir_pulse_t *pulses, uint16_t len,
  */
 const ir_decoded_t *ir_learn_get(uint32_t id, const ir_pulse_t **pulses,
                                  uint16_t *len);
+
+/**
+ * @brief Delete one learned code (RAM cache + async NVS erase).
+ * Safe to call before the engine ever boots (nothing persisted, no-op).
+ * @param id Device id (CRC32 of endpoint).
+ */
+esp_err_t ir_learn_delete(uint32_t id);
+
+/**
+ * @brief Delete every learned code (RAM cache + async NVS wipe).
+ * Safe to call before the engine ever boots (no-op).
+ */
+esp_err_t ir_learn_delete_all(void);
 
 #ifdef __cplusplus
 }

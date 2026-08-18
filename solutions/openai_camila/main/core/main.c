@@ -99,11 +99,6 @@ static void dtls_pre_gen_cert_task(void *pvParameters)
 
 static const char *TAG = "MAIN";
 
-/* ── Compile-time Feature Flags ─────────────────────────────────────────── */
-
-/** Set to 1 only during first-boot NVS provisioning runs. */
-#define ENABLE_ONE_TIME_PROVISIONING 0
-
 /* ── Thread Scheduler ───────────────────────────────────────────────────── */
 
 /**
@@ -389,21 +384,6 @@ void app_main(void)
     mute_handler_init();
 
     bool boot_to_provisioning = nvs_read_and_clear_boot_to_provisioning_flag();
-
-#if ENABLE_ONE_TIME_PROVISIONING
-    const char *current_ssid = "example-ssid";
-    debug_nvs_contents(current_ssid);
-    list_all_ble_devices_from_nvs();
-    list_all_characteristics_from_nvs();
-    esp_err_t error = nvs_delete_api_key();
-    if (error == ESP_OK) {
-        ESP_LOGI(TAG, "API Key eliminada de NVS");
-    } else {
-        ESP_LOGE(TAG, "Error al eliminar: %s", esp_err_to_name(error));
-    }
-    vTaskDelay(pdMS_TO_TICKS(500));
-    list_api_keys_from_nvs();
-#endif
 
     /* 4) Config manager, HTTP worker, WebRTC action queue */
     config_manager_init();

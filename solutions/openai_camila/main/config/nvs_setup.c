@@ -24,6 +24,7 @@
 // Proyecto
 #include "ble_device_control.h"
 #include "wifi_session_state.h"
+#include "nvs_guard.h" // mutex global compartido (common component)
 
 #include <string.h>
 #include <stdio.h>
@@ -34,7 +35,6 @@
  * ------------------------------------------------------------------------- */
 static const char *TAG = "NVS";
 static const char *NVS_NAMESPACE = "ble_devices"; // namespace donde guardamos perfiles de dispositivos
-static SemaphoreHandle_t nvs_mutex = NULL;        // global mutex para acceso seguro a NVS
 
 /* -------------------------------------------------------------------------
  * Prototipos/funciones estáticas (helpers internos)
@@ -67,54 +67,33 @@ void init_nvs(void)
  */
 void erase_nvs(void)
 {
+    /* Quiescencia: todos los workers NVS (nvs_save, reg_persist, ir_learn)
+     * escriben bajo el mutex global, asi que tomarlo garantiza que ninguna
+     * operacion de flash esta en vuelo al borrar la particion. */
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     esp_err_t err = nvs_flash_erase();
     if (err == ESP_OK)
     {
         ESP_LOGW(TAG, "NVS borrado exitosamente. Reiniciando dispositivo...");
+        nvs_unlock();
         esp_restart();
     }
     else
     {
         ESP_LOGE(TAG, "Fallo al borrar NVS: %s", esp_err_to_name(err));
+        nvs_unlock();
     }
 }
 
-/**
- * Inicializa el mutex recursivo para acceso seguro a NVS
- */
-void nvs_setup_mutex_init(void)
-{
-    if (nvs_mutex == NULL)
-    {
-        nvs_mutex = xSemaphoreCreateRecursiveMutex();
-        if (nvs_mutex == NULL)
-        {
-            ESP_LOGE(TAG, "❌ Error creando mutex recursivo para NVS");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "✅ Mutex recursivo NVS inicializado correctamente");
-        }
-    }
-}
-
-/**
- * Funciones para lock/unlock recursivo de NVS
- */
-void nvs_lock(void)
-{
-    if (nvs_mutex)
-        xSemaphoreTakeRecursive(nvs_mutex, portMAX_DELAY);
-}
-
-/**
- * Funciones para lock/unlock recursivo de NVS
- */
-void nvs_unlock(void)
-{
-    if (nvs_mutex)
-        xSemaphoreGiveRecursive(nvs_mutex);
-}
+/* -------------------------------------------------------------------------
+ * Mutex global NVS
+ *
+ * nvs_setup_mutex_init() / nvs_lock() / nvs_unlock() viven ahora en
+ * common/nvs_guard.c para que TODOS los consumidores de NVS (incluido
+ * network_storage.c en el componente common) compartan el mismo mutex.
+ * ------------------------------------------------------------------------- */
 
 /* ----------------- Helpers internos ----------------- */
 
@@ -452,19 +431,14 @@ int load_devices_for_ssid(const char *ssid, device_profile_nvs_t *profiles, int 
     }
 
     nvs_setup_mutex_init();
-
-    if (xSemaphoreTakeRecursive(nvs_mutex, pdMS_TO_TICKS(5000)) != pdTRUE)
-    {
-        ESP_LOGE(TAG, "Timeout obteniendo mutex NVS");
-        return 0;
-    }
+    nvs_lock();
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "nvs_open falló: %s", esp_err_to_name(err));
-        xSemaphoreGiveRecursive(nvs_mutex);
+        nvs_unlock();
         return 0;
     }
 
@@ -514,7 +488,7 @@ int load_devices_for_ssid(const char *ssid, device_profile_nvs_t *profiles, int 
     }
 
     nvs_close(h);
-    xSemaphoreGiveRecursive(nvs_mutex);
+    nvs_unlock();
 
     ESP_LOGI(TAG, "Carga completada. Encontrados %d dispositivos para SSID: %s", count, ssid);
     return count;
@@ -536,12 +510,16 @@ esp_err_t delete_device_profile(const char *ssid, const uint8_t mac[6])
         return ESP_ERR_INVALID_ARG;
     }
 
+    nvs_setup_mutex_init();
     nvs_lock();
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK)
+    {
+        nvs_unlock();
         return err;
+    }
 
     char key[DEVICE_KEY_MAX_LEN];
     build_device_key(ssid, mac, key);
@@ -562,31 +540,33 @@ esp_err_t delete_device_profile(const char *ssid, const uint8_t mac[6])
     return err;
 }
 
-/* ----------------- Listados y salida JSON ----------------- */
-
 /**
- * Lista todos los dispositivos Bluetooth guardados en NVS.
+ * Elimina un perfil de dispositivo BLE de NVS buscando por MAC, sin
+ * depender del SSID activo (los blobs D_* se guardaron con el SSID del
+ * momento del guardado, que puede no coincidir con el actual).
  */
-void list_all_ble_devices_from_nvs(void)
+esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
 {
+    if (!mac || mac[0] == 0)
+    {
+        ESP_LOGE(TAG, "MAC inválida para eliminar perfil");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     nvs_setup_mutex_init();
     nvs_lock();
 
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK)
     {
-        ESP_LOGI(TAG, "📋 No se pudo abrir el namespace '%s'", NVS_NAMESPACE);
         nvs_unlock();
-        return;
+        return err;
     }
 
-    ESP_LOGI(TAG, "📋 === Dispositivos BLE en NVS (todas las redes) ===");
-
-    int total = 0;
+    int erased = 0;
     nvs_iterator_t it = NULL;
     esp_err_t find_err = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
-
     while (find_err == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -594,30 +574,31 @@ void list_all_ble_devices_from_nvs(void)
 
         device_profile_nvs_t profile;
         size_t size = sizeof(profile);
-        if (nvs_get_blob(h, info.key, &profile, &size) == ESP_OK)
+        if (nvs_get_blob(h, info.key, &profile, &size) == ESP_OK &&
+            size == sizeof(profile) &&
+            memcmp(profile.addr.val, mac, sizeof(profile.addr.val)) == 0)
         {
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     profile.addr.val[5], profile.addr.val[4], profile.addr.val[3],
-                     profile.addr.val[2], profile.addr.val[1], profile.addr.val[0]);
-
-            ESP_LOGI(TAG, "   • Nombre: %s", profile.name);
-            ESP_LOGI(TAG, "     MAC: %s", mac_str);
-            ESP_LOGI(TAG, "     SSID CRC: 0x%02X", profile.ssid_crc);
-            ESP_LOGI(TAG, "     Tipo: %s", ble_device_type_to_string(profile.device_type));
-            total++;
+            if (nvs_erase_key(h, info.key) == ESP_OK)
+            {
+                erased++;
+                ESP_LOGI(TAG, "Perfil eliminado por MAC: %s", info.key);
+            }
         }
 
         find_err = nvs_entry_next(&it);
     }
-
     nvs_release_iterator(it);
+
+    if (erased > 0)
+    {
+        nvs_commit(h);
+    }
     nvs_close(h);
     nvs_unlock();
-
-    ESP_LOGI(TAG, "📊 Total dispositivos guardados: %d", total);
-    ESP_LOGI(TAG, "📋 === Fin listado de dispositivos BLE ===");
+    return ESP_OK;
 }
+
+/* ----------------- Listados ----------------- */
 
 /**
  * Lista los dispositivos Bluetooth asociados al SSID actual.
@@ -721,78 +702,6 @@ int list_devices_as_json(const char *ssid, char *json_buffer, size_t buffer_size
     return device_count;
 }
 
-/**
- * Lista todas las características BLE guardadas en NVS.
- */
-void list_all_characteristics_from_nvs(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("ble_profiles", NVS_READONLY, &h); // Namespace correcto
-    if (err != ESP_OK)
-    {
-        ESP_LOGI(TAG, "📋 No se pudo abrir NVS para características: %s", esp_err_to_name(err));
-        return;
-    }
-
-    ESP_LOGI(TAG, "📋 === Características BLE en NVS ===");
-
-    // Cargar la base de datos de perfiles
-    known_device_profile_t profiles_db[10]; // Ajusta el tamaño según necesites
-    size_t required_size = sizeof(profiles_db);
-
-    err = nvs_get_blob(h, "profiles_db", profiles_db, &required_size);
-    if (err == ESP_OK)
-    {
-        int profile_count = required_size / sizeof(known_device_profile_t);
-        ESP_LOGI(TAG, "📋 Encontrados %d perfiles de dispositivos:", profile_count);
-
-        for (int i = 0; i < profile_count; i++)
-        {
-            const known_device_profile_t *profile = &profiles_db[i];
-            ESP_LOGI(TAG, "📋 Perfil [%d]: %s", i + 1, profile->profile_name);
-            ESP_LOGI(TAG, "    🔧 Tipo: %s", ble_device_type_to_string(profile->device_type));
-
-            // Mostrar UUID del servicio
-            ESP_LOGI(TAG, "    📡 Servicio UUID:");
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, profile->service_uuid.value, 16, ESP_LOG_INFO);
-
-            // Listar características
-            ESP_LOGI(TAG, "    📋 Características (%d):", profile->num_characteristics);
-            for (int j = 0; j < profile->num_characteristics; j++)
-            {
-                const known_characteristic_profile_t *chr = &profile->characteristics[j];
-                ESP_LOGI(TAG, "      [%d] UUID:", j + 1);
-                ESP_LOG_BUFFER_HEX_LEVEL(TAG, chr->uuid.value, 16, ESP_LOG_INFO);
-                ESP_LOGI(TAG, "          Propiedades: 0x%02X", chr->properties);
-
-                // Decodificar propiedades
-                char prop_str[128] = {0};
-                if (chr->properties & BLE_GATT_CHR_PROP_READ)
-                    strcat(prop_str, "READ ");
-                if (chr->properties & BLE_GATT_CHR_PROP_WRITE)
-                    strcat(prop_str, "WRITE ");
-                if (chr->properties & BLE_GATT_CHR_PROP_NOTIFY)
-                    strcat(prop_str, "NOTIFY ");
-                if (chr->properties & BLE_GATT_CHR_PROP_INDICATE)
-                    strcat(prop_str, "INDICATE ");
-                ESP_LOGI(TAG, "          (%s)", prop_str[0] ? prop_str : "Sin propiedades");
-            }
-            ESP_LOGI(TAG, "    ╚══════════════════════════════════════");
-        }
-    }
-    else if (err == ESP_ERR_NVS_NOT_FOUND)
-    {
-        ESP_LOGW(TAG, "📋 No se encontró la base de datos de perfiles en NVS");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "📋 Error cargando perfiles: %s", esp_err_to_name(err));
-    }
-
-    ESP_LOGI(TAG, "📋 === Fin listado de características ===");
-    nvs_close(h);
-}
-
 /* ----------------- Provisioning (base de datos conocida) ----------------- */
 
 /**
@@ -837,6 +746,9 @@ void nvs_provision_known_profiles(void)
 {
     ESP_LOGW("NVS_SETUP", "--- Ejecutando Provisioning de la Base de Datos de Perfiles ---");
 
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     known_device_profile_t profiles_db[1];
     int profile_count = 0;
 
@@ -863,6 +775,7 @@ void nvs_provision_known_profiles(void)
     if (nvs_open("ble_profiles", NVS_READWRITE, &nvs_handle) != ESP_OK)
     {
         ESP_LOGE("NVS_SETUP", "Error abriendo NVS para perfiles");
+        nvs_unlock();
         return;
     }
 
@@ -877,87 +790,10 @@ void nvs_provision_known_profiles(void)
         ESP_LOGE("NVS_SETUP", "❌ Error guardando la base de datos de perfiles en NVS: %s", esp_err_to_name(ret));
     }
     nvs_close(nvs_handle);
+    nvs_unlock();
 }
 
-/* ----------------- Debug / limpieza ----------------- */
-
-/**
- * Función de debug para listar todo el contenido de NVS y verificar CRCs.
- */
-void debug_nvs_contents(const char *ssid)
-{
-    ESP_LOGW("DEBUG", "=== DIAGNÓSTICO NVS ===");
-    ESP_LOGW("DEBUG", "SSID buscado: '%s'", ssid);
-
-    uint8_t target_crc = ssid_crc8(ssid);
-    ESP_LOGW("DEBUG", "CRC calculado para '%s': 0x%02X", ssid, target_crc);
-
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE("DEBUG", "Error abriendo namespace '%s': %s", NVS_NAMESPACE, esp_err_to_name(err));
-        return;
-    }
-
-    nvs_iterator_t it = NULL;
-    err = nvs_entry_find(NVS_DEFAULT_PART_NAME, NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
-    if (err == ESP_ERR_NVS_NOT_FOUND)
-    {
-        ESP_LOGW("DEBUG", "No se encontraron entradas.");
-        nvs_close(h);
-        return;
-    }
-    else if (err != ESP_OK)
-    {
-        ESP_LOGE("DEBUG", "Error en nvs_entry_find: %s", esp_err_to_name(err));
-        nvs_close(h);
-        return;
-    }
-
-    int total_entries = 0;
-    while (it)
-    {
-        nvs_entry_info_t info;
-        nvs_entry_info(it, &info);
-        total_entries++;
-
-        ESP_LOGW("DEBUG", "Entrada encontrada: clave='%s'", info.key);
-
-        device_profile_nvs_t tmp;
-        size_t sz = sizeof(tmp);
-        esp_err_t err_blob = nvs_get_blob(h, info.key, &tmp, &sz);
-        if (err_blob == ESP_OK && sz == sizeof(tmp))
-        {
-            ESP_LOGW("DEBUG", "  └─ Dispositivo: %s", tmp.name);
-            ESP_LOGW("DEBUG", "  └─ Tipo: %s", ble_device_type_to_string(tmp.device_type));
-            ESP_LOGW("DEBUG", "  └─ CRC guardado: 0x%02X", tmp.ssid_crc);
-            ESP_LOGW("DEBUG", "  └─ ¿Coincide CRC? %s", (tmp.ssid_crc == target_crc) ? "SÍ" : "NO");
-
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     tmp.addr.val[5], tmp.addr.val[4], tmp.addr.val[3],
-                     tmp.addr.val[2], tmp.addr.val[1], tmp.addr.val[0]);
-            ESP_LOGW("DEBUG", "  └─ MAC: %s", mac_str);
-        }
-        else
-        {
-            ESP_LOGE("DEBUG", "  └─ Error leyendo blob: %s (tamaño=%zu)", esp_err_to_name(err_blob), sz);
-        }
-
-        esp_err_t err_next = nvs_entry_next(&it);
-        if (err_next != ESP_OK && err_next != ESP_ERR_NVS_NOT_FOUND)
-        {
-            ESP_LOGE("DEBUG", "Error avanzando iterador: %s", esp_err_to_name(err_next));
-            break;
-        }
-    }
-
-    nvs_release_iterator(it);
-    nvs_close(h);
-    ESP_LOGW("DEBUG", "Total entradas encontradas: %d", total_entries);
-    ESP_LOGW("DEBUG", "=== FIN DIAGNÓSTICO ===");
-}
+/* ----------------- Limpieza ----------------- */
 
 /**
  * Limpia entradas inválidas en NVS (tamaños incorrectos o blobs corruptos).
@@ -1002,6 +838,79 @@ void clean_invalid_ble_entries_from_nvs(void)
     nvs_unlock();
 
     ESP_LOGI(TAG, "✅ Limpieza de entradas inválidas completada.");
+}
+
+/**
+ * @brief Borra TODOS los perfiles de dispositivos BLE del namespace
+ * `ble_devices` (claves D_*). La lista RAM del modulo BLE se mantiene
+ * intacta: en el proximo arranque no se recargara nada.
+ */
+void nvs_wipe_ble_devices(void)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
+    {
+        nvs_unlock();
+        return;
+    }
+
+    int erased = 0;
+    nvs_iterator_t it = NULL;
+    esp_err_t find_err = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    while (find_err == ESP_OK)
+    {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        if (nvs_erase_key(h, info.key) == ESP_OK)
+        {
+            erased++;
+        }
+        find_err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+
+    if (erased > 0)
+    {
+        nvs_commit(h);
+    }
+    nvs_close(h);
+    nvs_unlock();
+
+    ESP_LOGI(TAG, "✅ Dispositivos BLE borrados de NVS: %d", erased);
+}
+
+/**
+ * @brief Borra la base de perfiles conocidos del namespace `ble_profiles`
+ * (clave `profiles_db`). Idempotente: sin clave es un no-op.
+ */
+void nvs_wipe_ble_profiles(void)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    nvs_handle_t h;
+    if (nvs_open("ble_profiles", NVS_READWRITE, &h) != ESP_OK)
+    {
+        nvs_unlock();
+        return;
+    }
+
+    esp_err_t err = nvs_erase_key(h, "profiles_db");
+    if (err == ESP_OK)
+    {
+        nvs_commit(h);
+        ESP_LOGI(TAG, "✅ Base de perfiles conocidos borrada de NVS");
+    }
+    else if (err != ESP_ERR_NVS_NOT_FOUND)
+    {
+        ESP_LOGE(TAG, "❌ Error borrando profiles_db: %s", esp_err_to_name(err));
+    }
+
+    nvs_close(h);
+    nvs_unlock();
 }
 
 /**
@@ -1371,103 +1280,6 @@ esp_err_t nvs_delete_api_key(void)
 }
 
 /**
- * @brief Lista todas las API Keys almacenadas en NVS.
- *        Muestra información de validación y seguridad para cada key.
- *
- * Esta función es útil para debugging y verificación de credenciales
- * almacenadas. Por seguridad, solo muestra el prefijo y sufijo de cada key.
- */
-void list_api_keys_from_nvs(void)
-{
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "API Keys almacenadas en NVS");
-    ESP_LOGI(TAG, "========================================");
-
-    nvs_setup_mutex_init();
-    nvs_lock();
-
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("settings", NVS_READONLY, &nvs_handle);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGI(TAG, "⚠️  No se pudo abrir namespace 'settings': %s", esp_err_to_name(err));
-        ESP_LOGI(TAG, "   (Es normal si aún no se ha guardado ninguna API Key)");
-        nvs_unlock();
-        return;
-    }
-
-    // Obtener el tamaño requerido para la API Key
-    size_t required_size = 0;
-    err = nvs_get_str(nvs_handle, "openai_key", NULL, &required_size);
-
-    if (err == ESP_ERR_NVS_NOT_FOUND)
-    {
-        ESP_LOGI(TAG, "❌ No se encontró ninguna API Key almacenada en NVS.");
-        ESP_LOGI(TAG, "   Estado: SIN CONFIGURAR");
-    }
-    else if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "❌ Error al leer API Key: %s", esp_err_to_name(err));
-    }
-    else
-    {
-        // La API Key existe, leer su contenido
-        char api_key_buffer[200];
-        memset(api_key_buffer, 0, sizeof(api_key_buffer));
-
-        size_t buffer_size = sizeof(api_key_buffer);
-        err = nvs_get_str(nvs_handle, "openai_key", api_key_buffer, &buffer_size);
-
-        if (err == ESP_OK)
-        {
-            size_t key_length = strlen(api_key_buffer);
-
-            ESP_LOGI(TAG, "✅ API Key encontrada");
-            ESP_LOGI(TAG, "   Tamaño: %zu caracteres", key_length);
-
-            // Mostrar información de validación
-            esp_err_t validation = validate_openai_api_key(api_key_buffer);
-            if (validation == ESP_OK)
-            {
-                ESP_LOGI(TAG, "   Estado: ✅ VÁLIDA");
-            }
-            else
-            {
-                ESP_LOGI(TAG, "   Estado: ❌ INVÁLIDA");
-            }
-
-            ESP_LOGI(TAG, "   Vista previa omitida por seguridad");
-
-            // Determinar tipo de API Key
-            if (strncmp(api_key_buffer, "sk-proj-", 8) == 0)
-            {
-                ESP_LOGI(TAG, "   Tipo: API Key de Proyecto (sk-proj-*)");
-            }
-            else if (strncmp(api_key_buffer, "sk-", 3) == 0)
-            {
-                ESP_LOGI(TAG, "   Tipo: API Key Legacy (sk-*)");
-            }
-            else
-            {
-                ESP_LOGI(TAG, "   Tipo: DESCONOCIDO (¿formato correcto?)");
-            }
-        }
-        else
-        {
-            ESP_LOGE(TAG, "❌ Error al leer API Key: %s", esp_err_to_name(err));
-        }
-    }
-
-    nvs_close(nvs_handle);
-    nvs_unlock();
-
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Fin del listado de API Keys");
-    ESP_LOGI(TAG, "========================================");
-}
-
-/**
  * @brief Información resumida del estado de la API Key en NVS.
  *        Función compacta para verificaciones rápidas.
  *
@@ -1514,6 +1326,9 @@ esp_err_t get_api_key_status(void)
 
 void nvs_set_boot_to_provisioning_flag(void)
 {
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("system", NVS_READWRITE, &nvs_handle);
     if (err == ESP_OK)
@@ -1523,10 +1338,14 @@ void nvs_set_boot_to_provisioning_flag(void)
         nvs_close(nvs_handle);
         ESP_LOGW(TAG, "NVS: Bandera 'boot_to_provisioning' establecida.");
     }
+    nvs_unlock();
 }
 
 bool nvs_read_and_clear_boot_to_provisioning_flag(void)
 {
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     bool flag_is_set = false;
     esp_err_t err = nvs_open("system", NVS_READWRITE, &nvs_handle);
@@ -1542,6 +1361,7 @@ bool nvs_read_and_clear_boot_to_provisioning_flag(void)
         }
         nvs_close(nvs_handle);
     }
+    nvs_unlock();
     return flag_is_set;
 }
 
@@ -1549,6 +1369,9 @@ bool nvs_read_and_clear_boot_to_provisioning_flag(void)
 
 void nvs_set_operation_mode(boot_operation_mode_t mode)
 {
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("system", NVS_READWRITE, &nvs_handle);
     if (err == ESP_OK)
@@ -1564,10 +1387,14 @@ void nvs_set_operation_mode(boot_operation_mode_t mode)
         ESP_LOGE(TAG, "NVS: No se pudo abrir namespace 'system' para escribir op_mode: %s",
                  esp_err_to_name(err));
     }
+    nvs_unlock();
 }
 
 boot_operation_mode_t nvs_get_operation_mode(void)
 {
+    nvs_setup_mutex_init();
+    nvs_lock();
+
     nvs_handle_t nvs_handle;
     boot_operation_mode_t mode = BOOT_MODE_DIRECTO; /* safe default */
 
@@ -1595,6 +1422,7 @@ boot_operation_mode_t nvs_get_operation_mode(void)
                  esp_err_to_name(err));
     }
 
+    nvs_unlock();
     ESP_LOGI(TAG, "NVS: op_mode leído → %s",
              mode == BOOT_MODE_CENTINELA ? "CENTINELA" : "DIRECTO");
     return mode;

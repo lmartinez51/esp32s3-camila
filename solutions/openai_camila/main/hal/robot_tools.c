@@ -118,6 +118,51 @@ static const char *const s_robot_tool_jsons[] = {
     "    },"
     "    \"required\": [\"device_name\", \"ir_protocol\"]"
     "  }"
+    "}",
+
+    /* ── remove_device ───────────────────────────────────────────────── */
+    "{"
+    "  \"type\": \"function\","
+    "  \"name\": \"remove_device\","
+    "  \"description\": \"Use this tool when the user asks to delete, unregister or forget a registered robot device (e.g., 'elimina el carro', 'borra la TV'). Removes it from the active registry, the NVS registry, its learned IR codes (if any) and the legacy BLE profile.\","
+    "  \"parameters\": {"
+    "    \"type\": \"object\","
+    "    \"properties\": {"
+    "      \"device_name\": {"
+    "        \"type\": \"string\","
+    "        \"description\": \"Alias or name of the registered device to remove (e.g., 'Carro', 'TV Sala').\""
+    "      }"
+    "    },"
+    "    \"required\": [\"device_name\"]"
+    "  }"
+    "}",
+
+    /* ── forget_wifi_network ─────────────────────────────────────────── */
+    "{"
+    "  \"type\": \"function\","
+    "  \"name\": \"forget_wifi_network\","
+    "  \"description\": \"Use this tool when the user asks to forget/delete a saved WiFi network from the robot's credentials (e.g., 'olvida la red Casa', 'borra el wifi del gimnasio'). If the forgotten network is the one currently connected, the change applies on the next reconnect.\","
+    "  \"parameters\": {"
+    "    \"type\": \"object\","
+    "    \"properties\": {"
+    "      \"ssid\": {"
+    "        \"type\": \"string\","
+    "        \"description\": \"SSID of the WiFi network to forget (e.g., 'MiCasa').\""
+    "      }"
+    "    },"
+    "    \"required\": [\"ssid\"]"
+    "  }"
+    "}",
+
+    /* ── erase_all_data ──────────────────────────────────────────────── */
+    "{"
+    "  \"type\": \"function\","
+    "  \"name\": \"erase_all_data\","
+    "  \"description\": \"Use this tool when the user asks to wipe/erase ALL robot data: every registered device (HAL registry + NVS), every learned IR code, every saved WiFi network and every legacy BLE profile. This is a factory-reset-like operation for device data.\","
+    "  \"parameters\": {"
+    "    \"type\": \"object\","
+    "    \"properties\": {}"
+    "  }"
     "}"
 };
 

@@ -21,6 +21,7 @@ extern "C"
 #include "host/ble_hs.h"   // Para ble_addr_t
 #include "host/ble_uuid.h" // Para ble_uuid128_t
 #include "ble_device_control.h"
+#include "nvs_guard.h"     // nvs_lock/nvs_unlock/nvs_setup_mutex_init (common component)
 
 #define BLE_DEVICE_MAX_NAME_LEN 32  // Longitud máxima del nombre del dispositivo BLE
 #define MAX_DEVICES_PER_LOCATION 10 // Máximo de dispositivos por ubicación (SSID)
@@ -117,9 +118,16 @@ extern "C"
     esp_err_t delete_device_profile(const char *ssid, const uint8_t mac[6]);
 
     /**
-     * @brief Lista todos los dispositivos Bluetooth guardados en NVS.
+     * @brief Elimina un perfil de dispositivo BLE de NVS buscando por MAC.
+     *
+     * Recorre todas las claves D_* del namespace `ble_devices` (de cualquier
+     * SSID) y borra aquellas cuyo blob contenga la MAC indicada. No depende
+     * del SSID activo en el momento del borrado.
+     *
+     * @param mac Dirección MAC del dispositivo a eliminar.
+     * @return esp_err_t ESP_OK si se eliminó (o no existía), otro código de error en caso contrario.
      */
-    void list_all_ble_devices_from_nvs(void);
+    esp_err_t delete_device_profile_by_mac(const uint8_t mac[6]);
 
     /**
      * @brief Lista todos los dispositivos Bluetooth disponibles para un SSID específico.
@@ -132,13 +140,6 @@ extern "C"
      * @return int Número de dispositivos encontrados y listados
      */
     int list_available_ble_devices(const char *ssid);
-
-    /**
-     * @brief Lista todas las características BLE guardadas en NVS.
-     * Esta función imprime en consola todas las características BLE
-     * que han sido guardadas en NVS.
-     */
-    void list_all_characteristics_from_nvs(void);
 
     /**
      * @brief Obtiene el conteo de dispositivos BLE disponibles para un SSID específico.
@@ -203,12 +204,21 @@ extern "C"
      */
     void nvs_provision_known_profiles(void);
 
-    void debug_nvs_contents(const char *ssid);
-
     void clean_invalid_ble_entries_from_nvs(void);
 
-    void nvs_lock(void);
-    void nvs_unlock(void);
+    /**
+     * @brief Borra TODOS los perfiles de dispositivos BLE de NVS (claves D_*).
+     * La lista RAM del modulo BLE no se toca; el borrado se aplica en el
+     * proximo arranque.
+     */
+    void nvs_wipe_ble_devices(void);
+
+    /**
+     * @brief Borra la base de perfiles conocidos del namespace `ble_profiles`
+     * (clave `profiles_db`). La lista RAM del modulo BLE no se toca; el
+     * borrado se aplica en el proximo arranque.
+     */
+    void nvs_wipe_ble_profiles(void);
 
     /**
      * @brief Valida el formato de una clave API de OpenAI.
@@ -245,13 +255,6 @@ extern "C"
      * otro código de error en caso contrario.
      */
     esp_err_t nvs_delete_api_key(void);
-
-    /**
-     * @brief Lista la clave API almacenada en NVS (para depuración).
-     * Esta función imprime en el log la clave API actualmente almacenada en NVS.
-     * Útil para verificar que la clave se ha guardado correctamente.
-     */
-    void list_api_keys_from_nvs(void);
 
     /**
      * @brief Establece la bandera 'boot_to_provisioning' en NVS.

@@ -1144,6 +1144,7 @@ static esp_err_t load_known_profiles_safe(void)
     esp_err_t ret = ESP_OK;
 
     // --- CAMBIO CLAVE 2: USAR EL MUTEX PERSONALIZADO ---
+    nvs_setup_mutex_init();
     nvs_lock(); // Bloquea el acceso a NVS
 
     ret = nvs_open("ble_profiles", NVS_READONLY, &nvs_handle);
@@ -1409,6 +1410,10 @@ esp_err_t ble_device_control_start(ble_device_callbacks_t *callbacks)
     // Carga #1: Perfiles
     load_known_profiles_safe();
     ble_log_memory_snapshot("start:known_profiles_loaded");
+
+    // Limpieza post-carga: elimina blobs NVS de dispositivos inválidos
+    // (formato corrupto o tamaño incorrecto) que quedaron de cargas viejas.
+    clean_invalid_ble_entries_from_nvs();
 
     // Carga #2: Dispositivos guardados para el SSID actual
     // (Usando la lógica simplificada que ya habíamos implementado)

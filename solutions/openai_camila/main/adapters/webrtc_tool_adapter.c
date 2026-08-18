@@ -50,7 +50,11 @@
 #include "ir_nec.h"
 #include "ir_sony.h"
 #include "ir_rc5.h"
+#include "ir_rmt.h"
 #include "registry_persist.h"
+#include "nvs_setup.h"
+#include "network_storage.h"
+#include "nvs_flash.h"
 
 #define TAG "ROBOT_ADAPTER"
 
@@ -317,6 +321,14 @@ static void handle_set_ble_device_alias(const char *call_id, const char *args_js
         {
             ESP_LOGI(TAG, "Dispositivo '%s' registrado en HAL (driver: %s, category: %d)",
                      hal_dev.alias, hal_dev.driver_profile_id, (int)hal_dev.category);
+            /* Persistencia en el registry NVS: el alias sobrevive reinicios
+             * (trabajador core 0, asincrono — nunca flash en este contexto). */
+            esp_err_t persist_err = registry_save_device_async(&hal_dev);
+            if (persist_err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "registry_save_device_async devolvio: %s",
+                         esp_err_to_name(persist_err));
+            }
         }
         else
         {
@@ -532,13 +544,209 @@ typedef struct
 {
     const char *name;
     void (*handler)(const char *call_id, const char *args_json);
-} robot_tool_handler_t;static const robot_tool_handler_t s_robot_tools[] = {
+} robot_tool_handler_t;
+
+/* ── Removal tools (Phase 8: erase lifecycle) ────────────────────────── */
+
+static void handle_remove_device(const char *call_id, const char *args_json)
+{
+    cJSON *args_root = args_json ? cJSON_Parse(args_json) : NULL;
+    cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
+    const char *alias = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "";
+
+    ESP_LOGI(TAG, "🗑️ Llamada a remove_device: Dispositivo='%s'", alias);
+
+    char ui_sub[64];
+    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Remove %s", alias);
+    ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    if (alias[0] == '\0')
+    {
+        ui_clear_status_message();
+        send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Nombre de dispositivo invalido.\"}");
+        if (args_root) cJSON_Delete(args_root);
+        webrtc_request_response_create();
+        return;
+    }
+
+    const robot_device_t *dev = robot_hal_get_device(alias);
+    if (dev == NULL)
+    {
+        ui_clear_status_message();
+        send_function_output(call_id, "{\"status\": \"error\", \"message\": \"El dispositivo no esta registrado.\"}");
+        if (args_root) cJSON_Delete(args_root);
+        webrtc_request_response_create();
+        return;
+    }
+
+    const uint32_t dev_id = dev->id;
+    const robot_protocol_t proto = dev->protocol;
+    uint8_t mac[6];
+    memcpy(mac, dev->endpoint.addr, sizeof(mac));
+
+    /* 1. Registry RAM (HAL) */
+    const esp_err_t unreg_err = robot_hal_unregister_device(alias);
+
+    /* 2. Registry NVS (trabajador core 0, asincrono) */
+    esp_err_t persist_err = registry_delete_device_async(dev_id);
+    if (persist_err == ESP_ERR_INVALID_STATE)
+    {
+        persist_err = ESP_OK; /* sin worker: nada persistido */
+    }
+
+    /* 3. Codigos IR aprendidos del dispositivo (cache + NVS) */
+    if (proto == ROBOT_PROTOCOL_IR)
+    {
+        ir_learn_delete(dev_id);
+    }
+
+    /* 4. Perfil BLE legacy (clave D_* en ble_devices, de cualquier SSID) */
+    if (proto == ROBOT_PROTOCOL_BLE)
+    {
+        delete_device_profile_by_mac(mac);
+    }
+
+    ui_clear_status_message();
+    if (unreg_err == ESP_OK && persist_err == ESP_OK)
+    {
+        char resp_buf[192];
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"success\", \"message\": \"Dispositivo '%s' eliminado (registry, NVS y codigos IR).\"}",
+                 alias);
+        send_function_output(call_id, resp_buf);
+    }
+    else
+    {
+        char resp_buf[192];
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"error\", \"message\": \"No se pudo eliminar '%s': %s (%s)\"}",
+                 alias, esp_err_to_name(unreg_err), esp_err_to_name(persist_err));
+        send_function_output(call_id, resp_buf);
+    }
+    webrtc_request_response_create();
+
+    if (args_root) cJSON_Delete(args_root);
+}
+
+static void handle_forget_wifi_network(const char *call_id, const char *args_json)
+{
+    cJSON *args_root = args_json ? cJSON_Parse(args_json) : NULL;
+    cJSON *ssid_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ssid") : NULL;
+    const char *ssid = (cJSON_IsString(ssid_item) && ssid_item->valuestring) ? ssid_item->valuestring : "";
+
+    ESP_LOGI(TAG, "📡 Llamada a forget_wifi_network: SSID='%s'", ssid);
+
+    char ui_sub[64];
+    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Forget %s", ssid);
+    ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    if (ssid[0] == '\0')
+    {
+        ui_clear_status_message();
+        send_function_output(call_id, "{\"status\": \"error\", \"message\": \"SSID invalido.\"}");
+        if (args_root) cJSON_Delete(args_root);
+        webrtc_request_response_create();
+        return;
+    }
+
+    const bool deleted = network_delete_wifi_credential_by_ssid(ssid);
+    const char *current = wifi_session_get_connected_ssid();
+    const bool is_current = (current != NULL && strcmp(current, ssid) == 0);
+
+    ui_clear_status_message();
+    if (deleted)
+    {
+        char resp_buf[256];
+        if (is_current)
+        {
+            snprintf(resp_buf, sizeof(resp_buf),
+                     "{\"status\": \"success\", \"message\": \"Red '%s' olvidada. Se aplicara al reconectar.\"}",
+                     ssid);
+        }
+        else
+        {
+            snprintf(resp_buf, sizeof(resp_buf),
+                     "{\"status\": \"success\", \"message\": \"Red '%s' olvidada.\"}", ssid);
+        }
+        send_function_output(call_id, resp_buf);
+    }
+    else
+    {
+        char resp_buf[192];
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"error\", \"message\": \"No se encontro la red '%s' en las credenciales guardadas.\"}",
+                 ssid);
+        send_function_output(call_id, resp_buf);
+    }
+    webrtc_request_response_create();
+
+    if (args_root) cJSON_Delete(args_root);
+}
+
+static void handle_erase_all_data(const char *call_id, const char *args_json)
+{
+    (void)args_json;
+    ESP_LOGI(TAG, "🧹 Llamada a erase_all_data: borrando registry, IR, WiFi y BLE");
+
+    char ui_sub[64];
+    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Erase all data");
+    ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    /* 1. Registry NVS (trabajador core 0, asincrono) */
+    esp_err_t reg_err = registry_persist_erase_all();
+    if (reg_err == ESP_ERR_INVALID_STATE)
+    {
+        reg_err = ESP_OK; /* sin worker: nada persistido */
+    }
+
+    /* 2. Codigos IR aprendidos (cache + NVS, asincrono; no-op sin motor) */
+    const esp_err_t ir_err = ir_learn_delete_all();
+
+    /* 3. Credenciales WiFi (sincrono, con lock) */
+    esp_err_t wifi_err = network_delete_all_wifi_credentials();
+    if (wifi_err == ESP_ERR_NVS_NOT_FOUND)
+    {
+        wifi_err = ESP_OK;
+    }
+
+    /* 4. Perfiles BLE legacy (sync, con lock): blobs D_* + base de perfiles */
+    nvs_wipe_ble_devices();
+    nvs_wipe_ble_profiles();
+
+    /* 5. Registry RAM (HAL): sin dispositivos controlables */
+    esp_err_t hal_err = robot_hal_clear_devices();
+    if (hal_err == ESP_ERR_INVALID_STATE)
+    {
+        hal_err = ESP_OK; /* HAL nunca inicializado: nada que limpiar */
+    }
+
+    ui_clear_status_message();
+    if (reg_err == ESP_OK && ir_err == ESP_OK && wifi_err == ESP_OK && hal_err == ESP_OK)
+    {
+        send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Todos los datos del robot han sido borrados: dispositivos, codigos IR, redes WiFi y perfiles BLE.\"}");
+    }
+    else
+    {
+        char resp_buf[256];
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"error\", \"message\": \"Borrado parcial: registry=%s, IR=%s, WiFi=%s, HAL=%s\"}",
+                 esp_err_to_name(reg_err), esp_err_to_name(ir_err),
+                 esp_err_to_name(wifi_err), esp_err_to_name(hal_err));
+        send_function_output(call_id, resp_buf);
+    }
+    webrtc_request_response_create();
+}
+
+static const robot_tool_handler_t s_robot_tools[] = {
     {"get_discovered_ble_devices", handle_get_discovered_ble_devices},
     {"control_robot",              handle_control_ble_device}, /* Phase 6: catalog name */
     {"control_ble_device",         handle_control_ble_device}, /* legacy alias (una release) */
     {"set_ble_device_alias",       handle_set_ble_device_alias},
     {"set_device_endpoint",        handle_set_device_endpoint},
     {"set_ir_device",              handle_set_ir_device},
+    {"remove_device",              handle_remove_device},
+    {"forget_wifi_network",        handle_forget_wifi_network},
+    {"erase_all_data",             handle_erase_all_data},
 };
 
 #define ROBOT_TOOL_COUNT (sizeof(s_robot_tools) / sizeof(s_robot_tools[0]))

@@ -296,6 +296,80 @@ const robot_device_t *robot_hal_get_device_at(size_t idx)
     return found;
 }
 
+esp_err_t robot_hal_unregister_device(const char *alias)
+{
+    if (!alias || alias[0] == '\0' || s_devices == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
+    if (xSemaphoreTake(s_registry_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    /* Misma busqueda que robot_hal_get_device(): exacta primero
+     * (alias/endpoint), difusa despues (prefijos conversacionales). */
+    size_t idx = s_device_count;
+    for (size_t i = 0; i < s_device_count; i++)
+    {
+        if (strcasecmp(s_devices[i].alias, alias) == 0 ||
+            strcasecmp(s_devices[i].endpoint.endpoint, alias) == 0)
+        {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == s_device_count)
+    {
+        for (size_t i = 0; i < s_device_count; i++)
+        {
+            if (robot_hal_alias_matches(s_devices[i].alias, alias) ||
+                robot_hal_alias_matches(s_devices[i].endpoint.endpoint, alias))
+            {
+                idx = i;
+                ESP_LOGI(TAG, "Dispositivo '%s' encontrado por coincidencia difusa con '%s'",
+                         s_devices[i].alias, alias);
+                break;
+            }
+        }
+    }
+
+    if (idx < s_device_count)
+    {
+        ESP_LOGI(TAG, "Dispositivo '%s' eliminado del registro HAL",
+                 s_devices[idx].alias);
+        if (idx + 1 < s_device_count)
+        {
+            memmove(&s_devices[idx], &s_devices[idx + 1],
+                    (s_device_count - idx - 1) * sizeof(robot_device_t));
+        }
+        memset(&s_devices[s_device_count - 1], 0, sizeof(robot_device_t));
+        s_device_count--;
+        ret = ESP_OK;
+    }
+    xSemaphoreGive(s_registry_mutex);
+    return ret;
+}
+
+esp_err_t robot_hal_clear_devices(void)
+{
+    if (s_devices == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_registry_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+    memset(s_devices, 0, s_device_count * sizeof(robot_device_t));
+    s_device_count = 0;
+    xSemaphoreGive(s_registry_mutex);
+    ESP_LOGI(TAG, "Registro HAL vaciado (%d dispositivo(s) eliminados)", (int)s_device_count);
+    return ESP_OK;
+}
+
 esp_err_t robot_hal_set_device_presence(const char *alias, bool present)
 {
     if (!alias)

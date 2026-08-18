@@ -92,6 +92,20 @@ esp_err_t robot_hal_register_device(const robot_device_t *dev);
 const robot_device_t *robot_hal_get_device(const char *alias);
 
 /**
+ * @brief Remove a device from the RAM registry (exact or fuzzy alias/endpoint
+ * match). The persisted copy is NOT touched — callers must queue the NVS
+ * removal themselves (registry_delete_device_async / ir_learn_delete).
+ * @return ESP_OK when removed, ESP_ERR_NOT_FOUND when not registered.
+ */
+esp_err_t robot_hal_unregister_device(const char *alias);
+
+/**
+ * @brief Remove every device from the RAM registry.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE before robot_hal_init().
+ */
+esp_err_t robot_hal_clear_devices(void);
+
+/**
  * @brief Get a registered device by index (Phase 7: health/integrity check).
  * @param idx Index in [0, robot_hal_get_device_count()).
  * @return Pointer to the device snapshot or NULL (out of range / not inited).

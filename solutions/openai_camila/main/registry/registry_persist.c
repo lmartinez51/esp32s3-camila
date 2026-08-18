@@ -36,11 +36,14 @@ typedef enum
 {
     REGISTRY_OP_SAVE_DEVICE = 1,
     REGISTRY_OP_LOAD_ALL,
+    REGISTRY_OP_DELETE_DEVICE,
+    REGISTRY_OP_WIPE,
 } registry_op_t;
 
 typedef struct
 {
     registry_op_t op;
+    uint32_t id; /* REGISTRY_OP_DELETE_DEVICE */
     robot_device_persist_t dev;
 } registry_queue_item_t;
 
@@ -129,6 +132,24 @@ static int registry_persist_count_devices(void)
     return count;
 }
 
+/* Escribe magic/version/device_count con un conteo REAL de blobs dev_*
+ * ya commiteados (el iterador no ve escrituras sin commit: debe llamarse
+ * DESPUES del nvs_commit del blob, no antes). */
+static esp_err_t registry_persist_write_meta(nvs_handle_t handle)
+{
+    esp_err_t err = nvs_set_u32(handle, "magic", ROBOT_REGISTRY_MAGIC);
+    if (err == ESP_OK)
+    {
+        err = nvs_set_u8(handle, "version", ROBOT_REGISTRY_VERSION);
+    }
+    if (err == ESP_OK)
+    {
+        err = nvs_set_u8(handle, "device_count",
+                         (uint8_t)registry_persist_count_devices());
+    }
+    return err;
+}
+
 static esp_err_t registry_persist_save(const robot_device_persist_t *p)
 {
     nvs_setup_mutex_init();
@@ -154,9 +175,14 @@ static esp_err_t registry_persist_save(const robot_device_persist_t *p)
     err = nvs_set_blob(handle, key, p, sizeof(*p));
     if (err == ESP_OK)
     {
-        nvs_set_u32(handle, "magic", ROBOT_REGISTRY_MAGIC);
-        nvs_set_u8(handle, "version", ROBOT_REGISTRY_VERSION);
-        nvs_set_u8(handle, "device_count", (uint8_t)registry_persist_count_devices());
+        err = nvs_commit(handle); /* blob visible para el conteo */
+    }
+    if (err == ESP_OK)
+    {
+        err = registry_persist_write_meta(handle);
+    }
+    if (err == ESP_OK)
+    {
         err = nvs_commit(handle);
     }
 
@@ -170,6 +196,104 @@ static esp_err_t registry_persist_save(const robot_device_persist_t *p)
     else
     {
         ESP_LOGE(TAG, "Fallo persistiendo '%s': %s", p->alias, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static esp_err_t registry_persist_erase(uint32_t id)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    esp_err_t err = ESP_OK;
+    nvs_handle_t handle;
+    const esp_err_t open_err = nvs_open(REGISTRY_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (open_err != ESP_OK)
+    {
+        nvs_unlock();
+        return open_err;
+    }
+
+    char key[16];
+    snprintf(key, sizeof(key), "dev_%08lx", (unsigned long)id);
+
+    err = nvs_erase_key(handle, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND)
+    {
+        err = ESP_OK; /* idempotente: no existir tambien es borrar */
+    }
+    if (err == ESP_OK)
+    {
+        err = nvs_commit(handle);
+    }
+    if (err == ESP_OK)
+    {
+        err = registry_persist_write_meta(handle);
+    }
+    if (err == ESP_OK)
+    {
+        err = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+    nvs_unlock();
+
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Dispositivo eliminado de NVS (key=%s)", key);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Fallo borrando '%s': %s", key, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static esp_err_t registry_persist_wipe(void)
+{
+    nvs_setup_mutex_init();
+    nvs_lock();
+
+    esp_err_t err = ESP_OK;
+    nvs_handle_t handle;
+    const esp_err_t open_err = nvs_open(REGISTRY_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (open_err != ESP_OK)
+    {
+        nvs_unlock();
+        return open_err;
+    }
+
+    int erased = 0;
+    nvs_iterator_t it = NULL;
+    esp_err_t res = nvs_entry_find(NULL, REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    while (res == ESP_OK)
+    {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        if (strncmp(info.key, "dev_", 4) == 0 &&
+            nvs_erase_key(handle, info.key) == ESP_OK)
+        {
+            erased++;
+        }
+        res = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+
+    nvs_erase_key(handle, "magic");
+    nvs_erase_key(handle, "version");
+    nvs_erase_key(handle, "device_count");
+
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    nvs_unlock();
+
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Registry NVS limpio: %d dispositivo(s) eliminados", erased);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Fallo limpiando registry NVS: %s", esp_err_to_name(err));
     }
     return err;
 }
@@ -278,6 +402,14 @@ static void registry_worker_task(void *arg)
         {
             registry_persist_load();
         }
+        else if (item->op == REGISTRY_OP_DELETE_DEVICE)
+        {
+            registry_persist_erase(item->id);
+        }
+        else if (item->op == REGISTRY_OP_WIPE)
+        {
+            registry_persist_wipe();
+        }
 
         heap_caps_free(item);
     }
@@ -330,6 +462,23 @@ static esp_err_t registry_persist_ensure_worker(void)
     return err;
 }
 
+/* ¿Puede `b` (nuevo) colapsar sobre `a` (ya en cola)? Solo operaciones del
+ * mismo tipo e id: el ultimo estado gana. LOAD_ALL / WIPE colapsan
+ * consigo mismos (ejecutar dos veces es redundante). */
+static bool registry_persist_collapsible(const registry_queue_item_t *a,
+                                         const registry_queue_item_t *b)
+{
+    if (a->op != b->op)
+    {
+        return false;
+    }
+    if (a->op == REGISTRY_OP_SAVE_DEVICE || a->op == REGISTRY_OP_DELETE_DEVICE)
+    {
+        return a->id == b->id;
+    }
+    return true;
+}
+
 static esp_err_t registry_persist_enqueue(const registry_queue_item_t *item)
 {
     if (s_registry_queue == NULL)
@@ -348,9 +497,44 @@ static esp_err_t registry_persist_enqueue(const registry_queue_item_t *item)
     *copy = *item;
     if (xQueueSend(s_registry_queue, &copy, 0) != pdTRUE)
     {
+        /* Cola llena → coalescing: reemplazar la operacion pendiente del
+         * mismo tipo+id (el ultimo estado gana) en lugar de descartar.
+         * Solo se toca la cola de punteros; nada de NVS aqui. */
+        registry_queue_item_t *replacement = NULL;
+        for (int i = 0; i < REGISTRY_SAVE_QUEUE_LEN && replacement == NULL; i++)
+        {
+            registry_queue_item_t *queued = NULL;
+            if (xQueueReceive(s_registry_queue, &queued, 0) != pdTRUE)
+            {
+                break;
+            }
+            if (queued != NULL)
+            {
+                if (registry_persist_collapsible(queued, item))
+                {
+                    *queued = *item;
+                    replacement = queued;
+                }
+                else if (xQueueSend(s_registry_queue, &queued, 0) != pdTRUE)
+                {
+                    heap_caps_free(queued); /* inalcanzable: slot recien vaciado */
+                }
+            }
+        }
         heap_caps_free(copy);
-        ESP_LOGW(TAG, "Cola de persistencia llena, operacion omitida");
-        return ESP_ERR_TIMEOUT;
+        if (replacement == NULL)
+        {
+            ESP_LOGW(TAG, "Cola de persistencia llena, operacion omitida");
+            return ESP_ERR_TIMEOUT;
+        }
+        if (xQueueSend(s_registry_queue, &replacement, 0) != pdTRUE)
+        {
+            heap_caps_free(replacement);
+            ESP_LOGW(TAG, "Cola de persistencia llena, operacion omitida");
+            return ESP_ERR_TIMEOUT;
+        }
+        ESP_LOGD(TAG, "Operacion colapsada con una pendiente equivalente (op=%d, id=%08lx)",
+                 (int)item->op, (unsigned long)item->id);
     }
 
     /* Worker asegurado DESPUES del send: si se auto-elimino por inactividad,
@@ -428,6 +612,7 @@ esp_err_t registry_save_device_async(const robot_device_t *dev)
 
     registry_queue_item_t item = {0};
     item.op = REGISTRY_OP_SAVE_DEVICE;
+    item.id = dev->id; /* para el coalescing del enqueue */
     registry_persist_from_device(dev, &item.dev);
 
     return registry_persist_enqueue(&item);
@@ -437,4 +622,20 @@ esp_err_t registry_persist_load_all(void)
 {
     const registry_queue_item_t load = { .op = REGISTRY_OP_LOAD_ALL, .dev = {0} };
     return registry_persist_enqueue(&load);
+}
+
+esp_err_t registry_delete_device_async(uint32_t id)
+{
+    if (id == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const registry_queue_item_t item = { .op = REGISTRY_OP_DELETE_DEVICE, .id = id };
+    return registry_persist_enqueue(&item);
+}
+
+esp_err_t registry_persist_erase_all(void)
+{
+    const registry_queue_item_t item = { .op = REGISTRY_OP_WIPE, .id = 0 };
+    return registry_persist_enqueue(&item);
 }
