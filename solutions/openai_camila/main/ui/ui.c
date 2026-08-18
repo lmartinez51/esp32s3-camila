@@ -860,11 +860,7 @@ static void draw_avatar_subtitle_line(void)
 
     if (s_mute_overlay_active && s_mute_overlay_text[0] != '\0')
     {
-        if (strstr(s_mute_overlay_text, "Microphone") != NULL || strstr(s_mute_overlay_text, "microphone") != NULL) {
-            strncpy(sub_buf, "Press 2x to Unmute", sizeof(sub_buf) - 1);
-        } else {
-            strncpy(sub_buf, s_mute_overlay_text, sizeof(sub_buf) - 1);
-        }
+        strncpy(sub_buf, s_mute_overlay_text, sizeof(sub_buf) - 1);
         sub_color = COLOR_YELLOW_BGR565;
     }
     else
@@ -917,37 +913,38 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         strncpy(title_buf, "AI'M CAMILA", sizeof(title_buf) - 1);
     }
 
-    if (subtitle && subtitle[0] != '\0') {
-        if (strstr(subtitle, "Microphone") != NULL || strstr(subtitle, "microphone") != NULL) {
-            strncpy(sub_buf, "Press 2x to Unmute", sizeof(sub_buf) - 1);
-        } else {
-            strncpy(sub_buf, subtitle, sizeof(sub_buf) - 1);
-        }
-        ui_sanitize_text(sub_buf);
-    }
-
     char sub_line1[32] = {0};
     char sub_line2[32] = {0};
     bool has_sub2 = false;
 
-    if (sub_buf[0] != '\0') {
-        size_t sub_len = strlen(sub_buf);
-        if (sub_len <= 14) {
-            strncpy(sub_line1, sub_buf, sizeof(sub_line1) - 1);
+    if (subtitle && subtitle[0] != '\0') {
+        if (strstr(subtitle, "Microphone") != NULL || strstr(subtitle, "microphone") != NULL) {
+            strncpy(sub_line1, "MIC IS MUTED", sizeof(sub_line1) - 1);
+            strncpy(sub_line2, "TAP 2X TO TALK", sizeof(sub_line2) - 1);
+            has_sub2 = true;
         } else {
-            int split_idx = 14;
-            for (int i = 14; i >= 4; i--) {
-                if (sub_buf[i] == ' ' || sub_buf[i] == '/') {
-                    split_idx = i;
-                    break;
+            strncpy(sub_buf, subtitle, sizeof(sub_buf) - 1);
+            ui_sanitize_text(sub_buf);
+            if (sub_buf[0] != '\0') {
+                size_t sub_len = strlen(sub_buf);
+                if (sub_len <= 14) {
+                    strncpy(sub_line1, sub_buf, sizeof(sub_line1) - 1);
+                } else {
+                    int split_idx = 14;
+                    for (int i = 14; i >= 4; i--) {
+                        if (sub_buf[i] == ' ' || sub_buf[i] == '/') {
+                            split_idx = i;
+                            break;
+                        }
+                    }
+                    strncpy(sub_line1, sub_buf, split_idx);
+                    sub_line1[split_idx] = '\0';
+                    const char *rest = sub_buf + split_idx + (sub_buf[split_idx] == ' ' ? 1 : 0);
+                    strncpy(sub_line2, rest, sizeof(sub_line2) - 1);
+                    if (sub_line2[0] != '\0') {
+                        has_sub2 = true;
+                    }
                 }
-            }
-            strncpy(sub_line1, sub_buf, split_idx);
-            sub_line1[split_idx] = '\0';
-            const char *rest = sub_buf + split_idx + (sub_buf[split_idx] == ' ' ? 1 : 0);
-            strncpy(sub_line2, rest, sizeof(sub_line2) - 1);
-            if (sub_line2[0] != '\0') {
-                has_sub2 = true;
             }
         }
     }
@@ -987,14 +984,15 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
 
     draw_filled_rect(24, 44, 272, 2, COLOR_CYAN_BGR565);
 
+    bool is_mute_phase = (strcmp(title_buf, "MUTED") == 0 || strstr(sub_line1, "MUTED") != NULL);
+
     if (sub1_chars > 0)
     {
         int sub1_w = sub1_chars * (CHAR_WIDTH * sub1_scale) + (sub1_chars - 1) * sub1_spacing;
         int x = (BSP_LCD_H_RES - sub1_w) / 2;
         if (x < 8) x = 8;
-        bool is_mute_sub = (strcmp(title_buf, "MUTED") == 0 || strstr(sub_line1, "Unmute") != NULL);
-        uint16_t sub1_color = is_mute_sub ? COLOR_YELLOW_BGR565 : COLOR_WHITE_BGR565;
-        int sub1_y = is_mute_sub ? 85 : 100;
+        uint16_t sub1_color = COLOR_WHITE_BGR565;
+        int sub1_y = is_mute_phase ? 80 : 100;
         display_text(x, sub1_y, sub1_map, sub1_chars, sub1_color, sub1_scale);
     }
 
@@ -1003,7 +1001,9 @@ void display_system_phase_message(const char *title, const char *subtitle, uint1
         int sub2_w = sub2_chars * (CHAR_WIDTH * sub2_scale) + (sub2_chars - 1) * sub2_spacing;
         int x = (BSP_LCD_H_RES - sub2_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, 124, sub2_map, sub2_chars, COLOR_WHITE_BGR565, sub2_scale);
+        uint16_t sub2_color = is_mute_phase ? COLOR_YELLOW_BGR565 : COLOR_WHITE_BGR565;
+        int sub2_y = is_mute_phase ? 114 : 124;
+        display_text(x, sub2_y, sub2_map, sub2_chars, sub2_color, sub2_scale);
     }
 
     ui_backlight_on();

@@ -169,7 +169,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         csi_handler_stop();
         
-        camila_ui_update_state(UI_STATE_BLE_SCAN, "CENTINELA", "Scanning for owner...");
+        camila_ui_update_state(UI_STATE_BLE_SCAN, "CENTINELA", "Searching for user...");
         
         orchestrator_start_identity_validation();
         break;
@@ -521,7 +521,7 @@ void app_startup_orchestrator_task(void *param)
                 const char *owner_name = ble_identity_get_last_validated_name();
                 char subtitle_buf[64];
                 if (owner_name && strlen(owner_name) > 0) {
-                    snprintf(subtitle_buf, sizeof(subtitle_buf), "Owner: %s", owner_name);
+                    snprintf(subtitle_buf, sizeof(subtitle_buf), "User: %s", owner_name);
                 } else {
                     snprintf(subtitle_buf, sizeof(subtitle_buf), "Identity Validated");
                 }

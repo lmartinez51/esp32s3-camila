@@ -340,6 +340,13 @@ extern "C"
     esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias);
 
     /**
+     * @brief Removes a device (by MAC) from the RAM discovered-devices table
+     *        so it no longer appears in get_discovered_ble_devices. Does not
+     *        touch NVS; callers remove NVS entries separately.
+     */
+    esp_err_t ble_device_forget_by_mac(const uint8_t mac[6]);
+
+    /**
      * @brief Sends a movement/action command to a BLE device by name or alias.
      *        Actions: "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP", "SPIN_180".
      *        If duration_ms > 0, automatically sends "STOP" after duration_ms.

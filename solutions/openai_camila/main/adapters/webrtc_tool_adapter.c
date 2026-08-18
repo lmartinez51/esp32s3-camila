@@ -586,9 +586,11 @@ static void handle_remove_device(const char *call_id, const char *args_json)
 
     /* 1. Registry RAM (HAL) */
     const esp_err_t unreg_err = robot_hal_unregister_device(alias);
+    ESP_LOGW(TAG, "RMV: HAL unregister -> %s", esp_err_to_name(unreg_err));
 
     /* 2. Registry NVS (trabajador core 0, asincrono) */
     esp_err_t persist_err = registry_delete_device_async(dev_id);
+    ESP_LOGW(TAG, "RMV: registry_delete_device_async -> %s", esp_err_to_name(persist_err));
     if (persist_err == ESP_ERR_INVALID_STATE)
     {
         persist_err = ESP_OK; /* sin worker: nada persistido */
@@ -598,15 +600,28 @@ static void handle_remove_device(const char *call_id, const char *args_json)
     if (proto == ROBOT_PROTOCOL_IR)
     {
         ir_learn_delete(dev_id);
+        ESP_LOGW(TAG, "RMV: IR delete hecho");
     }
 
-    /* 4. Perfil BLE legacy (clave D_* en ble_devices, de cualquier SSID) */
+    /* 4. Tabla RAM de descubiertos + perfil BLE legacy (clave D_* en
+     *    ble_devices, de cualquier SSID) — el NVS se encola en el worker
+     *    reg_persist (core 0) para no tocar NVS desde pc_task: el acceso
+     *    NVS queda serializado en una unica tarea. */
     if (proto == ROBOT_PROTOCOL_BLE)
     {
-        delete_device_profile_by_mac(mac);
+        const esp_err_t forget_err = ble_device_forget_by_mac(mac);
+        ESP_LOGW(TAG, "RMV: tabla RAM descubiertos -> %s", esp_err_to_name(forget_err));
+        const esp_err_t prof_err = registry_delete_ble_profile_async(mac);
+        ESP_LOGW(TAG, "RMV: perfil BLE encolado -> %s", esp_err_to_name(prof_err));
+        if (prof_err == ESP_ERR_INVALID_STATE)
+        {
+            delete_device_profile_by_mac(mac);
+            ESP_LOGW(TAG, "RMV: perfil BLE por MAC listo (sin worker)");
+        }
     }
 
     ui_clear_status_message();
+    ESP_LOGW(TAG, "RMV: enviando function_output...");
     if (unreg_err == ESP_OK && persist_err == ESP_OK)
     {
         char resp_buf[192];

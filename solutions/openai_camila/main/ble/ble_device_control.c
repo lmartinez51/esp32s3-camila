@@ -40,6 +40,8 @@
 #include "wifi_session_state.h"
 #include "ble_device_callbacks.h"
 #include "app_events.h"
+#include "robot_hal.h"
+#include "registry_persist.h"
 
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -4524,6 +4526,72 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
     return ESP_OK;
 }
 
+esp_err_t ble_device_forget_by_mac(const uint8_t mac[6])
+{
+    if (!mac || mac[0] == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    int removed = 0;
+    for (int i = 0; i < discovered_count; i++)
+    {
+        if (memcmp(discovered_devices[i].addr, mac, sizeof(discovered_devices[i].addr)) == 0)
+        {
+            removed++;
+            memmove(&discovered_devices[i], &discovered_devices[i + 1],
+                    (size_t)(discovered_count - i - 1) * sizeof(ble_device_info_t));
+            discovered_count--;
+            i--;
+        }
+    }
+
+    if (devices_mutex != NULL)
+    {
+        xSemaphoreGive(devices_mutex);
+    }
+
+    if (removed > 0)
+    {
+        ESP_LOGI(TAG, "Dispositivo %02x:%02x... eliminado de la tabla RAM de descubiertos (restan %d)",
+                 mac[0], mac[1], discovered_count);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Dispositivo %02x:%02x... no estaba en la tabla RAM de descubiertos", mac[0], mac[1]);
+    }
+    return (removed > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static void ble_sync_alias_to_hal_registry(const char *old_alias, const char *new_alias)
+{
+    if (robot_hal_set_device_alias(old_alias, new_alias) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Alias '%s' no encontrado en registro HAL; solo RAM/NVS legacy actualizados",
+                 old_alias);
+        return;
+    }
+    const robot_device_t *hal_dev = robot_hal_get_device(new_alias);
+    if (hal_dev != NULL)
+    {
+        const esp_err_t perr = registry_save_device_async(hal_dev);
+        if (perr == ESP_OK)
+        {
+            ESP_LOGI(TAG, "Alias '%s' actualizado en registro HAL y re-persistido en registry NVS",
+                     new_alias);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Alias HAL actualizado pero re-persist en registry NVS fallo: %s",
+                     esp_err_to_name(perr));
+        }
+    }
+}
+
 esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
 {
     if (!mac || !alias) return ESP_ERR_INVALID_ARG;
@@ -4531,6 +4599,8 @@ esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
     if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         for (int i = 0; i < discovered_count; i++) {
             if (memcmp(discovered_devices[i].addr, mac, 6) == 0) {
+                char old_alias[32];
+                strlcpy(old_alias, discovered_devices[i].alias, sizeof(old_alias));
                 strlcpy(discovered_devices[i].alias, alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
                 discovered_devices[i].is_configured = true;
@@ -4542,6 +4612,7 @@ esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
                 } else {
                     ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", alias, esp_err_to_name(nvs_err));
                 }
+                ble_sync_alias_to_hal_registry(old_alias, alias);
                 return ESP_OK;
             }
         }
@@ -4559,6 +4630,8 @@ esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new
             if (strcasestr(discovered_devices[i].name, current_name) != NULL ||
                 (strlen(discovered_devices[i].alias) > 0 && strcasestr(discovered_devices[i].alias, current_name) != NULL) ||
                 (strcasestr(current_name, "ELEGOO") != NULL && strcasestr(discovered_devices[i].name, "ELEGOO") != NULL)) {
+                char old_alias[32];
+                strlcpy(old_alias, discovered_devices[i].alias, sizeof(old_alias));
                 strlcpy(discovered_devices[i].alias, new_alias, sizeof(discovered_devices[i].alias));
                 discovered_devices[i].is_known = true;
                 discovered_devices[i].is_configured = true;
@@ -4581,6 +4654,7 @@ esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new
                 } else {
                     ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
                 }
+                ble_sync_alias_to_hal_registry(old_alias, new_alias);
                 return ESP_OK;
             }
         }

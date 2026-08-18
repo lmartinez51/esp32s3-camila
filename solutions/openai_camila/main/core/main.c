@@ -84,6 +84,7 @@
 #include "orchestrator_fsm.h"
 #include "kill_switch.h"
 #include "esp_peer.h"
+#include "audio_watchdog.h"
 
 static void dtls_pre_gen_cert_task(void *pvParameters)
 {
@@ -467,6 +468,9 @@ void app_main(void)
     xTaskCreatePinnedToCoreWithCaps(sys_telemetry_task, "telemetry_task", 3072, NULL,
                                     tskIDLE_PRIORITY + 1, NULL, 1,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    /* 10b) Audio fetch watchdog (diagnostico NO intrusivo; detecta stall del AFE) */
+    audio_watchdog_start();
 
     /* Safe to unblock Lua VM now that all hardware and WiFi initializations are done */
     esp_claw_signal_safe_to_start();

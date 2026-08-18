@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include "esp_capture.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_muxer.h"
 #include "mp4_muxer.h"
 #include "ts_muxer.h"
@@ -113,6 +114,8 @@ typedef struct capture_t {
     uint8_t                     *audio_drop_scratch; /* Buffer de descarte por congestión del sink */
     uint32_t                     audio_drop_scratch_size;
     uint32_t                     audio_drop_frames;
+    volatile uint32_t            audio_fetch_last_ms; /* Diag: última fetch() OK (ms esp_timer) */
+    volatile uint32_t            audio_fetch_count;   /* Diag: nº de fetch() OK acumulados */
     media_lib_event_grp_handle_t event_group;
     media_lib_mutex_handle_t     api_lock;
 } capture_t;
@@ -368,6 +371,8 @@ static void audio_src_thread(void *arg)
                     int drop_ret = capture->cfg.audio_src->read_frame(capture->cfg.audio_src, drop);
                     if (drop_ret == ESP_CAPTURE_ERR_OK) {
                         capture->audio_drop_frames++;
+                        capture->audio_fetch_last_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                        capture->audio_fetch_count++;
                         if ((capture->audio_drop_frames % 50) == 1) {
                             ESP_LOGW(TAG, "Audio sink congestion: dropped %u frames (AFE kept drained)",
                                      (unsigned)capture->audio_drop_frames);
@@ -390,6 +395,8 @@ static void audio_src_thread(void *arg)
             ESP_LOGE(TAG, "Failed to read audio frame ret %d", ret);
             break;
         }
+        capture->audio_fetch_last_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        capture->audio_fetch_count++;
         if (capture->sync_handle) {
             esp_capture_sync_audio_update(capture->sync_handle, frame->pts);
             if (capture->cfg.sync_mode != ESP_CAPTURE_SYNC_MODE_AUDIO) {
@@ -1653,5 +1660,42 @@ int esp_capture_close(esp_capture_handle_t h)
         capture->audio_drop_scratch = NULL;
     }
     media_lib_free(capture);
+    return ESP_CAPTURE_ERR_OK;
+}
+
+int esp_capture_get_audio_src_health(esp_capture_handle_t h,
+                                     uint32_t *last_fetch_ms,
+                                     uint32_t *fetch_count,
+                                     uint32_t *drop_frames,
+                                     uint32_t *q_fill_bytes,
+                                     uint32_t *q_cap_bytes,
+                                     bool *fetching)
+{
+    capture_t *capture = (capture_t *)h;
+    if (capture == NULL) {
+        return ESP_CAPTURE_ERR_INVALID_ARG;
+    }
+    if (last_fetch_ms) {
+        *last_fetch_ms = (uint32_t)capture->audio_fetch_last_ms;
+    }
+    if (fetch_count) {
+        *fetch_count = capture->audio_fetch_count;
+    }
+    if (drop_frames) {
+        *drop_frames = capture->audio_drop_frames;
+    }
+    if (q_fill_bytes || q_cap_bytes) {
+        int q_num = 0, q_size = 0;
+        data_queue_query(capture->audio_src_q, &q_num, &q_size);
+        if (q_fill_bytes) {
+            *q_fill_bytes = (uint32_t)q_size;
+        }
+        if (q_cap_bytes) {
+            *q_cap_bytes = (capture->audio_src_q) ? (uint32_t)capture->audio_src_q->size : 0;
+        }
+    }
+    if (fetching) {
+        *fetching = capture->fetching_audio;
+    }
     return ESP_CAPTURE_ERR_OK;
 }

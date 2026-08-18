@@ -7,6 +7,7 @@ idf_component_register(
         "core/orchestrator_fsm.c"
         "core/lua_benchmark.c"
         "core/esp_claw_init.c"
+        "core/audio_watchdog.c"
 
         "config/config_manager.c"
         "config/nvs_setup.c"

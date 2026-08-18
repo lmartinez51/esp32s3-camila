@@ -92,6 +92,15 @@ esp_err_t registry_persist_load_all(void);
 esp_err_t registry_delete_device_async(uint32_t id);
 
 /**
+ * @brief Queue an async erase of the legacy BLE profile(s) matching a MAC
+ * (namespace `ble_devices`, keys `D_*`). Runs in the same worker task as the
+ * rest of the NVS persistence so no other task ever touches NVS concurrently.
+ * @param mac 6-byte BLE address.
+ * @return ESP_OK when queued, ESP_ERR_INVALID_ARG for a null/zero mac.
+ */
+esp_err_t registry_delete_ble_profile_async(const uint8_t mac[6]);
+
+/**
  * @brief Queue an async wipe of every persisted device and the namespace
  * metadata (all `dev_*`, `magic`, `version`, `device_count`).
  * @return ESP_OK when queued.

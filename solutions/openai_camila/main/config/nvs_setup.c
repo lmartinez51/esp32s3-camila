@@ -488,11 +488,13 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: tomando lock NVS", mac[0], mac[1]);
     nvs_setup_mutex_init();
     nvs_lock();
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: nvs_open -> %s", mac[0], mac[1], esp_err_to_name(err));
     if (err != ESP_OK)
     {
         nvs_unlock();
@@ -502,6 +504,7 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
     int erased = 0;
     nvs_iterator_t it = NULL;
     esp_err_t find_err = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: iterador -> %s", mac[0], mac[1], esp_err_to_name(find_err));
     while (find_err == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -529,6 +532,7 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
         nvs_commit(h);
     }
     nvs_close(h);
+    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: %d borrados, soltando lock NVS", mac[0], mac[1], erased);
     nvs_unlock();
     return ESP_OK;
 }

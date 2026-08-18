@@ -27,7 +27,7 @@
 
 #define REGISTRY_NVS_NAMESPACE "robot_registry"
 #define REGISTRY_SAVE_QUEUE_LEN 4
-#define REGISTRY_WORKER_STACK   2048
+#define REGISTRY_WORKER_STACK   4096
 #define REGISTRY_WORKER_PRIO    5
 #define REGISTRY_WORKER_CORE    0
 #define REGISTRY_WORKER_IDLE_MS 3000
@@ -38,6 +38,7 @@ typedef enum
     REGISTRY_OP_LOAD_ALL,
     REGISTRY_OP_DELETE_DEVICE,
     REGISTRY_OP_WIPE,
+    REGISTRY_OP_DELETE_BLE_PROFILE,
 } registry_op_t;
 
 typedef struct
@@ -117,7 +118,7 @@ static int registry_persist_count_devices(void)
 {
     int count = 0;
     nvs_iterator_t it = NULL;
-    esp_err_t res = nvs_entry_find(NULL, REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    esp_err_t res = nvs_entry_find("nvs", REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
     while (res == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -202,12 +203,14 @@ static esp_err_t registry_persist_save(const robot_device_persist_t *p)
 
 static esp_err_t registry_persist_erase(uint32_t id)
 {
+    ESP_LOGW(TAG, "ERASE[%08lx]: tomando lock NVS", (unsigned long)id);
     nvs_setup_mutex_init();
     nvs_lock();
 
     esp_err_t err = ESP_OK;
     nvs_handle_t handle;
     const esp_err_t open_err = nvs_open(REGISTRY_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    ESP_LOGW(TAG, "ERASE[%08lx]: nvs_open -> %s", (unsigned long)id, esp_err_to_name(open_err));
     if (open_err != ESP_OK)
     {
         nvs_unlock();
@@ -222,20 +225,25 @@ static esp_err_t registry_persist_erase(uint32_t id)
     {
         err = ESP_OK; /* idempotente: no existir tambien es borrar */
     }
+    ESP_LOGW(TAG, "ERASE[%08lx]: erase_key -> %s", (unsigned long)id, esp_err_to_name(err));
     if (err == ESP_OK)
     {
         err = nvs_commit(handle);
+        ESP_LOGW(TAG, "ERASE[%08lx]: commit 1 -> %s", (unsigned long)id, esp_err_to_name(err));
     }
     if (err == ESP_OK)
     {
         err = registry_persist_write_meta(handle);
+        ESP_LOGW(TAG, "ERASE[%08lx]: write_meta -> %s", (unsigned long)id, esp_err_to_name(err));
     }
     if (err == ESP_OK)
     {
         err = nvs_commit(handle);
+        ESP_LOGW(TAG, "ERASE[%08lx]: commit 2 -> %s", (unsigned long)id, esp_err_to_name(err));
     }
 
     nvs_close(handle);
+    ESP_LOGW(TAG, "ERASE[%08lx]: cerrado, soltando lock NVS", (unsigned long)id);
     nvs_unlock();
 
     if (err == ESP_OK)
@@ -265,7 +273,7 @@ static esp_err_t registry_persist_wipe(void)
 
     int erased = 0;
     nvs_iterator_t it = NULL;
-    esp_err_t res = nvs_entry_find(NULL, REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    esp_err_t res = nvs_entry_find("nvs", REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
     while (res == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -318,7 +326,7 @@ static void registry_persist_load(void)
 
     int loaded = 0;
     nvs_iterator_t it = NULL;
-    esp_err_t res = nvs_entry_find(NULL, REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
+    esp_err_t res = nvs_entry_find("nvs", REGISTRY_NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
     while (res == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -369,7 +377,7 @@ static void registry_worker_task(void *arg)
         if (xQueueReceive(s_registry_queue, &item, pdMS_TO_TICKS(REGISTRY_WORKER_IDLE_MS)) != pdTRUE)
         {
             /* Idle: sin trabajo pendiente. Auto-eliminarse libera el stack
-             * interno (2048 B + TCB) para el resto del runtime; el proximo
+             * interno (4096 B + TCB) para el resto del runtime; el proximo
              * enqueue recrea el worker bajo demanda (nvs_save_worker_task
              * duplicaria infraestructura y gastaria otro stack interno
              * permanente). La cola persiste: nada se pierde. */
@@ -394,6 +402,9 @@ static void registry_worker_task(void *arg)
             continue;
         }
 
+        ESP_LOGW(TAG, "WORKER: op=%d id=%08lx (core %d)", (int)item->op,
+                 (unsigned long)item->id, xPortGetCoreID());
+
         if (item->op == REGISTRY_OP_SAVE_DEVICE)
         {
             registry_persist_save(&item->dev);
@@ -410,7 +421,13 @@ static void registry_worker_task(void *arg)
         {
             registry_persist_wipe();
         }
+        else if (item->op == REGISTRY_OP_DELETE_BLE_PROFILE)
+        {
+            delete_device_profile_by_mac(item->dev.addr);
+        }
 
+        ESP_LOGW(TAG, "WORKER: op=%d completado (stack HWM %u B)", (int)item->op,
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
         heap_caps_free(item);
     }
 }
@@ -475,6 +492,10 @@ static bool registry_persist_collapsible(const registry_queue_item_t *a,
     if (a->op == REGISTRY_OP_SAVE_DEVICE || a->op == REGISTRY_OP_DELETE_DEVICE)
     {
         return a->id == b->id;
+    }
+    if (a->op == REGISTRY_OP_DELETE_BLE_PROFILE)
+    {
+        return memcmp(a->dev.addr, b->dev.addr, sizeof(a->dev.addr)) == 0;
     }
     return true;
 }
@@ -631,6 +652,18 @@ esp_err_t registry_delete_device_async(uint32_t id)
         return ESP_ERR_INVALID_ARG;
     }
     const registry_queue_item_t item = { .op = REGISTRY_OP_DELETE_DEVICE, .id = id };
+    return registry_persist_enqueue(&item);
+}
+
+esp_err_t registry_delete_ble_profile_async(const uint8_t mac[6])
+{
+    if (mac == NULL || mac[0] == 0)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    registry_queue_item_t item = {0};
+    item.op = REGISTRY_OP_DELETE_BLE_PROFILE;
+    memcpy(item.dev.addr, mac, sizeof(item.dev.addr));
     return registry_persist_enqueue(&item);
 }
 

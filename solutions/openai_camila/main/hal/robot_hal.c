@@ -353,6 +353,35 @@ esp_err_t robot_hal_unregister_device(const char *alias)
     return ret;
 }
 
+esp_err_t robot_hal_set_device_alias(const char *current_alias, const char *new_alias)
+{
+    if (!current_alias || current_alias[0] == '\0' || !new_alias || new_alias[0] == '\0' ||
+        s_devices == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
+    if (xSemaphoreTake(s_registry_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    for (size_t i = 0; i < s_device_count; i++)
+    {
+        if (strcasecmp(s_devices[i].alias, current_alias) == 0 ||
+            strcasecmp(s_devices[i].endpoint.endpoint, current_alias) == 0)
+        {
+            ESP_LOGI(TAG, "Alias HAL actualizado: '%s' -> '%s'", s_devices[i].alias, new_alias);
+            strlcpy(s_devices[i].alias, new_alias, sizeof(s_devices[i].alias));
+            ret = ESP_OK;
+            break;
+        }
+    }
+    xSemaphoreGive(s_registry_mutex);
+    return ret;
+}
+
 esp_err_t robot_hal_clear_devices(void)
 {
     if (s_devices == NULL)

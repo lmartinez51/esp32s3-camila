@@ -100,6 +100,14 @@ const robot_device_t *robot_hal_get_device(const char *alias);
 esp_err_t robot_hal_unregister_device(const char *alias);
 
 /**
+ * @brief Rename a registered device in the RAM registry (exact alias or
+ * endpoint match). The persisted registry NVS blob keeps the old alias —
+ * callers re-queue the device with registry_save_device_async() if needed.
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND when not registered.
+ */
+esp_err_t robot_hal_set_device_alias(const char *current_alias, const char *new_alias);
+
+/**
  * @brief Remove every device from the RAM registry.
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE before robot_hal_init().
  */

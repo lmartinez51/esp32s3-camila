@@ -305,6 +305,35 @@ int esp_capture_stop(esp_capture_handle_t capture);
  */
 int esp_capture_close(esp_capture_handle_t capture);
 
+/**
+ * @brief  Get audio source pipeline health (diagnostic only, non-intrusive)
+ *
+ * Reports the last successful AFE fetch timestamp/counter from the audio src
+ * thread, the sink-congestion drop counter, the raw audio queue fill, and
+ * whether the audio src is currently fetching. Used by external watchdogs to
+ * detect AFE stalls without touching the audio pipeline.
+ *
+ * @param[in]   capture     Capture handle
+ * @param[out]  last_fetch_ms  Last successful read_frame/fetch (ms, esp_timer)
+ * @param[out]  fetch_count    Total successful fetch count
+ * @param[out]  drop_frames    Frames discarded by the sink-congestion drop path
+ * @param[out]  q_fill_bytes   Bytes currently queued in the raw audio src queue
+ * @param[out]  q_cap_bytes    Capacity of the raw audio src queue
+ * @param[out]  fetching       true while the audio src thread is running
+ *
+ * @return
+ *       - ESP_CAPTURE_ERR_OK           Success
+ *       - ESP_CAPTURE_ERR_INVALID_ARG  Invalid input argument
+ *
+ */
+int esp_capture_get_audio_src_health(esp_capture_handle_t capture,
+                                     uint32_t *last_fetch_ms,
+                                     uint32_t *fetch_count,
+                                     uint32_t *drop_frames,
+                                     uint32_t *q_fill_bytes,
+                                     uint32_t *q_cap_bytes,
+                                     bool *fetching);
+
 #ifdef __cplusplus
 }
 #endif
