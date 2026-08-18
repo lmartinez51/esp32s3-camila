@@ -41,7 +41,6 @@ static const char *NVS_NAMESPACE = "ble_devices"; // namespace donde guardamos p
  * ------------------------------------------------------------------------- */
 static inline uint8_t ssid_crc8(const char *ssid);
 static void build_device_key(const char *ssid, const uint8_t mac[6], char out_key[DEVICE_KEY_MAX_LEN]);
-static const char *ble_device_type_to_string(ble_device_type_t type);
 
 /* -------------------------------------------------------------------------
  * Implementación
@@ -139,32 +138,6 @@ static void build_device_key(const char *ssid, const uint8_t mac[6], char out_ke
     snprintf(out_key, DEVICE_KEY_MAX_LEN, "D_%02X%02X%02X_%02X", mac[2], mac[1], mac[0], crc);
 }
 
-/**
- * Convierte el tipo de dispositivo BLE a una cadena legible.
- */
-static const char *ble_device_type_to_string(ble_device_type_t type)
-{
-    switch (type)
-    {
-    case BLE_DEVICE_TYPE_UNKNOWN:
-        return "Desconocido";
-    case BLE_DEVICE_TYPE_LIGHT:
-        return "\xF0\x9F\x92\xA1 Luz/LED"; // emoji + texto
-    case BLE_DEVICE_TYPE_FAN:
-        return "\xF0\x9F\x8C\x82 Ventilador";
-    case BLE_DEVICE_TYPE_VACUUM:
-        return "\xF0\x9F\xA7\xB9 Aspiradora";
-    case BLE_DEVICE_TYPE_SPEAKER:
-        return "\xF0\x9F\x94\x8A Altavoz";
-    case BLE_DEVICE_TYPE_THERMOSTAT:
-        return "\xE2\x9A\xA1\xEF\xB8\x8F Termostato";
-    case BLE_DEVICE_TYPE_CUSTOM:
-        return "⚙️ Personalizado";
-    default:
-        return "❓ No definido";
-    }
-}
-
 /* ----------------- Persistencia de perfiles de dispositivo ----------------- */
 
 /**
@@ -209,44 +182,6 @@ esp_err_t save_device_profile(const char *ssid, const device_profile_nvs_t *prof
     nvs_close(nvs_handle);
     nvs_unlock();
     return err;
-}
-
-/**
- * Guarda un dispositivo descubierto durante el escaneo en NVS.
- */
-esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device)
-{
-    if (!device)
-    {
-        ESP_LOGE(TAG, "Dispositivo nulo no válido para guardar en NVS");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    bool has_alias = (device->alias[0] != '\0');
-    if (!has_alias && (!device->is_known || device->char_discovered == false))
-    {
-        ESP_LOGE(TAG, "Dispositivo no válido para guardar en NVS");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const char *current_ssid = wifi_session_get_connected_ssid();
-    if (!current_ssid || strlen(current_ssid) == 0)
-    {
-        ESP_LOGE(TAG, "No hay SSID activo para guardar dispositivo");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    device_profile_nvs_t profile = {0};
-    strlcpy(profile.name, device->name, sizeof(profile.name));
-    strlcpy(profile.alias, device->alias, sizeof(profile.alias));
-    memcpy(profile.addr.val, device->addr, sizeof(profile.addr.val));
-    profile.addr.type = device->addr_type;
-    profile.device_type = device->type;
-    profile.service_uuid = device->service_uuid_128;
-    profile.char_uuid = device->char_uuid_128;
-    profile.requires_bonding = true;
-
-    return save_device_profile(current_ssid, &profile);
 }
 
 /* ----------------- Persistencia NVS asíncrona (fuera de rutas de tiempo real) ----------------- */
@@ -598,201 +533,6 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
     return ESP_OK;
 }
 
-/* ----------------- Listados ----------------- */
-
-/**
- * Lista los dispositivos Bluetooth asociados al SSID actual.
- * Retorna el número de dispositivos listados.
- */
-int list_available_ble_devices(const char *ssid)
-{
-    if (!ssid || strlen(ssid) == 0)
-    {
-        ESP_LOGE(TAG, "SSID inválido para listar dispositivos");
-        return 0;
-    }
-
-    device_profile_nvs_t devices[MAX_DEVICES_PER_LOCATION];
-    int device_count = load_devices_for_ssid(ssid, devices, MAX_DEVICES_PER_LOCATION);
-
-    if (device_count == 0)
-    {
-        ESP_LOGI(TAG, "🔍 No hay dispositivos Bluetooth registrados para la ubicación: %s", ssid);
-        return 0;
-    }
-
-    ESP_LOGI(TAG, "📱 ======================================");
-    ESP_LOGI(TAG, "📱 DISPOSITIVOS BLUETOOTH DISPONIBLES");
-    ESP_LOGI(TAG, "📱 Ubicación: %s", ssid);
-    ESP_LOGI(TAG, "📱 Total encontrados: %d", device_count);
-    ESP_LOGI(TAG, "📱 ======================================");
-
-    for (int i = 0; i < device_count; i++)
-    {
-        const device_profile_nvs_t *device = &devices[i];
-        char mac_str[18];
-        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 device->addr.val[5], device->addr.val[4], device->addr.val[3],
-                 device->addr.val[2], device->addr.val[1], device->addr.val[0]);
-
-        ESP_LOGI(TAG, "📱 [%d] Dispositivo: %s", i + 1, device->name[0] != '\0' ? (const char *)device->name : "Sin nombre");
-        ESP_LOGI(TAG, "    📍 MAC: %s", mac_str);
-        ESP_LOGI(TAG, "    🔋 Tipo: %s", ble_device_type_to_string((ble_device_type_t)device->device_type));
-        ESP_LOGI(TAG, "    🔧 CRC SSID: %02X", device->ssid_crc);
-        ESP_LOGI(TAG, "    ═══════════════════════════════════════");
-    }
-
-    ESP_LOGI(TAG, "📱 Listo para recibir comandos de control!");
-    ESP_LOGI(TAG, "📱 ======================================");
-
-    return device_count;
-}
-
-/**
- * Retorna el número de dispositivos Bluetooth asociados al SSID actual.
- */
-int get_ble_device_count(const char *ssid)
-{
-    if (!ssid || strlen(ssid) == 0)
-        return 0;
-    device_profile_nvs_t temp_devices[MAX_DEVICES_PER_LOCATION];
-    return load_devices_for_ssid(ssid, temp_devices, MAX_DEVICES_PER_LOCATION);
-}
-
-/**
- * Lista los dispositivos Bluetooth asociados al SSID actual en formato JSON.
- * Retorna el número de dispositivos listados.
- */
-int list_devices_as_json(const char *ssid, char *json_buffer, size_t buffer_size)
-{
-    if (!ssid || !json_buffer || buffer_size < 100)
-        return 0;
-
-    device_profile_nvs_t devices[MAX_DEVICES_PER_LOCATION];
-    int device_count = load_devices_for_ssid(ssid, devices, MAX_DEVICES_PER_LOCATION);
-
-    if (device_count == 0)
-    {
-        snprintf(json_buffer, buffer_size, "{\"location\":\"%s\",\"devices\":[]}", ssid);
-        return 0;
-    }
-
-    int offset = snprintf(json_buffer, buffer_size, "{\"location\":\"%s\",\"device_count\":%d,\"devices\":[",
-                          ssid, device_count);
-
-    for (int i = 0; i < device_count && offset < (int)buffer_size - 50; i++)
-    {
-        const device_profile_nvs_t *device = &devices[i];
-        char mac_str[18];
-        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 device->addr.val[5], device->addr.val[4], device->addr.val[3],
-                 device->addr.val[2], device->addr.val[1], device->addr.val[0]);
-
-        offset += snprintf(json_buffer + offset, buffer_size - offset,
-                           "%s{\"name\":\"%s\",\"mac\":\"%s\",\"type\": \"%s\",\"ssid_crc\":\"%02X\",\"id\":%d}",
-                           i > 0 ? "," : "",
-                           device->name[0] != '\0' ? (const char *)device->name : "Unknown",
-                           mac_str,
-                           ble_device_type_to_string((ble_device_type_t)device->device_type),
-                           device->ssid_crc,
-                           i + 1);
-    }
-
-    snprintf(json_buffer + offset, buffer_size - offset, "]}");
-    return device_count;
-}
-
-/* ----------------- Provisioning (base de datos conocida) ----------------- */
-
-/**
- * Guarda un perfil de prueba para un dispositivo Hue en NVS.
- */
-void nvs_provision_hue_test_device(const char *ssid)
-{
-    ESP_LOGW("NVS_SETUP", "--- Ejecutando Provisioning de Prueba para Foco Hue ---");
-
-    const char *device_name = "Philips Hue White Lamp";
-    const uint8_t device_addr_val[6] = {0xF9, 0x59, 0xA9, 0xD1, 0x5C, 0x2E};
-
-    device_profile_nvs_t profile_to_save = {0};
-    strlcpy(profile_to_save.name, device_name, sizeof(profile_to_save.name));
-    memcpy(profile_to_save.addr.val, device_addr_val, sizeof(profile_to_save.addr.val));
-    profile_to_save.addr.type = BLE_ADDR_RANDOM;
-    profile_to_save.device_type = BLE_DEVICE_TYPE_LIGHT;
-    profile_to_save.requires_bonding = true;
-
-    const uint8_t service_uuid_bytes[16] = {0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83, 0xa2, 0x47, 0x00, 0x00, 0xbd, 0x32, 0x2c, 0x93};
-    const uint8_t char_uuid_bytes[16] = {0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83, 0xa2, 0x47, 0x02, 0x00, 0xbd, 0x32, 0x2c, 0x93};
-
-    ble_uuid_init_from_buf((ble_uuid_any_t *)&profile_to_save.service_uuid, service_uuid_bytes, 16);
-    ble_uuid_init_from_buf((ble_uuid_any_t *)&profile_to_save.char_uuid, char_uuid_bytes, 16);
-
-    esp_err_t ret = save_device_profile(ssid, &profile_to_save);
-    if (ret == ESP_OK)
-    {
-        ESP_LOGW("NVS_SETUP", "✅ Perfil de prueba para '%s' guardado en NVS para el SSID '%s'", device_name, ssid);
-    }
-    else
-    {
-        ESP_LOGE("NVS_SETUP", "❌ Error al guardar el perfil de prueba para '%s'", device_name);
-    }
-}
-
-/**
- * Guarda una base de datos de perfiles conocidos en NVS.
- * Actualmente solo incluye un perfil para Philips Hue White.
- */
-void nvs_provision_known_profiles(void)
-{
-    ESP_LOGW("NVS_SETUP", "--- Ejecutando Provisioning de la Base de Datos de Perfiles ---");
-
-    nvs_setup_mutex_init();
-    nvs_lock();
-
-    known_device_profile_t profiles_db[1];
-    int profile_count = 0;
-
-    known_device_profile_t *hue_profile = &profiles_db[profile_count++];
-    strlcpy(hue_profile->profile_name, "Philips Hue White Lamp", sizeof(hue_profile->profile_name));
-    hue_profile->device_type = BLE_DEVICE_TYPE_LIGHT;
-
-    const uint8_t service_uuid_bytes[16] = {0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83, 0xa2, 0x47, 0x00, 0x00, 0xbd, 0x32, 0x2c, 0x93};
-    ble_uuid_init_from_buf((ble_uuid_any_t *)&hue_profile->service_uuid, service_uuid_bytes, 16);
-
-    hue_profile->num_characteristics = 0;
-
-    known_characteristic_profile_t *on_off_char = &hue_profile->characteristics[hue_profile->num_characteristics++];
-    const uint8_t on_off_uuid_bytes[16] = {0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83, 0xa2, 0x47, 0x02, 0x00, 0xbd, 0x32, 0x2c, 0x93};
-    ble_uuid_init_from_buf((ble_uuid_any_t *)&on_off_char->uuid, on_off_uuid_bytes, 16);
-    on_off_char->properties = BLE_GATT_CHR_PROP_WRITE | BLE_GATT_CHR_PROP_READ;
-
-    known_characteristic_profile_t *brightness_char = &hue_profile->characteristics[hue_profile->num_characteristics++];
-    const uint8_t brightness_uuid_bytes[16] = {0xdd, 0x59, 0xb8, 0x55, 0xd4, 0xa8, 0x5a, 0x83, 0xa2, 0x47, 0x03, 0x00, 0xbd, 0x32, 0x2c, 0x93};
-    ble_uuid_init_from_buf((ble_uuid_any_t *)&brightness_char->uuid, brightness_uuid_bytes, 16);
-    brightness_char->properties = BLE_GATT_CHR_PROP_WRITE | BLE_GATT_CHR_PROP_READ;
-
-    nvs_handle_t nvs_handle;
-    if (nvs_open("ble_profiles", NVS_READWRITE, &nvs_handle) != ESP_OK)
-    {
-        ESP_LOGE("NVS_SETUP", "Error abriendo NVS para perfiles");
-        nvs_unlock();
-        return;
-    }
-
-    esp_err_t ret = nvs_set_blob(nvs_handle, "profiles_db", profiles_db, sizeof(known_device_profile_t) * profile_count);
-    if (ret == ESP_OK)
-    {
-        nvs_commit(nvs_handle);
-        ESP_LOGW("NVS_SETUP", "✅ Base de datos con %d perfiles guardada en NVS.", profile_count);
-    }
-    else
-    {
-        ESP_LOGE("NVS_SETUP", "❌ Error guardando la base de datos de perfiles en NVS: %s", esp_err_to_name(ret));
-    }
-    nvs_close(nvs_handle);
-    nvs_unlock();
-}
-
 /* ----------------- Limpieza ----------------- */
 
 /**
@@ -1083,18 +823,6 @@ esp_err_t nvs_save_api_key(const char *api_key)
 
     ESP_LOGI(TAG, "✅ API Key guardada exitosamente en NVS.");
 
-    // Verificar que se guardó correctamente (lectura de verificación)
-    size_t required_size = 0;
-    err = nvs_get_str(nvs_handle, "openai_key", NULL, &required_size);
-    if (err == ESP_OK && required_size == (key_len + 1)) // +1 por null terminator
-    {
-        ESP_LOGI(TAG, "✅ Verificación: API Key almacenada correctamente (%zu bytes)", required_size);
-    }
-    else
-    {
-        ESP_LOGW(TAG, "⚠️ Advertencia: No se pudo verificar el almacenamiento completo");
-    }
-
     // Cerrar handle y liberar mutex
     nvs_close(nvs_handle);
     nvs_unlock();
@@ -1277,51 +1005,6 @@ esp_err_t nvs_delete_api_key(void)
     nvs_unlock();
 
     return err;
-}
-
-/**
- * @brief Información resumida del estado de la API Key en NVS.
- *        Función compacta para verificaciones rápidas.
- *
- * @return ESP_OK si hay una API Key válida almacenada
- *         ESP_ERR_NVS_NOT_FOUND si no hay API Key
- *         ESP_ERR_INVALID_ARG si la API Key es inválida
- */
-esp_err_t get_api_key_status(void)
-{
-    nvs_setup_mutex_init();
-    nvs_lock();
-
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("settings", NVS_READONLY, &nvs_handle);
-
-    if (err != ESP_OK)
-    {
-        nvs_unlock();
-        return ESP_ERR_NVS_NOT_FOUND;
-    }
-
-    char api_key_buffer[200];
-    memset(api_key_buffer, 0, sizeof(api_key_buffer));
-    size_t buffer_size = sizeof(api_key_buffer);
-
-    err = nvs_get_str(nvs_handle, "openai_key", api_key_buffer, &buffer_size);
-    nvs_close(nvs_handle);
-    nvs_unlock();
-
-    if (err != ESP_OK)
-    {
-        return ESP_ERR_NVS_NOT_FOUND;
-    }
-
-    if (api_key_buffer[0] == '\0')
-    {
-        return ESP_ERR_NVS_NOT_FOUND;
-    }
-
-    // Validar formato
-    esp_err_t validation = validate_openai_api_key(api_key_buffer);
-    return validation;
 }
 
 void nvs_set_boot_to_provisioning_flag(void)

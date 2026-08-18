@@ -130,53 +130,6 @@ extern "C"
     esp_err_t delete_device_profile_by_mac(const uint8_t mac[6]);
 
     /**
-     * @brief Lista todos los dispositivos Bluetooth disponibles para un SSID específico.
-     *
-     * Esta función imprime en consola todos los dispositivos BLE guardados en NVS
-     * asociados al SSID proporcionado. Diseñada para ser llamada desde app_main()
-     * al inicio del programa.
-     *
-     * @param ssid SSID de la red WiFi actual para filtrar dispositivos por ubicación
-     * @return int Número de dispositivos encontrados y listados
-     */
-    int list_available_ble_devices(const char *ssid);
-
-    /**
-     * @brief Obtiene el conteo de dispositivos BLE disponibles para un SSID específico.
-     *
-     * Esta función devuelve el número de dispositivos BLE registrados en NVS
-     * asociados al SSID proporcionado.
-     *
-     * @param ssid SSID de la red WiFi actual para filtrar dispositivos por ubicación
-     * @return int Número de dispositivos encontrados
-     */
-    int get_ble_device_count(const char *ssid);
-
-    /**
-     * @brief Lista los dispositivos BLE disponibles en formato JSON.
-     *
-     * Esta función genera una representación JSON de los dispositivos disponibles
-     * que puede ser enviada al AI Chatbot para que conozca qué dispositivos puede controlar.
-     *
-     * @param ssid SSID de la red WiFi actual
-     * @param json_buffer Buffer donde se escribirá el JSON
-     * @param buffer_size Tamaño del buffer
-     * @return int Número de dispositivos incluidos en el JSON
-     */
-    int list_devices_as_json(const char *ssid, char *json_buffer, size_t buffer_size);
-
-    /**
-     * @brief Guarda un dispositivo descubierto durante el escaneo en NVS.
-     *
-     * Esta función guarda un dispositivo BLE que ha sido descubierto durante
-     * un escaneo y que cumple con los criterios para ser almacenado.
-     *
-     * @param device Puntero al dispositivo descubierto a guardar.
-     * @return esp_err_t ESP_OK si se guardó correctamente, otro código de error en caso contrario.
-     */
-    esp_err_t save_discovered_device_to_nvs(const ble_device_info_t *device);
-
-    /**
      * @brief Encola un dispositivo para persistirlo en NVS de forma asíncrona.
      *
      * El guardado real se ejecuta en una tarea dedicada de baja prioridad con
@@ -188,21 +141,6 @@ extern "C"
      * @return esp_err_t ESP_OK si el perfil fue encolado, otro código en caso de error.
      */
     esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device);
-
-    /**
-     * @brief Provisión de un dispositivo de prueba Philips Hue en NVS.
-     *
-     * Esta función crea y guarda un perfil de dispositivo simulado para pruebas,
-     * representando una bombilla Philips Hue con valores predeterminados.
-     *
-     * @param ssid SSID de la red WiFi asociada al dispositivo de prueba.
-     */
-    void nvs_provision_hue_test_device(const char *ssid);
-
-    /**
-     * @brief Provisión de una base de datos inicial de perfiles conocidos en NVS.
-     */
-    void nvs_provision_known_profiles(void);
 
     void clean_invalid_ble_entries_from_nvs(void);
 
