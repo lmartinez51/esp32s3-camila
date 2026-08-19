@@ -74,7 +74,17 @@ typedef struct
 static void handle_get_discovered_ble_devices(const char *call_id, const char *args_json)
 {
     ESP_LOGI(TAG, "Llamada a función detectada! Generando resumen de dispositivos BLE para Chatbot...");
-    char summary_json[1024] = {0};
+    /* Escaneo fresco bajo demanda: los focos Hue solo anuncian BLE dentro de
+     * su ventana de emparejamiento, y el escaneo de fondo queda detenido
+     * mientras WebRTC está activo. Sin este escaneo, la tabla solo tendría
+     * perfiles cargados de NVS y nada nuevo aparecería jamás. */
+    esp_err_t scan_err = ble_device_trigger_ondemand_scan(6000);
+    if (scan_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Escaneo bajo demanda previo al resumen no disponible: %s",
+                 esp_err_to_name(scan_err));
+    }
+    char summary_json[1536] = {0};
     ble_device_get_summary_for_chatbot(summary_json, sizeof(summary_json));
     send_function_output(call_id, summary_json);
     webrtc_request_response_create();
@@ -86,16 +96,20 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     cJSON *dev_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "device_name") : NULL;
     cJSON *act_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "action") : NULL;
     cJSON *dur_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "duration_ms") : NULL;
-    cJSON *ang_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "angle_deg") : NULL;
-    cJSON *axis_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "axis_id") : NULL;
-    cJSON *bright_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "brightness_pct") : NULL;
-    cJSON *proto_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_protocol") : NULL;
-    cJSON *addr_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_address") : NULL;
-    cJSON *cmd_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "ir_command") : NULL;
+    cJSON *ang_item = cJSON_GetObjectItemCaseSensitive(args_root, "angle_deg");
+    if (!ang_item) ang_item = cJSON_GetObjectItemCaseSensitive(args_root, "angle");
+    if (!ang_item) ang_item = cJSON_GetObjectItemCaseSensitive(args_root, "degrees");
+    if (!ang_item) ang_item = cJSON_GetObjectItemCaseSensitive(args_root, "grados");
+    cJSON *axis_item = cJSON_GetObjectItemCaseSensitive(args_root, "axis_id");
+    cJSON *bright_item = cJSON_GetObjectItemCaseSensitive(args_root, "brightness_pct");
+    cJSON *proto_item = cJSON_GetObjectItemCaseSensitive(args_root, "ir_protocol");
+    cJSON *addr_item = cJSON_GetObjectItemCaseSensitive(args_root, "ir_address");
+    cJSON *cmd_item = cJSON_GetObjectItemCaseSensitive(args_root, "ir_command");
 
     const char *dev_str = (cJSON_IsString(dev_item) && dev_item->valuestring) ? dev_item->valuestring : "ELEGOO BT16";
     const char *act_str = (cJSON_IsString(act_item) && act_item->valuestring) ? act_item->valuestring : "FORWARD";
-    uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint : 0;
+    uint32_t dur_val = (cJSON_IsNumber(dur_item)) ? (uint32_t)dur_item->valueint :
+                       ((cJSON_IsString(dur_item) && dur_item->valuestring) ? (uint32_t)atoi(dur_item->valuestring) : 0);
 
     ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
              dev_str, act_str, dur_val);
@@ -103,6 +117,8 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     char ui_sub[64];
     snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    robot_action_id_t hal_action = robot_action_from_string(act_str);
 
     /* 1) Robot HAL normalized path first (drivers land in Phase 2+).
      *    Phase 1: registry is empty ⇒ robot_hal_execute() cannot return
@@ -119,7 +135,50 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     robot_result_t hal_res = {0};
     robot_action_params_t hal_params = {0};
     hal_params.duration_ms = dur_val;
-    hal_params.angle_deg = (cJSON_IsNumber(ang_item)) ? (int32_t)ang_item->valueint : 0;
+
+    int parsed_angle = -1;
+    if (ang_item)
+    {
+        if (cJSON_IsNumber(ang_item))
+        {
+            parsed_angle = ang_item->valueint;
+        }
+        else if (cJSON_IsString(ang_item) && ang_item->valuestring != NULL)
+        {
+            parsed_angle = atoi(ang_item->valuestring);
+        }
+    }
+    else if (hal_action == ROBOT_ACTION_MOVE_HEAD && dur_val <= 180 && dur_item &&
+             (cJSON_IsNumber(dur_item) || cJSON_IsString(dur_item)))
+    {
+        parsed_angle = (int)dur_val;
+    }
+
+    if (hal_action == ROBOT_ACTION_MOVE_HEAD)
+    {
+        if (parsed_angle >= 0 && parsed_angle <= 180)
+        {
+            hal_params.angle_deg = (uint16_t)parsed_angle;
+        }
+        else
+        {
+            /* Missing or invalid angle: Fail fast and inform LLM truthfully */
+            ui_clear_status_message();
+            char resp_buf[256];
+            snprintf(resp_buf, sizeof(resp_buf),
+                     "{\"status\": \"error\", \"message\": \"Debes especificar un ángulo válido entre 0 y 180 grados.\"}");
+            send_function_output(call_id, resp_buf);
+            webrtc_request_response_create();
+            if (args_root) cJSON_Delete(args_root);
+            return;
+        }
+    }
+    else if (parsed_angle >= 0)
+    {
+        if (parsed_angle > 180) parsed_angle = 180;
+        hal_params.angle_deg = (uint16_t)parsed_angle;
+    }
+
     hal_params.axis_id = (cJSON_IsNumber(axis_item)) ? (uint8_t)axis_item->valueint : 0;
     if (cJSON_IsNumber(bright_item))
     {
@@ -153,7 +212,6 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     hal_params.ir_address = (cJSON_IsNumber(addr_item)) ? (uint32_t)addr_item->valueint : 0;
     hal_params.ir_command = (cJSON_IsNumber(cmd_item)) ? (uint32_t)cmd_item->valueint : 0;
 
-    robot_action_id_t hal_action = robot_action_from_string(act_str);
     const bool is_ir_action = (hal_action == ROBOT_ACTION_SEND_IR_COMMAND ||
                                hal_action == ROBOT_ACTION_LEARN_IR_CODE);
     const bool is_light_action = (hal_action == ROBOT_ACTION_TURN_ON ||
@@ -271,14 +329,36 @@ static void handle_set_ble_device_alias(const char *call_id, const char *args_js
     snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
-    /* 1. Asignar alias en la lista BLE en memoria y encolar NVS */
-    esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str);
+    /* 1. Asignar alias en la lista BLE en memoria y encolar NVS.
+     *    detail_out lleva la lista de MACs cuando el nombre es ambiguo. */
+    char alias_detail[384] = "";
+    esp_err_t alias_err = ble_device_set_alias_by_name(dev_str, alias_str, alias_detail, sizeof(alias_detail));
+
+    if (alias_err != ESP_OK)
+    {
+        ui_clear_status_message();
+        char resp_buf[512];
+        if (alias_err == ESP_ERR_NOT_FINISHED && alias_detail[0] != '\0')
+        {
+            snprintf(resp_buf, sizeof(resp_buf),
+                     "{\"status\": \"error\", \"message\": \"%s\"}", alias_detail);
+        }
+        else
+        {
+            snprintf(resp_buf, sizeof(resp_buf),
+                     "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
+        }
+        send_function_output(call_id, resp_buf);
+        webrtc_request_response_create();
+        if (args_root) cJSON_Delete(args_root);
+        return;
+    }
 
     /* 2. Registro directo e inmediato en el HAL registry activo */
-    ble_device_info_t *found = ble_device_find_by_name(dev_str);
+    ble_device_info_t *found = ble_device_find_by_name(alias_str);
     if (!found)
     {
-        found = ble_device_find_by_name(alias_str);
+        found = ble_device_find_by_name(dev_str);
     }
 
     if (found != NULL)
@@ -337,14 +417,24 @@ static void handle_set_ble_device_alias(const char *call_id, const char *args_js
     }
 
     ui_clear_status_message();
-    if (alias_err == ESP_OK || found != NULL)
+    char resp_buf[512];
+    if (found != NULL)
     {
-        send_function_output(call_id, "{\"status\": \"success\", \"message\": \"Alias guardado y registrado en HAL exitosamente\"}");
+        char mac_str[18];
+        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 found->addr[0], found->addr[1], found->addr[2],
+                 found->addr[3], found->addr[4], found->addr[5]);
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"success\", \"message\": \"Alias '%s' asignado a '%s' (MAC: %s)\"}",
+                 alias_str, (found->name[0] != '\0') ? found->name : "Unknown Device", mac_str);
     }
     else
     {
-        send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Dispositivo no encontrado para asignar alias\"}");
+        snprintf(resp_buf, sizeof(resp_buf),
+                 "{\"status\": \"success\", \"message\": \"Alias '%s' guardado y registrado en HAL exitosamente\"}",
+                 alias_str);
     }
+    send_function_output(call_id, resp_buf);
     webrtc_request_response_create();
 
     if (args_root) cJSON_Delete(args_root);
@@ -586,11 +676,11 @@ static void handle_remove_device(const char *call_id, const char *args_json)
 
     /* 1. Registry RAM (HAL) */
     const esp_err_t unreg_err = robot_hal_unregister_device(alias);
-    ESP_LOGW(TAG, "RMV: HAL unregister -> %s", esp_err_to_name(unreg_err));
+    ESP_LOGD(TAG, "RMV: HAL unregister -> %s", esp_err_to_name(unreg_err));
 
     /* 2. Registry NVS (trabajador core 0, asincrono) */
     esp_err_t persist_err = registry_delete_device_async(dev_id);
-    ESP_LOGW(TAG, "RMV: registry_delete_device_async -> %s", esp_err_to_name(persist_err));
+    ESP_LOGD(TAG, "RMV: registry_delete_device_async -> %s", esp_err_to_name(persist_err));
     if (persist_err == ESP_ERR_INVALID_STATE)
     {
         persist_err = ESP_OK; /* sin worker: nada persistido */
@@ -610,18 +700,18 @@ static void handle_remove_device(const char *call_id, const char *args_json)
     if (proto == ROBOT_PROTOCOL_BLE)
     {
         const esp_err_t forget_err = ble_device_forget_by_mac(mac);
-        ESP_LOGW(TAG, "RMV: tabla RAM descubiertos -> %s", esp_err_to_name(forget_err));
+        ESP_LOGD(TAG, "RMV: tabla RAM descubiertos -> %s", esp_err_to_name(forget_err));
         const esp_err_t prof_err = registry_delete_ble_profile_async(mac);
-        ESP_LOGW(TAG, "RMV: perfil BLE encolado -> %s", esp_err_to_name(prof_err));
+        ESP_LOGD(TAG, "RMV: perfil BLE encolado -> %s", esp_err_to_name(prof_err));
         if (prof_err == ESP_ERR_INVALID_STATE)
         {
             delete_device_profile_by_mac(mac);
-            ESP_LOGW(TAG, "RMV: perfil BLE por MAC listo (sin worker)");
+            ESP_LOGD(TAG, "RMV: perfil BLE por MAC listo (sin worker)");
         }
     }
 
     ui_clear_status_message();
-    ESP_LOGW(TAG, "RMV: enviando function_output...");
+    ESP_LOGD(TAG, "RMV: enviando function_output...");
     if (unreg_err == ESP_OK && persist_err == ESP_OK)
     {
         char resp_buf[192];

@@ -284,7 +284,7 @@ static void request_response_create(void)
 
 void webrtc_request_response_create(void)
 {
-    ESP_LOGW(TAG, "RSP_CREATE: creando response.create");
+    ESP_LOGD(TAG, "RSP_CREATE: creando response.create");
     request_response_create();
 }
 
@@ -377,9 +377,9 @@ int send_function_output(const char *call_id, const char *output)
     int ret = -1;
     if (json_string)
     {
-        ESP_LOGW(TAG, "FUNC_OUT: enviando json por data channel");
+        ESP_LOGD(TAG, "FUNC_OUT: enviando json por data channel");
         int err = webrtc_send_json(json_string);
-        ESP_LOGW(TAG, "FUNC_OUT: webrtc_send_json -> %d", err);
+        ESP_LOGD(TAG, "FUNC_OUT: webrtc_send_json -> %d", err);
         if (err == ESP_OK)
         {
             ret = 0;

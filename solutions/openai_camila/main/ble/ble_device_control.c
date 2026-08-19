@@ -153,6 +153,11 @@ static SemaphoreHandle_t s_telemetry_sem = NULL;
 static SemaphoreHandle_t s_cccd_ack_sem = NULL;
 static char s_last_telemetry_buf[64] = {0};
 
+/* ACK del ELEGOO BT16: el sketch Arduino responde "{0_ok}" por la
+ * característica 0x0003 tras procesar cualquier comando N. Se usa para
+ * verificar la recepción de MOVE_HEAD (N:6) y reintentar si se pierde. */
+static volatile bool s_elegoo_ack_ok = false;
+
 static bool ble_central_diagnostic_enabled(void)
 {
     return BLE_CENTRAL_DIAGNOSTIC_ENABLED != 0;
@@ -1260,7 +1265,7 @@ static void attempt_device_reconnection(void)
 
     if (found)
     {
-        ESP_LOGI(TAG, "Intentando reconectar con dispositivo conocido: %s", target_name);
+        ESP_LOGD(TAG, "Intentando reconectar con dispositivo conocido: %s", target_name);
         ble_device_connect(target_addr, target_addr_type);
     }
 }
@@ -1592,14 +1597,20 @@ esp_err_t ble_device_start_scan(uint32_t timeout_ms)
 
     ESP_LOGI(TAG, "Iniciando escaneo de dispositivos BLE...");
 
-    // Configurar parámetros de escaneo
+    // Configurar parámetros de escaneo.
+    // Escaneo ACTIVO (passive=0) para solicitar Scan Responses: dispositivos como
+    // los focos Philips Hue anuncian su nombre ("Hue white lamp") SOLO en el
+    // SCAN_RSP (GAP AD Type 0x09), nunca en el PDU principal de advertisement.
+    // filter_duplicates=0: el filtro de duplicados del controlador descarta el
+    // SCAN_RSP como duplicado de dirección del ADV_IND (misma Advertising Address),
+    // dejando el nombre sin resolver ("Unknown_XXXX").
     struct ble_gap_disc_params disc_params = {
         .filter_policy = 0,
         .limited = 0,
         .passive = 0,
         .itvl = 0x10,   // 10ms
         .window = 0x10, // 10ms
-        .filter_duplicates = 1,
+        .filter_duplicates = 0,
     };
 
     // Iniciar escaneo (BLE_HS_FOREVER o timeout_ms en ms)
@@ -1737,7 +1748,7 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Conectando a dispositivo: %s", device->name);
+    ESP_LOGD(TAG, "Conectando a dispositivo: %s", device->name);
     update_device_state(device_addr, BLE_DEVICE_STATE_CONNECTING);
 
     /* Registrar la intención de conexión: los handlers GAP resuelven el
@@ -1814,6 +1825,11 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
     {
         ble_device_info_t device = {0};
 
+        /* Los dispositivos con el nombre SOLO en el Scan Response (p. ej. Hue)
+         * llegan como reporte SCAN_RSP: se extrae el nombre (AD Type 0x09/0x08)
+         * y se actualiza la entrada Unknown_XXXX ya creada por su ADV_IND. */
+        const bool is_scan_rsp = (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP);
+
         // Copiar dirección y tipo tal cual los entrega NimBLE
         memcpy(device.addr, event->disc.addr.val, sizeof(device.addr));
         device.addr_type = event->disc.addr.type;
@@ -1873,15 +1889,24 @@ static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg)
 
         if (device.name[0] != '\0' && strncmp(device.name, "Unknown_", 8) != 0)
         {
-            ESP_LOGI(TAG, "🔍 Dispositivo nombrado encontrado: %s (RSSI: %d)", device.name, device.rssi);
+            ESP_LOGI(TAG, "🔍 Dispositivo nombrado encontrado: %s (RSSI: %d)%s", device.name, device.rssi,
+                     is_scan_rsp ? " [SCAN_RSP]" : "");
         }
         else
         {
-            ESP_LOGD(TAG, "🔍 Dispositivo encontrado: %s (RSSI: %d)", device.name, device.rssi);
+            ESP_LOGD(TAG, "🔍 Dispositivo encontrado: %s (RSSI: %d)%s", device.name, device.rssi,
+                     is_scan_rsp ? " [SCAN_RSP]" : "");
         }
 
         // Guardar en lista
         add_or_update_discovered_device(&device);
+
+        // El Scan Response solo aporta datos (nombre/tipo) al reporte ADV ya
+        // procesado: NO dispara auto-conexión ni candidatos en este reporte.
+        if (is_scan_rsp)
+        {
+            break;
+        }
 
         // === AUTO-CONEXIÓN INTELIGENTE ===
         if (auto_connection_globally_enabled)
@@ -2127,7 +2152,7 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
     switch (event->type)
     {
     case BLE_GAP_EVENT_CONNECT:
-        ESP_LOGI(TAG, "Evento de conexión recibido (status: %d, handle: %d)",
+        ESP_LOGD(TAG, "Evento de conexión recibido (status: %d, handle: %d)",
                  event->connect.status, event->connect.conn_handle);
 
         // Limpiar el expediente sin importar el resultado, ya que la operación de "conectar" ha terminado
@@ -2164,10 +2189,10 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                     }
 
                     // En lugar de forzar bonding inmediatamente, permite que ocurra naturalmente
-                    ESP_LOGI(TAG, "Connection established for '%s' (handle: %d)", device->name, event->connect.conn_handle);
+                    ESP_LOGD(TAG, "Connection established for '%s' (handle: %d)", device->name, event->connect.conn_handle);
 
                     // NO forzar bonding - dejar que el foco lo inicie si es necesario
-                    ESP_LOGI(TAG, "Saltando iniciación manual de bonding. Procediendo con MTU...");
+                    ESP_LOGD(TAG, "Saltando iniciación manual de bonding. Procediendo con MTU...");
                     int rc_mtu = ble_gattc_exchange_mtu(device->conn_handle, on_mtu_exchange, device);
                     if (rc_mtu == BLE_HS_EALREADY)
                     {
@@ -2237,6 +2262,12 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
 
         if (has_mbuf && om_len > 0 && raw_attr == ELEGOO_NOTIFY_VALUE_HANDLE) {
             char *rx_buf = (char *)raw_buf;
+
+            /* ACK del sketch Arduino tras ejecutar un comando (p. ej. MOVE_HEAD) */
+            if (strstr(rx_buf, "0_ok") != NULL)
+            {
+                s_elegoo_ack_ok = true;
+            }
             char *open_brace = strchr(rx_buf, '{');
             char *close_brace = strchr(rx_buf, '}');
             if (open_brace != NULL && close_brace != NULL && close_brace > open_brace) {
@@ -2770,16 +2801,55 @@ ble_device_info_t *ble_device_find_by_name(const char *name)
         return NULL;
 
     ble_device_info_t *found_device = NULL;
+
+    /* Pass 1: exact or case-insensitive alias match */
     for (int i = 0; i < discovered_count; i++)
     {
-        if (strstr(discovered_devices[i].name, name) != NULL)
+        if (discovered_devices[i].alias[0] != '\0' &&
+            strcasecmp(discovered_devices[i].alias, name) == 0)
         {
             found_device = &discovered_devices[i];
-            break; // Salir del loop sin retornar
+            break;
         }
     }
 
-    xSemaphoreGive(devices_mutex); // SIEMPRE liberar mutex
+    /* Pass 2: MAC match */
+    if (!found_device)
+    {
+        for (int i = 0; i < discovered_count; i++)
+        {
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                     discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+            char mac_no_colons[13];
+            snprintf(mac_no_colons, sizeof(mac_no_colons), "%02X%02X%02X%02X%02X%02X",
+                     discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                     discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+
+            if (strcasecmp(mac_str, name) == 0 || strcasecmp(mac_no_colons, name) == 0 || strcasestr(name, mac_str) != NULL)
+            {
+                found_device = &discovered_devices[i];
+                break;
+            }
+        }
+    }
+
+    /* Pass 3: substring name / alias match */
+    if (!found_device)
+    {
+        for (int i = 0; i < discovered_count; i++)
+        {
+            if (strcasestr(discovered_devices[i].name, name) != NULL ||
+                (discovered_devices[i].alias[0] != '\0' && strcasestr(discovered_devices[i].alias, name) != NULL))
+            {
+                found_device = &discovered_devices[i];
+                break;
+            }
+        }
+    }
+
+    xSemaphoreGive(devices_mutex);
     return found_device;
 }
 
@@ -4036,7 +4106,7 @@ static void smart_ble_discovery_btdevices_task(void *param)
                     // No pausar en la última ráfaga
                     if (i < num_bursts - 1)
                     {
-                        ESP_LOGI(TAG, "⏸️ Pausa de %d ms para ceder paso a WiFi/WebRTC...", pause_between_bursts_ms);
+                        ESP_LOGD(TAG, "⏸️ Pausa de %d ms para ceder paso a WiFi/WebRTC...", pause_between_bursts_ms);
 
                         // PAUSA MÁS LARGA SI MEMORIA BAJA
                         int pause_time = pause_between_bursts_ms;
@@ -4422,7 +4492,7 @@ esp_err_t ble_device_stop_smart_task(void)
 
     if (!smart_discovery_running && !smart_discovery_enabled)
     {
-        ESP_LOGW(TAG, "La tarea BLE inteligente ya esta en reposo");
+        ESP_LOGD(TAG, "La tarea BLE inteligente ya esta en reposo");
         return ESP_OK;
     }
 
@@ -4471,21 +4541,27 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
         return ESP_ERR_TIMEOUT;
     }
 
-    char cat_a[384] = "";
-    char cat_b[384] = "";
-    char cat_c[384] = "";
+    char cat_a[512] = "";
+    char cat_b[768] = "";
+    char cat_c[768] = "";
     int count_a = 0, count_b = 0, count_c = 0;
 
     for (int i = 0; i < discovered_count; i++) {
         const ble_device_info_t *dev = &discovered_devices[i];
 
-        char display_str[96];
+        char mac_str[18];
+        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 dev->addr[0], dev->addr[1], dev->addr[2],
+                 dev->addr[3], dev->addr[4], dev->addr[5]);
+
+        char display_str[128];
         if (dev->alias[0] != '\0') {
-            snprintf(display_str, sizeof(display_str), "%s (%s)", dev->alias, (dev->name[0] != '\0') ? dev->name : "Unknown");
+            snprintf(display_str, sizeof(display_str), "%s (%s, MAC: %s)", dev->alias,
+                     (dev->name[0] != '\0') ? dev->name : "Unknown", mac_str);
         } else if (dev->name[0] != '\0') {
-            snprintf(display_str, sizeof(display_str), "%s", dev->name);
+            snprintf(display_str, sizeof(display_str), "%s (MAC: %s)", dev->name, mac_str);
         } else {
-            snprintf(display_str, sizeof(display_str), "Unknown Device");
+            snprintf(display_str, sizeof(display_str), "Unknown Device (MAC: %s)", mac_str);
         }
 
         bool is_saved_or_configured = dev->is_known || (dev->alias[0] != '\0');
@@ -4510,7 +4586,10 @@ esp_err_t ble_device_get_summary_for_chatbot(char *json_buf, size_t max_len)
             }
         } else {
             if (count_c > 0) strlcat(cat_c, ", ", sizeof(cat_c));
-            snprintf(cat_c + strlen(cat_c), sizeof(cat_c) - strlen(cat_c), "\"%s\"", display_str);
+            snprintf(cat_c + strlen(cat_c), sizeof(cat_c) - strlen(cat_c),
+                     "\"%s (sin configurar, MAC: %s)\"",
+                     (dev->name[0] != '\0') ? dev->name : "Unknown Device",
+                     mac_str);
             count_c++;
         }
     }
@@ -4621,43 +4700,161 @@ esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias)
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias)
+esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias,
+                                       char *detail_out, size_t detail_len)
 {
     if (!current_name || !new_alias) return ESP_ERR_INVALID_ARG;
 
     if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        int target_idx = -1;
+
+        /* Pass 1 (MAC Match): Check if current_name matches a device's MAC address string */
         for (int i = 0; i < discovered_count; i++) {
-            if (strcasestr(discovered_devices[i].name, current_name) != NULL ||
-                (strlen(discovered_devices[i].alias) > 0 && strcasestr(discovered_devices[i].alias, current_name) != NULL) ||
-                (strcasestr(current_name, "ELEGOO") != NULL && strcasestr(discovered_devices[i].name, "ELEGOO") != NULL)) {
-                char old_alias[32];
-                strlcpy(old_alias, discovered_devices[i].alias, sizeof(old_alias));
-                strlcpy(discovered_devices[i].alias, new_alias, sizeof(discovered_devices[i].alias));
-                discovered_devices[i].is_known = true;
-                discovered_devices[i].is_configured = true;
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                     discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+            char mac_no_colons[13];
+            snprintf(mac_no_colons, sizeof(mac_no_colons), "%02X%02X%02X%02X%02X%02X",
+                     discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                     discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
 
-                /* Auto-classify light type if name/alias matches */
-                if (discovered_devices[i].type == BLE_DEVICE_TYPE_UNKNOWN || discovered_devices[i].type == BLE_DEVICE_TYPE_CUSTOM) {
-                    ble_device_type_t det_type = ble_device_detect_type_from_name(discovered_devices[i].name);
-                    if (det_type == BLE_DEVICE_TYPE_UNKNOWN) {
-                        det_type = ble_device_detect_type_from_name(new_alias);
-                    }
-                    if (det_type != BLE_DEVICE_TYPE_UNKNOWN) {
-                        discovered_devices[i].type = det_type;
-                    }
-                }
-
-                esp_err_t nvs_err = nvs_save_discovered_device_async(&discovered_devices[i]);
-                xSemaphoreGive(devices_mutex);
-                if (nvs_err == ESP_OK) {
-                    ESP_LOGI(TAG, "✅ Alias '%s' asignado y ENCOLADO para persistir en NVS para dispositivo '%s'", new_alias, current_name);
-                } else {
-                    ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
-                }
-                ble_sync_alias_to_hal_registry(old_alias, new_alias);
-                return ESP_OK;
+            if (strcasecmp(current_name, mac_str) == 0 ||
+                strcasecmp(current_name, mac_no_colons) == 0 ||
+                strcasestr(current_name, mac_str) != NULL) {
+                target_idx = i;
+                break;
             }
         }
+
+        /* Pass 2 (Unconfigured Generic Name Match): Check if current_name matches dev->name AND dev has NO custom alias */
+        if (target_idx < 0) {
+            int match_count = 0;
+            int first_idx = -1;
+            char mac_list[384] = "";
+            for (int i = 0; i < discovered_count; i++) {
+                bool has_alias = (discovered_devices[i].alias[0] != '\0');
+                if (!has_alias &&
+                    (strcasestr(discovered_devices[i].name, current_name) != NULL ||
+                     (strcasestr(current_name, "ELEGOO") != NULL && strcasestr(discovered_devices[i].name, "ELEGOO") != NULL) ||
+                     (strcasestr(current_name, "Hue") != NULL && strcasestr(discovered_devices[i].name, "Hue") != NULL))) {
+                    if (first_idx < 0) first_idx = i;
+                    match_count++;
+                    if (match_count <= 8) {
+                        char mac_str[18];
+                        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                                 discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                                 discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+                        if (match_count > 1) strlcat(mac_list, ", ", sizeof(mac_list));
+                        strlcat(mac_list, mac_str, sizeof(mac_list));
+                    } else if (match_count == 9) {
+                        strlcat(mac_list, ", ...", sizeof(mac_list));
+                    }
+                }
+            }
+            if (match_count > 1) {
+                if (detail_out) {
+                    snprintf(detail_out, detail_len,
+                             "Hay %d dispositivos '%s' sin configurar (MACs: %s). El nombre es ambiguo; pregunta al usuario cual asignar.",
+                             match_count, (first_idx >= 0 && discovered_devices[first_idx].name[0] != '\0') ? discovered_devices[first_idx].name : current_name,
+                             mac_list);
+                }
+                xSemaphoreGive(devices_mutex);
+                return ESP_ERR_NOT_FINISHED;
+            }
+            if (match_count == 1) target_idx = first_idx;
+        }
+
+        /* Pass 3 (Explicit Alias Match): Check if current_name matches an existing dev->alias */
+        if (target_idx < 0) {
+            for (int i = 0; i < discovered_count; i++) {
+                if (discovered_devices[i].alias[0] != '\0' &&
+                    strcasecmp(discovered_devices[i].alias, current_name) == 0) {
+                    target_idx = i;
+                    break;
+                }
+            }
+        }
+
+        /* Pass 4 (Fallback Generic Match): Match first available matching entry */
+        if (target_idx < 0) {
+            int name_match_count = 0;
+            int name_first_idx = -1;
+            char name_mac_list[384] = "";
+            for (int i = 0; i < discovered_count; i++) {
+                if (strcasestr(discovered_devices[i].name, current_name) != NULL ||
+                    (strcasestr(current_name, "ELEGOO") != NULL && strcasestr(discovered_devices[i].name, "ELEGOO") != NULL) ||
+                    (strcasestr(current_name, "Hue") != NULL && strcasestr(discovered_devices[i].name, "Hue") != NULL)) {
+                    if (name_first_idx < 0) name_first_idx = i;
+                    name_match_count++;
+                    if (name_match_count <= 8) {
+                        char mac_str[18];
+                        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                                 discovered_devices[i].addr[0], discovered_devices[i].addr[1], discovered_devices[i].addr[2],
+                                 discovered_devices[i].addr[3], discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+                        if (name_match_count > 1) strlcat(name_mac_list, ", ", sizeof(name_mac_list));
+                        strlcat(name_mac_list, mac_str, sizeof(name_mac_list));
+                    } else if (name_match_count == 9) {
+                        strlcat(name_mac_list, ", ...", sizeof(name_mac_list));
+                    }
+                }
+            }
+            if (name_match_count > 1) {
+                if (detail_out) {
+                    snprintf(detail_out, detail_len,
+                             "Hay %d dispositivos con nombre '%s' (MACs: %s). Nombre ambiguo; pide al usuario la MAC exacta.",
+                             name_match_count, current_name, name_mac_list);
+                }
+                xSemaphoreGive(devices_mutex);
+                return ESP_ERR_NOT_FINISHED;
+            }
+            if (name_match_count == 1) {
+                target_idx = name_first_idx;
+            } else {
+                for (int i = 0; i < discovered_count; i++) {
+                    if (discovered_devices[i].alias[0] != '\0' && strcasestr(discovered_devices[i].alias, current_name) != NULL) {
+                        target_idx = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (target_idx >= 0) {
+            ble_device_info_t *target_dev = &discovered_devices[target_idx];
+            char old_alias[32];
+            strlcpy(old_alias, target_dev->alias, sizeof(old_alias));
+            strlcpy(target_dev->alias, new_alias, sizeof(target_dev->alias));
+            target_dev->is_known = true;
+            target_dev->is_configured = true;
+
+            /* Auto-classify light type if name/alias matches */
+            if (target_dev->type == BLE_DEVICE_TYPE_UNKNOWN || target_dev->type == BLE_DEVICE_TYPE_CUSTOM) {
+                ble_device_type_t det_type = ble_device_detect_type_from_name(target_dev->name);
+                if (det_type == BLE_DEVICE_TYPE_UNKNOWN) {
+                    det_type = ble_device_detect_type_from_name(new_alias);
+                }
+                if (det_type != BLE_DEVICE_TYPE_UNKNOWN) {
+                    target_dev->type = det_type;
+                }
+            }
+
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     target_dev->addr[0], target_dev->addr[1], target_dev->addr[2],
+                     target_dev->addr[3], target_dev->addr[4], target_dev->addr[5]);
+
+            esp_err_t nvs_err = nvs_save_discovered_device_async(target_dev);
+            xSemaphoreGive(devices_mutex);
+
+            ESP_LOGI(TAG, "🏷️ Alias '%s' successfully assigned to device '%s' (MAC: %s)", new_alias, target_dev->name, mac_str);
+            if (nvs_err != ESP_OK) {
+                ESP_LOGW(TAG, "⚠️ Alias '%s' asignado en RAM, pero encolado NVS devolvió %s", new_alias, esp_err_to_name(nvs_err));
+            }
+            ble_sync_alias_to_hal_registry(old_alias, new_alias);
+            return ESP_OK;
+        }
+
         xSemaphoreGive(devices_mutex);
     }
     return ESP_ERR_NOT_FOUND;
@@ -4754,15 +4951,21 @@ static const ble_command_entry_t *ble_find_command_entry(const char *action)
 
 static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_handle, const ble_command_entry_t *cmd, uint32_t duration_ms)
 {
-    char dynamic_buf[32];
+    /* Buffer de trama: inicializado a cero y null-terminado por snprintf.
+     * El largo enviado es EXACTAMENTE strlen(payload): sin bytes de relleno
+     * ni cola de basura que rompan deserializeJson() en el Arduino. */
+    char dynamic_buf[32] = {0};
     const char *payload = (cmd && cmd->payload_json) ? cmd->payload_json : "{\"N\":2,\"D1\":5}";
     const char *action_name = (cmd && cmd->action_name) ? cmd->action_name : "STOP";
 
-    if (cmd && duration_ms > 0) {
+    if (cmd) {
         if (strcmp(action_name, "MOVE_HEAD") == 0) {
-            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":%lu}", duration_ms);
+            uint32_t angle = duration_ms;
+            if (angle < 5) angle = 5;
+            if (angle > 175) angle = 175;
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":%lu}", angle);
             payload = dynamic_buf;
-        } else if (strcmp(action_name, "SET_AUTONOMOUS_MODE") == 0) {
+        } else if (strcmp(action_name, "SET_AUTONOMOUS_MODE") == 0 && duration_ms > 0) {
             snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":3,\"D1\":%lu}", duration_ms);
             payload = dynamic_buf;
         }
@@ -4770,8 +4973,7 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
 
     uint16_t payload_len = (uint16_t)strlen(payload);
 
-    ESP_LOGD(TAG, "ELEGOO COMMAND:\n  action=%s\n  handle=0x%04X\n  payload=%s",
-             action_name, char_handle, payload);
+    ESP_LOGI(TAG, "📡 Transmitiendo Elegoo raw payload: '%s' (len=%u bytes) a characteristic handle 0x%04X", payload, payload_len, char_handle);
 
     int write_rc = ble_gattc_write_no_rsp_flat(conn_handle, char_handle, payload, payload_len);
 
@@ -5043,7 +5245,48 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         }
     } else {
         if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-            send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
+            if (strcmp(cmd->action_name, "MOVE_HEAD") == 0) {
+                /* MOVE_HEAD (N:6) es el único comando que el sketch Arduino puede
+                 * "perder": suscribimos 0x0004 para capturar el ACK {0_ok} en
+                 * 0x0003 y, si no llega, reintentamos el envío una vez. */
+                bool ack_capable = false;
+                esp_err_t cccd_res = ble_device_enable_notifications(current_conn_handle, ELEGOO_NOTIFY_CCCD_HANDLE);
+                if (cccd_res == ESP_OK) {
+                    if (s_cccd_ack_sem != NULL) {
+                        xSemaphoreTake(s_cccd_ack_sem, pdMS_TO_TICKS(500)); /* margen para el ACK del CCCD */
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(150)); /* estabilización de radio (patrón telemetría) */
+                    ack_capable = true;
+                } else {
+                    ESP_LOGW(TAG, "⚠️ No se pudo habilitar notificaciones para '%s' (rc=%d); envío sin verificación de ACK",
+                             cmd->action_name, cccd_res);
+                }
+
+                const int max_attempts = ack_capable ? 2 : 1;
+                for (int attempt = 0; attempt < max_attempts; attempt++) {
+                    s_elegoo_ack_ok = false;
+                    send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
+
+                    if (ack_capable) {
+                        uint32_t waited_ms = 0;
+                        while (waited_ms < 400 && !s_elegoo_ack_ok) {
+                            vTaskDelay(pdMS_TO_TICKS(25));
+                            waited_ms += 25;
+                        }
+                        if (s_elegoo_ack_ok) {
+                            ESP_LOGI(TAG, "✅ ACK {0_ok} recibido para '%s'", cmd->action_name);
+                            break;
+                        }
+                        if (attempt == 0) {
+                            ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' en 400 ms; reintentando envío...", cmd->action_name);
+                        } else {
+                            ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' tras reintento; el servo puede no haber ejecutado.", cmd->action_name);
+                        }
+                    }
+                }
+            } else {
+                send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
+            }
         } else {
             ESP_LOGW(TAG, "⚠️ No se pudo obtener conexión lista con '%s' para enviar comando", target_dev.name);
         }
@@ -5065,6 +5308,17 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                 free(param);
             }
         }
+    } else if (!cmd->expects_notification) {
+        /* Comandos de un solo disparo (MOVE_HEAD, SET_AUTONOMOUS_MODE, STOP):
+         * esperar el pulso del servo (250 ms) y terminar la conexión EXPLÍCITAMENTE.
+         * Sin esto, el enlace queda abierto de forma permanente (LED rojo fijo),
+         * acaparando el radio y bloqueando otros periféricos BLE (focos Hue). */
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
+            ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) tras ejecución de '%s'...",
+                     current_conn_handle, cmd->action_name);
+            ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
     }
 
     return ESP_OK;
@@ -5072,8 +5326,55 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
 esp_err_t ble_device_trigger_ondemand_scan(uint32_t duration_ms)
 {
+    if (!module_initialized || module_stopping)
+    {
+        ESP_LOGE(TAG, "Módulo no está inicializado");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* No disparar si hay una conexión a demanda en curso: escaneo y conexión
+     * compiten por el GAP y el handler de eventos. */
+    if (g_pending_connection.is_active || (atomic_load(&g_active_ble_operations) > 0))
+    {
+        ESP_LOGW(TAG, "Escaneo bajo demanda omitido: conexión BLE a demanda en curso");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (scanning_active)
+    {
+        ESP_LOGW(TAG, "Escaneo ya activo; el escaneo bajo demanda espera al ciclo en curso");
+        if (scan_complete_semaphore != NULL)
+        {
+            xSemaphoreTake(scan_complete_semaphore, pdMS_TO_TICKS(duration_ms + 2000));
+        }
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "🔍 Disparando escaneo BLE bajo demanda (%lu ms)...", duration_ms);
-    return ble_device_start_smart_task();
+
+    esp_err_t ret = ble_device_start_scan(duration_ms);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Escaneo bajo demanda no pudo iniciar: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    if (scan_complete_semaphore != NULL)
+    {
+        if (xSemaphoreTake(scan_complete_semaphore, pdMS_TO_TICKS(duration_ms + 2000)) != pdTRUE)
+        {
+            ESP_LOGW(TAG, "Escaneo bajo demanda no terminó a tiempo; forzando stop");
+            ble_device_stop_scan();
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    else
+    {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms + 500));
+    }
+
+    ESP_LOGI(TAG, "Escaneo bajo demanda completado.");
+    return ESP_OK;
 }
 
 const char *ble_device_get_last_telemetry(void)

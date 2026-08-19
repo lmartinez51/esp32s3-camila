@@ -337,7 +337,8 @@ extern "C"
      * @brief Assigns a human-friendly alias string (e.g. "Foco Sala", "Robot Elegoo") to a device by MAC address or current name.
      */
     esp_err_t ble_device_set_alias_by_mac(const uint8_t mac[6], const char *alias);
-    esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias);
+    esp_err_t ble_device_set_alias_by_name(const char *current_name, const char *new_alias,
+                                           char *detail_out, size_t detail_len);
 
     /**
      * @brief Removes a device (by MAC) from the RAM discovered-devices table

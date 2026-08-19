@@ -230,7 +230,7 @@ static void nvs_save_worker_task(void *arg)
         else
         {
             /* Inactividad prolongada: liberar stack interno (patrón REG_PERSIST). */
-            ESP_LOGI(TAG, "Worker NVS en reposo: stack interno liberado (%d B + TCB)",
+            ESP_LOGD(TAG, "Worker NVS en reposo: stack interno liberado (%d B + TCB)",
                      NVS_SAVE_WORKER_STACK);
             s_nvs_save_worker = NULL;
             vTaskDelete(NULL);
@@ -268,7 +268,7 @@ esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device)
             ESP_LOGE(TAG, "Error creando cola de guardado NVS");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Cola de guardado NVS creada");
+        ESP_LOGD(TAG, "Cola de guardado NVS creada");
     }
 
     nvs_save_req_t req = {0};
@@ -300,7 +300,7 @@ esp_err_t nvs_save_discovered_device_async(const ble_device_info_t *device)
                                     NULL, 5, &worker, 0) == pdPASS)
         {
             s_nvs_save_worker = worker;
-            ESP_LOGI(TAG, "Tarea de guardado NVS asíncrona creada");
+            ESP_LOGD(TAG, "Tarea de guardado NVS asíncrona creada");
         }
         else
         {
@@ -488,13 +488,13 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: tomando lock NVS", mac[0], mac[1]);
+    ESP_LOGD(TAG, "DEL_PROF[%02x:%02x]: tomando lock NVS", mac[0], mac[1]);
     nvs_setup_mutex_init();
     nvs_lock();
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: nvs_open -> %s", mac[0], mac[1], esp_err_to_name(err));
+    ESP_LOGD(TAG, "DEL_PROF[%02x:%02x]: nvs_open -> %s", mac[0], mac[1], esp_err_to_name(err));
     if (err != ESP_OK)
     {
         nvs_unlock();
@@ -504,7 +504,7 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
     int erased = 0;
     nvs_iterator_t it = NULL;
     esp_err_t find_err = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_BLOB, &it);
-    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: iterador -> %s", mac[0], mac[1], esp_err_to_name(find_err));
+    ESP_LOGD(TAG, "DEL_PROF[%02x:%02x]: iterador -> %s", mac[0], mac[1], esp_err_to_name(find_err));
     while (find_err == ESP_OK)
     {
         nvs_entry_info_t info;
@@ -532,7 +532,7 @@ esp_err_t delete_device_profile_by_mac(const uint8_t mac[6])
         nvs_commit(h);
     }
     nvs_close(h);
-    ESP_LOGW(TAG, "DEL_PROF[%02x:%02x]: %d borrados, soltando lock NVS", mac[0], mac[1], erased);
+    ESP_LOGD(TAG, "DEL_PROF[%02x:%02x]: %d borrados, soltando lock NVS", mac[0], mac[1], erased);
     nvs_unlock();
     return ESP_OK;
 }

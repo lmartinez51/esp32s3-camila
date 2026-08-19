@@ -52,7 +52,7 @@ static const char *const s_robot_tool_jsons[] = {
     "    \"properties\": {"
     "      \"device_name\": {"
     "        \"type\": \"string\","
-    "        \"description\": \"Current name or MAC of the device (e.g., 'ELEGOO BT16').\""
+    "        \"description\": \"The factory name (e.g. 'Hue white lamp', 'ELEGOO BT16') or MAC address of the device to rename. For new unconfigured devices sharing identical factory names, targeting the factory name will automatically claim the unconfigured device.\""
     "      },"
     "      \"new_alias\": {"
     "        \"type\": \"string\","
@@ -236,14 +236,13 @@ static int robot_tools_build_control_robot(cJSON *tools)
     cJSON *duration = cJSON_CreateObject();
     cJSON_AddStringToObject(duration, "type", "integer");
     cJSON_AddStringToObject(duration, "description",
-                            "Optional pulse duration in ms for car motion, or parameter value "
-                            "(e.g. mode 1 for line follower / 2 for obstacle avoidance in SET_AUTONOMOUS_MODE).");
+                            "Optional pulse duration in ms for car motion (default 1000ms for movement, 500ms for turns).");
     cJSON_AddItemToObject(props, "duration_ms", duration);
 
     cJSON *angle = cJSON_CreateObject();
     cJSON_AddStringToObject(angle, "type", "integer");
     cJSON_AddStringToObject(angle, "description",
-                            "Optional servo angle in degrees (0-180) for arm/pan-tilt actions (MOVE_AXIS, ARM_UP, ...).");
+                            "Angle in degrees (0 to 180) for servo head positioning (0=far right, 90=center forward, 180=far left) or robotic arm axis positioning.");
     cJSON_AddItemToObject(props, "angle_deg", angle);
 
     cJSON *axis = cJSON_CreateObject();

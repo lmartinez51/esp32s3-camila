@@ -576,6 +576,9 @@ robot_action_id_t robot_action_from_string(const char *s)
     if (strcasecmp(s, "RIGHT") == 0) return ROBOT_ACTION_RIGHT;
     if (strcasecmp(s, "STOP") == 0) return ROBOT_ACTION_STOP;
     if (strcasecmp(s, "ROTATE") == 0) return ROBOT_ACTION_ROTATE;
+    if (strcasecmp(s, "MOVE_HEAD") == 0) return ROBOT_ACTION_MOVE_HEAD;
+    if (strcasecmp(s, "OBSTACLE_AVOIDANCE") == 0 || strcasecmp(s, "SET_AUTONOMOUS_MODE") == 0) return ROBOT_ACTION_OBSTACLE_AVOIDANCE;
+    if (strcasecmp(s, "LINE_TRACKING") == 0 || strcasecmp(s, "LINE_FOLLOWER") == 0) return ROBOT_ACTION_LINE_TRACKING;
     if (strcasecmp(s, "READ_ULTRASONIC") == 0) return ROBOT_ACTION_READ_ULTRASONIC;
     if (strcasecmp(s, "READ_LINE_SENSOR") == 0) return ROBOT_ACTION_READ_LINE_SENSOR;
     if (strcasecmp(s, "READ_BATTERY") == 0) return ROBOT_ACTION_READ_BATTERY;
@@ -614,6 +617,9 @@ const char *robot_action_to_string(robot_action_id_t action)
     case ROBOT_ACTION_RIGHT: return "RIGHT";
     case ROBOT_ACTION_STOP: return "STOP";
     case ROBOT_ACTION_ROTATE: return "ROTATE";
+    case ROBOT_ACTION_MOVE_HEAD: return "MOVE_HEAD";
+    case ROBOT_ACTION_OBSTACLE_AVOIDANCE: return "OBSTACLE_AVOIDANCE";
+    case ROBOT_ACTION_LINE_TRACKING: return "LINE_TRACKING";
     case ROBOT_ACTION_READ_ULTRASONIC: return "READ_ULTRASONIC";
     case ROBOT_ACTION_READ_LINE_SENSOR: return "READ_LINE_SENSOR";
     case ROBOT_ACTION_READ_BATTERY: return "READ_BATTERY";

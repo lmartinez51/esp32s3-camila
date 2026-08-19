@@ -203,14 +203,14 @@ static esp_err_t registry_persist_save(const robot_device_persist_t *p)
 
 static esp_err_t registry_persist_erase(uint32_t id)
 {
-    ESP_LOGW(TAG, "ERASE[%08lx]: tomando lock NVS", (unsigned long)id);
+    ESP_LOGD(TAG, "ERASE[%08lx]: tomando lock NVS", (unsigned long)id);
     nvs_setup_mutex_init();
     nvs_lock();
 
     esp_err_t err = ESP_OK;
     nvs_handle_t handle;
     const esp_err_t open_err = nvs_open(REGISTRY_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    ESP_LOGW(TAG, "ERASE[%08lx]: nvs_open -> %s", (unsigned long)id, esp_err_to_name(open_err));
+    ESP_LOGD(TAG, "ERASE[%08lx]: nvs_open -> %s", (unsigned long)id, esp_err_to_name(open_err));
     if (open_err != ESP_OK)
     {
         nvs_unlock();
@@ -225,25 +225,25 @@ static esp_err_t registry_persist_erase(uint32_t id)
     {
         err = ESP_OK; /* idempotente: no existir tambien es borrar */
     }
-    ESP_LOGW(TAG, "ERASE[%08lx]: erase_key -> %s", (unsigned long)id, esp_err_to_name(err));
+    ESP_LOGD(TAG, "ERASE[%08lx]: erase_key -> %s", (unsigned long)id, esp_err_to_name(err));
     if (err == ESP_OK)
     {
         err = nvs_commit(handle);
-        ESP_LOGW(TAG, "ERASE[%08lx]: commit 1 -> %s", (unsigned long)id, esp_err_to_name(err));
+        ESP_LOGD(TAG, "ERASE[%08lx]: commit 1 -> %s", (unsigned long)id, esp_err_to_name(err));
     }
     if (err == ESP_OK)
     {
         err = registry_persist_write_meta(handle);
-        ESP_LOGW(TAG, "ERASE[%08lx]: write_meta -> %s", (unsigned long)id, esp_err_to_name(err));
+        ESP_LOGD(TAG, "ERASE[%08lx]: write_meta -> %s", (unsigned long)id, esp_err_to_name(err));
     }
     if (err == ESP_OK)
     {
         err = nvs_commit(handle);
-        ESP_LOGW(TAG, "ERASE[%08lx]: commit 2 -> %s", (unsigned long)id, esp_err_to_name(err));
+        ESP_LOGD(TAG, "ERASE[%08lx]: commit 2 -> %s", (unsigned long)id, esp_err_to_name(err));
     }
 
     nvs_close(handle);
-    ESP_LOGW(TAG, "ERASE[%08lx]: cerrado, soltando lock NVS", (unsigned long)id);
+    ESP_LOGD(TAG, "ERASE[%08lx]: cerrado, soltando lock NVS", (unsigned long)id);
     nvs_unlock();
 
     if (err == ESP_OK)
@@ -402,7 +402,7 @@ static void registry_worker_task(void *arg)
             continue;
         }
 
-        ESP_LOGW(TAG, "WORKER: op=%d id=%08lx (core %d)", (int)item->op,
+        ESP_LOGD(TAG, "WORKER: op=%d id=%08lx (core %d)", (int)item->op,
                  (unsigned long)item->id, xPortGetCoreID());
 
         if (item->op == REGISTRY_OP_SAVE_DEVICE)
@@ -426,7 +426,7 @@ static void registry_worker_task(void *arg)
             delete_device_profile_by_mac(item->dev.addr);
         }
 
-        ESP_LOGW(TAG, "WORKER: op=%d completado (stack HWM %u B)", (int)item->op,
+        ESP_LOGD(TAG, "WORKER: op=%d completado (stack HWM %u B)", (int)item->op,
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
         heap_caps_free(item);
     }

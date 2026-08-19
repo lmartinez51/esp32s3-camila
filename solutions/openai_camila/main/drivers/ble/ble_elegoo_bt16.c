@@ -37,15 +37,19 @@
 #define CONFIG_ROBOT_PROBE_TIMEOUT_MS 400
 #endif
 
-/* Actions this driver can perform (HAL vocabulary). SPIN_180 / MOVE_HEAD /
- * SET_AUTONOMOUS_MODE are NOT part of the HAL vocabulary: they are still
- * served by the adapter's legacy fallback path. */
+/* Actions this driver can perform (HAL vocabulary). */
 #define BLE_ELEGOO_CAP_MASK ( \
     (1u << ROBOT_ACTION_FORWARD) | \
     (1u << ROBOT_ACTION_BACKWARD) | \
     (1u << ROBOT_ACTION_LEFT) | \
     (1u << ROBOT_ACTION_RIGHT) | \
     (1u << ROBOT_ACTION_STOP) | \
+    (1u << ROBOT_ACTION_MOVE_HEAD) | \
+    (1u << ROBOT_ACTION_OBSTACLE_AVOIDANCE) | \
+    (1u << ROBOT_ACTION_LINE_TRACKING) | \
+    (1u << ROBOT_ACTION_PAN_LEFT) | \
+    (1u << ROBOT_ACTION_PAN_RIGHT) | \
+    (1u << ROBOT_ACTION_CENTER) | \
     (1u << ROBOT_ACTION_READ_ULTRASONIC) | \
     (1u << ROBOT_ACTION_READ_LINE_SENSOR))
 
@@ -93,10 +97,55 @@ static esp_err_t ble_elegoo_execute(robot_driver_t *drv,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    const char *action_str = robot_action_to_string(action);
-    uint32_t duration_ms = params ? params->duration_ms : 0;
+    const char *action_str = NULL;
+    uint32_t param_val = 0;
 
-    esp_err_t err = ble_device_send_command_by_alias_or_name(alias, action_str, duration_ms);
+    switch (action)
+    {
+    case ROBOT_ACTION_PAN_LEFT:
+        action_str = "MOVE_HEAD";
+        param_val = 180;
+        break;
+
+    case ROBOT_ACTION_PAN_RIGHT:
+        action_str = "MOVE_HEAD";
+        param_val = 0;
+        break;
+
+    case ROBOT_ACTION_CENTER:
+        action_str = "MOVE_HEAD";
+        param_val = 90;
+        break;
+
+    case ROBOT_ACTION_MOVE_HEAD:
+    {
+        action_str = "MOVE_HEAD";
+        uint16_t angle = params ? params->angle_deg : 90;
+        if (angle > 180)
+        {
+            angle = 180;
+        }
+        param_val = (uint32_t)angle;
+        break;
+    }
+
+    case ROBOT_ACTION_OBSTACLE_AVOIDANCE:
+        action_str = "SET_AUTONOMOUS_MODE";
+        param_val = 2;
+        break;
+
+    case ROBOT_ACTION_LINE_TRACKING:
+        action_str = "SET_AUTONOMOUS_MODE";
+        param_val = 1;
+        break;
+
+    default:
+        action_str = robot_action_to_string(action);
+        param_val = params ? params->duration_ms : 0;
+        break;
+    }
+
+    esp_err_t err = ble_device_send_command_by_alias_or_name(alias, action_str, param_val);
     if (err != ESP_OK)
     {
         out->code = ble_elegoo_map_error(err);

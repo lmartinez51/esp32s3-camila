@@ -61,6 +61,9 @@ typedef enum
     ROBOT_ACTION_RIGHT,
     ROBOT_ACTION_STOP,
     ROBOT_ACTION_ROTATE,
+    ROBOT_ACTION_MOVE_HEAD,
+    ROBOT_ACTION_OBSTACLE_AVOIDANCE,
+    ROBOT_ACTION_LINE_TRACKING,
     ROBOT_ACTION_READ_ULTRASONIC,
     ROBOT_ACTION_READ_LINE_SENSOR,
     ROBOT_ACTION_READ_BATTERY,
@@ -101,7 +104,7 @@ typedef struct
 {
     uint32_t speed;        /* 0..100 (%)                     */
     uint32_t duration_ms;  /* pulse duration / stop-delay    */
-    int32_t  angle_deg;    /* 0..180 for arm/pan-tilt        */
+    uint16_t angle_deg;    /* Servo angle in degrees, 0–180  */
     uint8_t  axis_id;      /* 0=base,1=shoulder,2=elbow,3=gripper */
     uint8_t  ir_protocol;  /* robot_ir_protocol_t (NEC|SONY|RC5|RAW) */
     uint32_t ir_address;

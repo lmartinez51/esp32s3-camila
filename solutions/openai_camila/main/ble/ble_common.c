@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/task.h"
 #include "host/ble_hs.h"
+#include "host/ble_store.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
@@ -13,6 +14,29 @@
 static const char *TAG = "BLE_COMMON";
 
 void ble_store_config_init(void);
+
+static int ble_common_on_store_status(struct ble_store_status_event *event, void *arg)
+{
+    /* Sin espacio para un nuevo bond: liberar TODOS los enlaces almacenados.
+     * Los focos Hue re-parean solos por el flujo make-discoverable de
+     * ble_hue, y el ELEGOO re-enlaza en su proxima conexion, asi que nunca
+     * bloquear un pairing por capacidad del almacen (NimBLE devolveria
+     * BLE_HS_ENOTSUP y el foco pareceria 'que rechaza el pairing'). */
+    if (event->event_code == BLE_STORE_EVENT_FULL ||
+        event->event_code == BLE_STORE_EVENT_OVERFLOW)
+    {
+        int obj_type = (event->event_code == BLE_STORE_EVENT_FULL)
+                           ? event->full.obj_type
+                           : event->overflow.obj_type;
+        ESP_LOGW(TAG, "Almacen de bonds lleno (obj_type %d): liberando enlaces para permitir el nuevo pairing",
+                 obj_type);
+        (void)ble_store_util_delete_all(BLE_STORE_OBJ_TYPE_PEER_SEC, NULL);
+        (void)ble_store_util_delete_all(BLE_STORE_OBJ_TYPE_OUR_SEC, NULL);
+        (void)ble_store_util_delete_all(BLE_STORE_OBJ_TYPE_CCCD, NULL);
+        return 0;
+    }
+    return 0;
+}
 
 static SemaphoreHandle_t sync_semaphore = NULL;
 static SemaphoreHandle_t host_stop_semaphore = NULL;
@@ -155,6 +179,7 @@ esp_err_t ble_common_init(SemaphoreHandle_t ext_sync_semaphore)
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.store_status_cb = ble_common_on_store_status;
 
     ble_store_config_init();
 

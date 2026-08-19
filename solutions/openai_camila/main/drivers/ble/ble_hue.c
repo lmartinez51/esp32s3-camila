@@ -36,6 +36,35 @@
 #define CONFIG_ROBOT_PROBE_TIMEOUT_MS 400
 #endif
 
+/* Nombre legible de un codigo de error NimBLE (numeracion del fork ESP-IDF,
+ * ver host/ble_hs.h). El fork no provee ble_hs_err_str(). */
+static const char *ble_hue_hs_err_name(int rc)
+{
+    switch (rc)
+    {
+    case 0: return "ENOERR";
+    case 1: return "EAGAIN";
+    case 2: return "EALREADY";
+    case 3: return "EINVAL";
+    case 4: return "EMSGSIZE";
+    case 5: return "ENOENT";
+    case 6: return "ENOMEM";
+    case 7: return "ENOTCONN";
+    case 8: return "ENOTSUP";
+    case 9: return "EAPP";
+    case 10: return "EBADDATA";
+    case 11: return "EOS";
+    case 12: return "ECONTROLLER";
+    case 13: return "ETIMEOUT";
+    case 14: return "EDONE";
+    case 15: return "EBUSY";
+    case 16: return "EREJECT";
+    case 17: return "EUNKNOWN";
+    case 18: return "EROLE";
+    default: return "?";
+    }
+}
+
 /* ── 128-bit UUID constants (little-endian for NimBLE) ───────────────── */
 
 /* Service UUID: 932c32bd-de80-47a7-93ab-e652d82b7f1e */
@@ -190,7 +219,7 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
     {
         char uuid_str[BLE_UUID_STR_LEN];
         ble_uuid_to_str(&chr->uuid.u, uuid_str);
-        ESP_LOGI(TAG, "  [disc] Char: %s (handle 0x%04X, props 0x%02X)", uuid_str, chr->val_handle, chr->properties);
+        ESP_LOGD(TAG, "  [disc] Char: %s (handle 0x%04X, props 0x%02X)", uuid_str, chr->val_handle, chr->properties);
     }
 
     if (chr->uuid.u.type == BLE_UUID_TYPE_128)
@@ -199,13 +228,13 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
         {
             ctx->on_off_handle = chr->val_handle;
             ctx->protocol = BLE_LIGHT_PROTO_HUE;
-            ESP_LOGI(TAG, "Philips Hue On/Off characteristic handle: 0x%04X", chr->val_handle);
+            ESP_LOGD(TAG, "Philips Hue On/Off characteristic handle: 0x%04X", chr->val_handle);
         }
         else if (ble_uuid_cmp(&chr->uuid.u, &s_hue_brightness_char_uuid.u) == 0)
         {
             ctx->brightness_handle = chr->val_handle;
             ctx->protocol = BLE_LIGHT_PROTO_HUE;
-            ESP_LOGI(TAG, "Philips Hue Brightness characteristic handle: 0x%04X", chr->val_handle);
+            ESP_LOGD(TAG, "Philips Hue Brightness characteristic handle: 0x%04X", chr->val_handle);
         }
         else if (ble_uuid_cmp(&chr->uuid.u, &s_hue_light_state_char_uuid.u) == 0)
         {
@@ -214,7 +243,7 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
             {
                 ctx->on_off_handle = chr->val_handle;
                 ctx->protocol = BLE_LIGHT_PROTO_HUE;
-                ESP_LOGI(TAG, "Hue Light State (power) characteristic handle: 0x%04X", chr->val_handle);
+                ESP_LOGD(TAG, "Hue Light State (power) characteristic handle: 0x%04X", chr->val_handle);
             }
         }
         else if (ble_uuid_cmp(&chr->uuid.u, &s_hue_light_state_attr_char_uuid.u) == 0)
@@ -224,7 +253,7 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
             {
                 ctx->brightness_handle = chr->val_handle;
                 ctx->protocol = BLE_LIGHT_PROTO_HUE;
-                ESP_LOGI(TAG, "Hue Light State (brightness) characteristic handle: 0x%04X", chr->val_handle);
+                ESP_LOGD(TAG, "Hue Light State (brightness) characteristic handle: 0x%04X", chr->val_handle);
             }
         }
         else if (ble_uuid_cmp(&chr->uuid.u, &s_hue_make_discoverable_char_uuid.u) == 0)
@@ -232,7 +261,7 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
             /* Macro "make discoverable": write 0x01 abre la ventana de
              * emparejamiento (~1 min) necesaria para el bonding SMP. */
             ctx->make_discoverable_handle = chr->val_handle;
-            ESP_LOGI(TAG, "Hue make-discoverable characteristic handle: 0x%04X", chr->val_handle);
+            ESP_LOGD(TAG, "Hue make-discoverable characteristic handle: 0x%04X", chr->val_handle);
         }
     }
     else if (chr->uuid.u.type == BLE_UUID_TYPE_16)
@@ -242,7 +271,7 @@ static int ble_hue_on_chr_disc(uint16_t conn_handle,
         {
             ctx->tuya_handle = chr->val_handle;
             ctx->protocol = BLE_LIGHT_PROTO_TUYA;
-            ESP_LOGI(TAG, "Tuya command characteristic handle: 0x%04X", chr->val_handle);
+            ESP_LOGD(TAG, "Tuya command characteristic handle: 0x%04X", chr->val_handle);
         }
     }
     return 0;
@@ -504,7 +533,7 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
     if (action == ROBOT_ACTION_TOGGLE)
     {
         eff_action = st->last_state ? ROBOT_ACTION_TURN_OFF : ROBOT_ACTION_TURN_ON;
-        ESP_LOGI(TAG, "TOGGLE resuelto a %s (last_state=%s)",
+        ESP_LOGD(TAG, "TOGGLE resuelto a %s (last_state=%s)",
                  robot_action_to_string(eff_action), st->last_state ? "ON" : "OFF");
     }
 
@@ -616,7 +645,7 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
             snprintf(out->detail, sizeof(out->detail), "Error construyendo trama Tuya para '%s'", alias);
             return ESP_FAIL;
         }
-        ESP_LOGI(TAG, "Tuya frame (%u B) -> handle 0x%04X, dp=%u", payload_len, target_handle, dp_id);
+        ESP_LOGD(TAG, "Tuya frame (%u B) -> handle 0x%04X, dp=%u", payload_len, target_handle, dp_id);
     }
     else
     {
@@ -679,20 +708,55 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
      * se abre la ventana de emparejamiento (macro "make discoverable"
      * 97fe6561-2004 = 0x01) y se inicia bonding SMP Just Works. */
     int att_status = 0;
+    char pairing_fail[256] = "";
     err = ble_hue_write_char(conn_handle, target_handle, payload, payload_len, &att_status);
     if (err != ESP_OK && (att_status == 0x105 || att_status == 0x10F))
     {
         ESP_LOGW(TAG, "El foco '%s' exige vínculo cifrado (ATT 0x%03X); abriendo ventana de pairing...",
                  alias, att_status);
 
+        /* 1. El enlace actual quedó marcado por el write no autorizado (algunos
+         * firmware Hue escalan a 'todos los writes requieren auth' tras un
+         * ATT 0x105). Cerrarlo y reconectar limpio antes del flujo canónico:
+         * make-discoverable PRIMERO, SMP después. */
+        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        vTaskDelay(pdMS_TO_TICKS(150));
+        conn_handle = 0;
+        unused_char_handle = 0;
+        err = ble_transport_connect_and_wait(dev->endpoint.addr, dev->endpoint.addr_type,
+                                             3500, 1000,
+                                             &conn_handle, &unused_char_handle);
+        if (err != ESP_OK || conn_handle == 0)
+        {
+            xSemaphoreGive(ctx->mutex);
+            out->code = (err == ESP_ERR_TIMEOUT) ? ROBOT_RESULT_ERR_TIMEOUT : ROBOT_RESULT_ERR_TRANSPORT;
+            snprintf(out->detail, sizeof(out->detail),
+                     "Fallo reconexión para pairing de '%s': %s", alias, esp_err_to_name(err));
+            return err;
+        }
+
+        /* 2. Abrir la ventana "make discoverable" (97fe6561-2004 = 0x01).
+         * Primer intento con respuesta; si el ATT la rechaza (0x105/0x10F),
+         * fallback Write-Without-Response: en ese camino el servidor ATT no
+         * puede devolver error y algunos firmware aceptan la macro igualmente. */
         if (st->make_discoverable_handle > 0)
         {
             uint8_t md = 0x01;
             int md_status = 0;
             esp_err_t md_err = ble_hue_write_char(conn_handle, st->make_discoverable_handle,
                                                   &md, 1, &md_status);
-            ESP_LOGI(TAG, "Hue make-discoverable (0x01 -> 0x%04X): %s (ATT 0x%03X)",
-                     st->make_discoverable_handle, esp_err_to_name(md_err), md_status);
+            if (md_err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "make-discoverable con respuesta falló (ATT 0x%03X); probando Write-Without-Response...",
+                         md_status);
+                int rc = ble_gattc_write_no_rsp_flat(conn_handle, st->make_discoverable_handle, &md, 1);
+                ESP_LOGI(TAG, "Hue make-discoverable no_rsp (0x01 -> 0x%04X): rc=%d",
+                         st->make_discoverable_handle, rc);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Hue make-discoverable (0x01 -> 0x%04X): OK", st->make_discoverable_handle);
+            }
             /* Philips tarda un instante en entrar en modo emparejable */
             vTaskDelay(pdMS_TO_TICKS(800));
         }
@@ -702,21 +766,37 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
         }
 
         int rc_sec = ble_gap_security_initiate(conn_handle);
-        ESP_LOGI(TAG, "ble_gap_security_initiate rc=%d; esperando cifrado...", rc_sec);
 
         bool encrypted = false;
-        for (int i = 0; i < 100; i++) /* hasta ~2500 ms */
+        if (rc_sec != 0)
         {
-            vTaskDelay(pdMS_TO_TICKS(25));
-            struct ble_gap_conn_desc desc;
-            if (ble_gap_conn_find(conn_handle, &desc) != 0)
+            /* NimBLE no pudo iniciar el pairing. BLE_HS_ENOTSUP (8) ocurre
+             * cuando el almacen de bonds esta lleno y no hay store_status_cb
+             * que libere espacio (el foco NO rechazo nada; el pairing ni
+             * siquiera llego a enviarse). */
+            ESP_LOGW(TAG, "ble_gap_security_initiate fallo con rc=%d (%s); el pairing no llego a iniciarse",
+                     rc_sec, ble_hue_hs_err_name(rc_sec));
+            snprintf(pairing_fail, sizeof(pairing_fail),
+                     "no se pudo iniciar el emparejamiento (NimBLE rc=%d: %s). "
+                     "Vuelve a intentarlo en unos segundos.",
+                     rc_sec, ble_hue_hs_err_name(rc_sec));
+        }
+        else
+        {
+            ESP_LOGI(TAG, "ble_gap_security_initiate rc=0; esperando cifrado...");
+            for (int i = 0; i < 100; i++) /* hasta ~2500 ms */
             {
-                break; /* enlace perdido durante SMP */
-            }
-            if (desc.sec_state.encrypted)
-            {
-                encrypted = true;
-                break;
+                vTaskDelay(pdMS_TO_TICKS(25));
+                struct ble_gap_conn_desc desc;
+                if (ble_gap_conn_find(conn_handle, &desc) != 0)
+                {
+                    break; /* enlace perdido durante SMP */
+                }
+                if (desc.sec_state.encrypted)
+                {
+                    encrypted = true;
+                    break;
+                }
             }
         }
 
@@ -735,9 +815,29 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
                 err = ble_hue_write_char(conn_handle, target_handle, payload, payload_len, &att_status);
             }
         }
-        else
+        else if (pairing_fail[0] == '\0')
         {
-            ESP_LOGW(TAG, "No se logro cifrar el enlace (el foco puede exigir la ventana 'make discoverable' desde la app Hue)");
+            /* El foco rechazó el bonding SMP (p. ej. 0x505): en la práctica
+             * ocurre cuando el foco YA está emparejado con otro dispositivo
+             * (teléfono/app Hue). La ventana make-discoverable de la app Hue
+             * o un factory reset real (5 ciclos de encendido) lo desbloquean. */
+            ESP_LOGW(TAG, "No se logro cifrar el enlace: el foco '%s' rechazó el pairing (SMP). "
+                          "Probablemente ya está emparejado con otro dispositivo. "
+                          "Acción sugerida: app Hue -> Ajustes -> Asistentes de voz -> 'Hacer visible', "
+                          "o factory reset del foco (encender/apagar 5 veces seguidas).", alias);
+            snprintf(pairing_fail, sizeof(pairing_fail),
+                     "el foco rechazó el emparejamiento (SMP): probablemente ya está emparejado con "
+                     "otro dispositivo. Acción sugerida: app Hue -> Ajustes -> Asistentes de voz -> "
+                     "'Hacer visible', o factory reset del foco (encender/apagar 5 veces seguidas).");
+        }
+
+        if (!encrypted && pairing_fail[0] != '\0')
+        {
+            /* El pairing falló (rechazo SMP o fallo al iniciarlo) y el foco NO
+             * cambió de estado. err quedó con ESP_OK por la reconexión del
+             * flujo de pairing: forzarlo a fallo para NO reportar éxito falso
+             * al chatbot (la luz sigue como estaba). */
+            err = ESP_FAIL;
         }
     }
 
@@ -765,8 +865,17 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
     if (err != ESP_OK)
     {
         out->code = (err == ESP_ERR_TIMEOUT) ? ROBOT_RESULT_ERR_TIMEOUT : ROBOT_RESULT_ERR_TRANSPORT;
-        snprintf(out->detail, sizeof(out->detail), "Escritura GATT fallida en '%s': %s",
-                 alias, esp_err_to_name(err));
+        if (pairing_fail[0] != '\0')
+        {
+            snprintf(out->detail, sizeof(out->detail),
+                     "NO se pudo ejecutar la accion en la luz '%s': %s La luz no cambio de estado.",
+                     alias, pairing_fail);
+        }
+        else
+        {
+            snprintf(out->detail, sizeof(out->detail), "Escritura GATT fallida en '%s': %s",
+                     alias, esp_err_to_name(err));
+        }
         return err;
     }
 

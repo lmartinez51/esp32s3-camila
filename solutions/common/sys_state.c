@@ -11,7 +11,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#if CONFIG_IDF_TARGET_ESP32S3 && CONFIG_HEAP_TRACING
 #include "esp_heap_trace.h"
+#endif
 #include "esp_heap_caps.h"
 #include "sys_state.h"
 
@@ -108,7 +110,7 @@ void sys_state_show()
 
 void sys_state_heap_trace(bool start)
 {
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 && CONFIG_HEAP_TRACING
     static heap_trace_record_t *trace_record;
     if (trace_record == NULL) {
         trace_record = heap_caps_malloc(NUM_RECORDS * sizeof(heap_trace_record_t), MALLOC_CAP_SPIRAM);
