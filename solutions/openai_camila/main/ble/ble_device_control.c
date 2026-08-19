@@ -153,9 +153,26 @@ static SemaphoreHandle_t s_telemetry_sem = NULL;
 static SemaphoreHandle_t s_cccd_ack_sem = NULL;
 static char s_last_telemetry_buf[64] = {0};
 
-/* ACK del ELEGOO BT16: el sketch Arduino responde "{0_ok}" por la
- * característica 0x0003 tras procesar cualquier comando N. Se usa para
- * verificar la recepción de MOVE_HEAD (N:6) y reintentar si se pierde. */
+/* ── Firmware del dispositivo ELEGOO BT16 (LEER ANTES DE TOCAR ESTO) ──────
+ * El carro ELEGOO Smart Robot Car Kit V3.0 Plus debe ejecutar el firmware
+ * oficial ACTUALIZADO del kit:
+ *
+ *   SmartCar_Core_20210127.ino
+ *   (paquete oficial "ELEGOO Smart Robot Car Kit V3.0 Plus 2021.01.29",
+ *    Lección 6 "SmartCar Multi function"; usa los pines A4/A5 para el
+ *    ultrasonido e implementa el comando N:6 ServoControl + ACK "{0_ok}").
+ *
+ * ATENCIÓN: Elegoo carga de fábrica un firmware "default" MÁS ANTIGUO
+ * (era 2019) que también usa el protocolo JSON {"N":..,"D1":..}, pero NO
+ * implementa el case 6: IGNORA {"N":6,"D1":<ángulo>} (sin movimiento y sin
+ * ACK). Si MOVE_HEAD no responde, el problema NO es este ESP32: flashear
+ * SmartCar_Core_20210127.ino en el UNO R3 (Arduino IDE, placa "Arduino Uno",
+ * desconectando el módulo BT16 durante el upload).
+ *
+ * ACK: tras procesar un comando N, el sketch responde "{0_ok}" por la
+ * característica 0x0003. Se usa para verificar la recepción de MOVE_HEAD
+ * (N:6) y reportar fallo si el ACK no llega a tiempo (ver
+ * ble_device_send_command_by_alias_or_name). */
 static volatile bool s_elegoo_ack_ok = false;
 
 static bool ble_central_diagnostic_enabled(void)
@@ -2263,32 +2280,38 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
         if (has_mbuf && om_len > 0 && raw_attr == ELEGOO_NOTIFY_VALUE_HANDLE) {
             char *rx_buf = (char *)raw_buf;
 
-            /* ACK del sketch Arduino tras ejecutar un comando (p. ej. MOVE_HEAD) */
+            /* ACK del sketch Arduino tras ejecutar un comando (p. ej. MOVE_HEAD):
+             * trama "{0_ok}". NO es telemetría: no se actualiza
+             * s_last_telemetry_buf ni se señala s_telemetry_sem, para que
+             * READ_ULTRASONIC no reciba "ok cm" como si fuera una distancia. */
             if (strstr(rx_buf, "0_ok") != NULL)
             {
                 s_elegoo_ack_ok = true;
             }
-            char *open_brace = strchr(rx_buf, '{');
-            char *close_brace = strchr(rx_buf, '}');
-            if (open_brace != NULL && close_brace != NULL && close_brace > open_brace) {
-                char inner[32] = {0};
-                size_t inner_len = close_brace - open_brace - 1;
-                if (inner_len > 0 && inner_len < sizeof(inner)) {
-                    strncpy(inner, open_brace + 1, inner_len);
-                }
-                char *underscore = strchr(inner, '_');
-                if (underscore != NULL && strlen(underscore + 1) > 0) {
-                    snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s cm", underscore + 1);
+            else
+            {
+                char *open_brace = strchr(rx_buf, '{');
+                char *close_brace = strchr(rx_buf, '}');
+                if (open_brace != NULL && close_brace != NULL && close_brace > open_brace) {
+                    char inner[32] = {0};
+                    size_t inner_len = close_brace - open_brace - 1;
+                    if (inner_len > 0 && inner_len < sizeof(inner)) {
+                        strncpy(inner, open_brace + 1, inner_len);
+                    }
+                    char *underscore = strchr(inner, '_');
+                    if (underscore != NULL && strlen(underscore + 1) > 0) {
+                        snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s cm", underscore + 1);
+                    } else {
+                        snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", inner);
+                    }
                 } else {
-                    snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", inner);
+                    snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", rx_buf);
                 }
-            } else {
-                snprintf(s_last_telemetry_buf, sizeof(s_last_telemetry_buf), "%s", rx_buf);
-            }
 
-            ESP_LOGI(TAG, "✅ [BLE TELEMETRY] Parsed ultrasonic distance = %s", s_last_telemetry_buf);
-            if (s_telemetry_sem != NULL) {
-                xSemaphoreGive(s_telemetry_sem);
+                ESP_LOGI(TAG, "✅ [BLE TELEMETRY] Parsed ultrasonic distance = %s", s_last_telemetry_buf);
+                if (s_telemetry_sem != NULL) {
+                    xSemaphoreGive(s_telemetry_sem);
+                }
             }
         }
         break;
@@ -4894,16 +4917,21 @@ typedef struct {
 } ble_command_entry_t;
 
 static const ble_command_entry_t s_cmd_dispatch_table[] = {
-    { "FORWARD",             "avanzar",          "{\"N\":2,\"D1\":3}", 1000, true,  false },
-    { "BACKWARD",            "retroceder",       "{\"N\":2,\"D1\":4}", 1000, true,  false },
-    { "LEFT",                "izquierda",        "{\"N\":2,\"D1\":1}", 500,  true,  false },
-    { "RIGHT",               "derecha",          "{\"N\":2,\"D1\":2}", 500,  true,  false },
-    { "SPIN_180",            "dar_vuelta_180",   "{\"N\":2,\"D1\":1}", 650,  true,  false },
-    { "STOP",                "detener",          "{\"N\":2,\"D1\":5}", 0,    false, false },
-    { "READ_ULTRASONIC",     "leer_ultrasonico", "{\"N\":21,\"D1\":2}", 0,   false, true  },
-    { "MOVE_HEAD",           "mover_cabeza",     "{\"N\":6,\"D1\":90}", 0,   false, false },
-    { "READ_LINE_SENSOR",    "leer_linea",       "{\"N\":22,\"D1\":1}", 0,   false, true  },
-    { "SET_AUTONOMOUS_MODE", "modo_autonomo",    "{\"N\":3,\"D1\":2}", 0,   false, false },
+    { "FORWARD",             "avanzar",                  "{\"N\":2,\"D1\":3}", 1000, true,  false },
+    { "BACKWARD",            "retroceder",               "{\"N\":2,\"D1\":4}", 1000, true,  false },
+    { "LEFT",                "izquierda",                "{\"N\":2,\"D1\":1}", 500,  true,  false },
+    { "RIGHT",               "derecha",                  "{\"N\":2,\"D1\":2}", 500,  true,  false },
+    { "SPIN_180",            "dar_vuelta_180",           "{\"N\":2,\"D1\":1}", 650,  true,  false },
+    { "STOP",                "detener",                  "{\"N\":2,\"D1\":5}", 0,    false, false },
+    { "READ_ULTRASONIC",     "leer_ultrasonico",         "{\"N\":21,\"D1\":2}", 0,   false, true  },
+    { "MOVE_HEAD",           "mover_cabeza",             "{\"N\":6,\"D1\":90}", 0,   false, false },
+    { "PAN_LEFT",            "cabeza_izquierda",         "{\"N\":6,\"D1\":175}", 0,  false, false },
+    { "PAN_RIGHT",           "cabeza_derecha",           "{\"N\":6,\"D1\":5}", 0,    false, false },
+    { "CENTER",              "centrar_cabeza",           "{\"N\":6,\"D1\":90}", 0,   false, false },
+    { "OBSTACLE_AVOIDANCE",  "evasion_obstaculos",       "{\"N\":3,\"D1\":2}", 0,    false, false },
+    { "LINE_TRACKING",       "seguidor_linea",           "{\"N\":3,\"D1\":1}", 0,    false, false },
+    { "READ_LINE_SENSOR",    "leer_linea",               "{\"N\":22,\"D1\":1}", 0,   false, true  },
+    { "SET_AUTONOMOUS_MODE", "modo_autonomo",            "{\"N\":3,\"D1\":2}", 0,    false, false },
 };
 
 static const size_t s_cmd_dispatch_table_count = sizeof(s_cmd_dispatch_table) / sizeof(s_cmd_dispatch_table[0]);
@@ -4964,6 +4992,21 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
             if (angle < 5) angle = 5;
             if (angle > 175) angle = 175;
             snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":%lu}", angle);
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "PAN_LEFT") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":175}");
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "PAN_RIGHT") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":5}");
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "CENTER") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":6,\"D1\":90}");
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "OBSTACLE_AVOIDANCE") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":3,\"D1\":2}");
+            payload = dynamic_buf;
+        } else if (strcmp(action_name, "LINE_TRACKING") == 0) {
+            snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":3,\"D1\":1}");
             payload = dynamic_buf;
         } else if (strcmp(action_name, "SET_AUTONOMOUS_MODE") == 0 && duration_ms > 0) {
             snprintf(dynamic_buf, sizeof(dynamic_buf), "{\"N\":3,\"D1\":%lu}", duration_ms);
@@ -5039,6 +5082,8 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
 
     ESP_LOGI(TAG, "🤖 Enviando comando BLE: Acción='%s' (CMD='%s') a '%s' por %lu ms",
              action, cmd->action_name, target_dev.name, pulse_duration);
+
+    bool ack_failed = false; /* MOVE_HEAD: true si el ACK {0_ok} no llegó a tiempo */
 
     uint16_t current_conn_handle = target_dev.conn_handle;
     uint16_t write_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : 0x0006;
@@ -5245,10 +5290,15 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
         }
     } else {
         if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-            if (strcmp(cmd->action_name, "MOVE_HEAD") == 0) {
-                /* MOVE_HEAD (N:6) es el único comando que el sketch Arduino puede
-                 * "perder": suscribimos 0x0004 para capturar el ACK {0_ok} en
-                 * 0x0003 y, si no llega, reintentamos el envío una vez. */
+            bool is_head_action = (strcmp(cmd->action_name, "MOVE_HEAD") == 0 ||
+                                   strcmp(cmd->action_name, "PAN_LEFT") == 0 ||
+                                   strcmp(cmd->action_name, "PAN_RIGHT") == 0 ||
+                                   strcmp(cmd->action_name, "CENTER") == 0);
+            if (is_head_action) {
+                /* Comandos de cabeza / servo (N:6): SmartCar_Core_20210127.ino ejecuta delays(500)
+                 * dentro de ServoControl() antes de transmitir "{0_ok}".
+                 * Suscribimos 0x0004 para capturar el ACK {0_ok} en 0x0003
+                 * con una ventana de 1000 ms y sin reintentos prematuros. */
                 bool ack_capable = false;
                 esp_err_t cccd_res = ble_device_enable_notifications(current_conn_handle, ELEGOO_NOTIFY_CCCD_HANDLE);
                 if (cccd_res == ESP_OK) {
@@ -5262,26 +5312,25 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                              cmd->action_name, cccd_res);
                 }
 
-                const int max_attempts = ack_capable ? 2 : 1;
-                for (int attempt = 0; attempt < max_attempts; attempt++) {
-                    s_elegoo_ack_ok = false;
-                    send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
+                s_elegoo_ack_ok = false;
+                send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
 
-                    if (ack_capable) {
-                        uint32_t waited_ms = 0;
-                        while (waited_ms < 400 && !s_elegoo_ack_ok) {
-                            vTaskDelay(pdMS_TO_TICKS(25));
-                            waited_ms += 25;
-                        }
-                        if (s_elegoo_ack_ok) {
-                            ESP_LOGI(TAG, "✅ ACK {0_ok} recibido para '%s'", cmd->action_name);
-                            break;
-                        }
-                        if (attempt == 0) {
-                            ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' en 400 ms; reintentando envío...", cmd->action_name);
-                        } else {
-                            ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' tras reintento; el servo puede no haber ejecutado.", cmd->action_name);
-                        }
+                if (ack_capable) {
+                    uint32_t waited_ms = 0;
+                    while (waited_ms < 1000 && !s_elegoo_ack_ok) {
+                        vTaskDelay(pdMS_TO_TICKS(25));
+                        waited_ms += 25;
+                    }
+                    if (s_elegoo_ack_ok) {
+                        ESP_LOGI(TAG, "✅ ACK {0_ok} recibido para '%s' (%lu ms)", cmd->action_name, waited_ms);
+                    } else {
+                        /* Sin confirmación del UNO: el comando pudo no haberse
+                         * ejecutado (p. ej. firmware de fábrica antiguo sin
+                         * case 6, o BT16 sin respuesta). Se reporta
+                         * ESP_ERR_TIMEOUT para que el HAL/adaptador lo
+                         * informen como fallo y Camila no mienta. */
+                        ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' tras 1000 ms; reportando fallo", cmd->action_name);
+                        ack_failed = true;
                     }
                 }
             } else {
@@ -5309,16 +5358,26 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             }
         }
     } else if (!cmd->expects_notification) {
-        /* Comandos de un solo disparo (MOVE_HEAD, SET_AUTONOMOUS_MODE, STOP):
-         * esperar el pulso del servo (250 ms) y terminar la conexión EXPLÍCITAMENTE.
+        /* Comandos de un solo disparo (MOVE_HEAD, PAN_*, SET_AUTONOMOUS_MODE, STOP):
+         * esperar el pulso del servo (si no se esperó en ACK) y terminar la conexión EXPLÍCITAMENTE.
          * Sin esto, el enlace queda abierto de forma permanente (LED rojo fijo),
          * acaparando el radio y bloqueando otros periféricos BLE (focos Hue). */
-        vTaskDelay(pdMS_TO_TICKS(250));
+        bool is_head_cmd = (strcmp(cmd->action_name, "MOVE_HEAD") == 0 ||
+                            strcmp(cmd->action_name, "PAN_LEFT") == 0 ||
+                            strcmp(cmd->action_name, "PAN_RIGHT") == 0 ||
+                            strcmp(cmd->action_name, "CENTER") == 0);
+        if (!is_head_cmd) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
         if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
             ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) tras ejecución de '%s'...",
                      current_conn_handle, cmd->action_name);
             ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
+    }
+
+    if (ack_failed) {
+        return ESP_ERR_TIMEOUT;
     }
 
     return ESP_OK;

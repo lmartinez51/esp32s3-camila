@@ -233,6 +233,17 @@ static bool robot_hal_alias_matches(const char *registered, const char *search)
         return true;
     }
 
+    /* 4. Sinonimos de robots/carros BLE */
+    bool search_is_car = (strcasecmp(norm_search, "carro") == 0 || strcasecmp(norm_search, "robot") == 0 ||
+                          strcasecmp(norm_search, "carrito") == 0 || strcasecmp(norm_search, "coche") == 0 ||
+                          strcasecmp(norm_search, "elegoo") == 0 || strcasecmp(norm_search, "elegoo bt16") == 0);
+    bool reg_is_car = (strcasecmp(norm_reg, "carro") == 0 || strcasecmp(norm_reg, "robot") == 0 ||
+                       strcasecmp(norm_reg, "carrito") == 0 || strcasecmp(norm_reg, "coche") == 0 ||
+                       strcasecmp(norm_reg, "elegoo") == 0 || strcasecmp(norm_reg, "elegoo bt16") == 0);
+    if (search_is_car && reg_is_car) {
+        return true;
+    }
+
     return false;
 }
 
@@ -269,6 +280,26 @@ const robot_device_t *robot_hal_get_device(const char *alias)
                     ESP_LOGI(TAG, "Dispositivo '%s' encontrado por coincidencia difusa con '%s'",
                              s_devices[i].alias, alias);
                     break;
+                }
+            }
+        }
+
+        /* Pase 3: Coincidencia por categoria si el usuario se refiere al robot/carro */
+        if (found == NULL)
+        {
+            const char *norm_search = robot_hal_normalize_alias(alias);
+            bool search_is_car = (strcasecmp(norm_search, "carro") == 0 || strcasecmp(norm_search, "robot") == 0 ||
+                                  strcasecmp(norm_search, "carrito") == 0 || strcasecmp(norm_search, "coche") == 0 ||
+                                  strcasecmp(norm_search, "elegoo") == 0 || strcasecmp(norm_search, "elegoo bt16") == 0);
+            if (search_is_car) {
+                for (size_t i = 0; i < s_device_count; i++) {
+                    if (s_devices[i].category == ROBOT_CATEGORY_CAR ||
+                        strcmp(s_devices[i].driver_profile_id, "elegoo_bt16") == 0) {
+                        found = &s_devices[i];
+                        ESP_LOGI(TAG, "Dispositivo '%s' seleccionado como coincidencia de robot/carro para '%s'",
+                                 s_devices[i].alias, alias);
+                        break;
+                    }
                 }
             }
         }
