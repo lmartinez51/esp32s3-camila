@@ -60,6 +60,8 @@
 #define BLE_COMMAND_TIMEOUT_MS 1000      // 1 segundos timeout por comando
 #define MAX_KNOWN_PROFILES 10            // Máximo perfiles conocidos en memoria
 #define BLE_CENTRAL_DIAGNOSTIC_ENABLED 1 // Temporal: Habilitar logs detallados para diagnóstico de BLE Central
+#define BLE_ONDEMAND_CONNECT_MAX_RETRIES 3
+#define BLE_ONDEMAND_CONNECT_BACKOFF_MS  120
 
 // Telemetría: ops activas
 #define INCR_ACTIVE_OPS()                                                 \
@@ -2366,14 +2368,10 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "Dispositivo '%s' desconectado (reason: 0x%x); estado -> DISCONNECTED",
                      device->name, event->disconnect.reason);
 
-            if (!device->is_known)
+            /* Decrementar si esta desconexión cierra una op de perfilado smart */
+            if (g_pending_connection.is_profiling)
             {
-                /* Solo decrementar si esta desconexión cierra una op de
-                 * perfilado smart aún en vuelo (la única que INCR ops). */
-                if (g_pending_connection.is_profiling)
-                {
-                    DECR_ACTIVE_OPS();
-                }
+                DECR_ACTIVE_OPS();
                 g_pending_connection.is_profiling = false;
             }
 
@@ -2481,12 +2479,10 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
         ESP_LOGI(TAG, "✅ Perfil aprendido para '%s'. Listo para guardar en NVS.", name_copy);
         // Marcar como conocido en la lista de memoria
         device->is_known = true;
+        const bool was_profiling = g_pending_connection.is_profiling;
         /* La op de perfilado smart concluyó: el dispositivo ya es conocido. */
         g_pending_connection.is_profiling = false;
-        /* KEEP-ALIVE: mantener el enlace en vez de desconectar. Esto evita
-         * re-descubrir GATT (+2.5s) en cada comando: ble_transport reutiliza
-         * la conexión (estado CONNECTED/DISCOVERY_COMPLETE). El enlace se
-         * cierra cuando el peer termina, vía telemetría ELEGOO o al parar el módulo. */
+
         if (device->matched_profile_index == PROFILE_INDEX_ELEGOO ||
             strcasestr(device->name, "ELEGOO") != NULL ||
             strcasestr(device->alias, "Carro") != NULL)
@@ -2499,6 +2495,20 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
                          "ble_hs_cfg.sm_sec_lvl lowered from %d to 0: dispositivo ELEGOO/Carro "
                          "aprendido, telemetría requiere el relax (FIX 9).",
                          prev_sec_lvl);
+            }
+        }
+
+        /* Desconexión explícita post-perfilado: si esta conexión fue iniciada por la tarea
+         * de descubrimiento/perfilado inteligente de arranque (smart discovery), terminamos
+         * el enlace de inmediato para liberar la radio y CPU al 100% antes de que WebRTC inicie. */
+        if (was_profiling)
+        {
+            DECR_ACTIVE_OPS();
+            if (device->conn_handle != BLE_HS_CONN_HANDLE_NONE && device->conn_handle != 0)
+            {
+                ESP_LOGI(TAG, "🔌 Perfilado de arranque completado para '%s' (handle %u). Desconectando para liberar radio...",
+                         name_copy, device->conn_handle);
+                ble_gap_terminate(device->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             }
         }
     }
@@ -5096,122 +5106,146 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                         target_dev.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE));
 
     if (!link_alive) {
-        ESP_LOGI(TAG, "Iniciando conexión bajo demanda con %s...", target_dev.name);
-        ble_log_memory_snapshot("ble_central:ondemand_connect_during_audio");
-
-        /* Drain any stale token left by a previous timed-out operation (mandatory amendment) */
-        if (s_ondemand_conn_sem != NULL) {
-            while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
-        }
-
-        /* Fresh attempt: clear cancellation intent from any previous timeout */
-        g_pending_connection.cancelled = false;
-        g_pending_connection.is_active = true;
-        /* Expediente del intento en curso: necesario para que los callbacks de
-         * error de conexión y de desconexión puedan resolver el dispositivo y
-         * marcar el fallo (sin esto, el estado quedaba atascado en CONNECTING
-         * y la espera por fases agotaba los 8 s con el robot apagado). */
-        memcpy(g_pending_connection.addr, target_dev.addr, 6);
-        g_pending_connection.addr_type = target_dev.addr_type;
-
-        esp_err_t connect_rc = ble_device_connect(target_dev.addr, target_dev.addr_type);
-        if (connect_rc != ESP_OK) {
-            ESP_LOGE(TAG, "❌ ble_device_connect devolvió %s para '%s'", esp_err_to_name(connect_rc), target_dev.name);
-            g_pending_connection.is_active = false;
-            update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
-            return ESP_FAIL;
-        }
-
-        /*
-         * Espera por fases, medida desde cada evento (no desde la petición):
-         *  - Fase 1: establecimiento del enlace (los periféricos lentos como el
-         *    ELEGOO BT16 tardan ~2.5 s solo en enlazar).
-         *  - Fase 2: descubrimiento GATT, con presupuesto propio desde el enlace.
-         * Si cualquiera de las dos fases expira, se ABORTA activamente el enlace
-         * (ble_gap_terminate) y se marca la operación como cancelada para que los
-         * callbacks tardíos no reabran el estado ni dejen conexiones huérfanas.
-         */
-        const uint32_t phase1_timeout_ms = 8000;
-        const uint32_t phase2_timeout_ms = 6000;
-        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-        uint32_t phase1_deadline = now_ms + phase1_timeout_ms;
-        uint32_t phase2_deadline = 0;
-        bool linked = false;
         bool conn_success = false;
-        bool attempt_failed = false;
+        for (int attempt = 1; attempt <= BLE_ONDEMAND_CONNECT_MAX_RETRIES; attempt++) {
+            ESP_LOGI(TAG, "Iniciando conexión bajo demanda con %s (intento %d/%d)...",
+                     target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
+            ble_log_memory_snapshot("ble_central:ondemand_connect_during_audio");
 
-        while (1) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+            /* Drain any stale token left by a previous timed-out operation (mandatory amendment) */
+            if (s_ondemand_conn_sem != NULL) {
+                while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
+            }
 
-            if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                for (int i = 0; i < discovered_count; i++) {
-                    if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
-                        ble_device_info_t *dev = &discovered_devices[i];
-                        if (dev->conn_handle != BLE_HS_CONN_HANDLE_NONE && dev->conn_handle != 0) {
-                            current_conn_handle = dev->conn_handle;
-                            if (!linked) {
-                                linked = true;
-                                phase2_deadline = now_ms + phase2_timeout_ms;
+            /* Fresh attempt: clear cancellation intent from any previous timeout */
+            g_pending_connection.cancelled = false;
+            g_pending_connection.is_active = true;
+            /* Expediente del intento en curso: necesario para que los callbacks de
+             * error de conexión y de desconexión puedan resolver el dispositivo y
+             * marcar el fallo */
+            memcpy(g_pending_connection.addr, target_dev.addr, 6);
+            g_pending_connection.addr_type = target_dev.addr_type;
+
+            esp_err_t connect_rc = ble_device_connect(target_dev.addr, target_dev.addr_type);
+            if (connect_rc != ESP_OK) {
+                ESP_LOGW(TAG, "⚠️ ble_device_connect devolvió %s para '%s' (intento %d/%d)",
+                         esp_err_to_name(connect_rc), target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
+                g_pending_connection.is_active = false;
+                update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+                if (attempt < BLE_ONDEMAND_CONNECT_MAX_RETRIES) {
+                    vTaskDelay(pdMS_TO_TICKS(BLE_ONDEMAND_CONNECT_BACKOFF_MS));
+                    continue;
+                }
+                return ESP_FAIL;
+            }
+
+            /*
+             * Espera por fases, medida desde cada evento (no desde la petición):
+             *  - Fase 1: establecimiento del enlace (1500 ms acotado para permitir
+             *    hasta 3 reintentos antes del watchdog de 6000 ms).
+             *  - Fase 2: descubrimiento GATT (6000 ms presupuesto propio desde el enlace).
+             * Si cualquiera de las dos fases expira, se ABORTA activamente el enlace
+             * (ble_gap_terminate) y se marca la operación como cancelada.
+             */
+            const uint32_t phase1_timeout_ms = 1500;
+            const uint32_t phase2_timeout_ms = 6000;
+            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+            uint32_t phase1_deadline = now_ms + phase1_timeout_ms;
+            uint32_t phase2_deadline = 0;
+            bool linked = false;
+            bool attempt_failed = false;
+
+            while (1) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+                if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    for (int i = 0; i < discovered_count; i++) {
+                        if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
+                            ble_device_info_t *dev = &discovered_devices[i];
+                            if (dev->conn_handle != BLE_HS_CONN_HANDLE_NONE && dev->conn_handle != 0) {
+                                current_conn_handle = dev->conn_handle;
+                                if (!linked) {
+                                    linked = true;
+                                    phase2_deadline = now_ms + phase2_timeout_ms;
+                                }
+                                /* SOLO se considera lista la conexión tras el descubrimiento
+                                 * GATT COMPLETO de esta sesión (DISCOVERY_COMPLETE + perfil
+                                 * válido): escribir antes colisiona con el descubrimiento
+                                 * (EBUSY 6) o apunta a handles sin perfil (ATT 0x07). */
+                                if (dev->char_discovered && dev->char_val_handle > 0 &&
+                                    dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) {
+                                    write_handle = dev->char_val_handle;
+                                    conn_success = true;
+                                }
+                            } else if (linked) {
+                                ESP_LOGW(TAG, "⚠️ El enlace con '%s' se cayó durante la espera GATT.", target_dev.name);
+                                linked = false;
+                            } else if (dev->state != BLE_DEVICE_STATE_CONNECTING) {
+                                /* El intento de conexión ya terminó sin enlace: el
+                                 * callback de error marcó ERROR o el callback de
+                                 * desconexión volvió a DISCONNECTED (p. ej. robot
+                                 * apagado o colisión RF). Abortar de inmediato en
+                                 * lugar de esperar los 1500 ms de la fase 1. */
+                                ESP_LOGW(TAG, "⚠️ Intento %d con '%s' terminó sin enlace (estado %d).",
+                                         attempt, target_dev.name, dev->state);
+                                current_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+                                linked = false;
+                                attempt_failed = true;
+                                break;
                             }
-                            /* SOLO se considera lista la conexión tras el descubrimiento
-                             * GATT COMPLETO de esta sesión (DISCOVERY_COMPLETE + perfil
-                             * válido): escribir antes colisiona con el descubrimiento
-                             * (EBUSY 6) o apunta a handles sin perfil (ATT 0x07). */
-                            if (dev->char_discovered && dev->char_val_handle > 0 &&
-                                dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE) {
-                                write_handle = dev->char_val_handle;
-                                conn_success = true;
-                            }
-                        } else if (linked) {
-                            ESP_LOGW(TAG, "⚠️ El enlace con '%s' se cayó durante la espera GATT.", target_dev.name);
-                            linked = false;
-                        } else if (dev->state != BLE_DEVICE_STATE_CONNECTING) {
-                            /* El intento de conexión ya terminó sin enlace: el
-                             * callback de error marcó ERROR o el callback de
-                             * desconexión volvió a DISCONNECTED (p. ej. robot
-                             * apagado). Abortar de inmediato en lugar de esperar
-                             * los 8 s de la fase 1. */
-                            ESP_LOGW(TAG, "⚠️ Intento de conexión con '%s' terminó sin enlace (estado %d). Abortando espera.",
-                                     target_dev.name, dev->state);
-                            current_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-                            linked = false;
-                            attempt_failed = true;
                             break;
                         }
-                        break;
                     }
+                    xSemaphoreGive(devices_mutex);
                 }
-                xSemaphoreGive(devices_mutex);
-            }
 
-            if (attempt_failed || conn_success) {
-                break;
-            }
-
-            if (linked && phase2_deadline != 0 && now_ms >= phase2_deadline) {
-                ESP_LOGW(TAG, "⚠️ Timeout esperando descubrimiento GATT con '%s' (fase 2: %lu ms)",
-                         target_dev.name, (unsigned long)phase2_timeout_ms);
-                g_pending_connection.cancelled = true;
-                if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-                    ESP_LOGW(TAG, "🔌 Terminando enlace huérfano '%s' (handle %u) para liberar radio...",
-                             target_dev.name, current_conn_handle);
-                    ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                if (attempt_failed || conn_success) {
+                    break;
                 }
+
+                if (linked && phase2_deadline != 0 && now_ms >= phase2_deadline) {
+                    ESP_LOGW(TAG, "⚠️ Timeout esperando descubrimiento GATT con '%s' (fase 2: %lu ms)",
+                             target_dev.name, (unsigned long)phase2_timeout_ms);
+                    g_pending_connection.cancelled = true;
+                    if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
+                        ESP_LOGW(TAG, "🔌 Terminando enlace huérfano '%s' (handle %u) para liberar radio...",
+                                 target_dev.name, current_conn_handle);
+                        ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                    }
+                    break;
+                }
+
+                if (!linked && now_ms >= phase1_deadline) {
+                    ESP_LOGW(TAG, "⚠️ Timeout esperando conexión con '%s' (fase 1: %lu ms); cancelando intento GAP",
+                             target_dev.name, (unsigned long)phase1_timeout_ms);
+                    g_pending_connection.cancelled = true;
+                    ble_gap_conn_cancel();
+                    break;
+                }
+            }
+
+            if (conn_success && current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
+                ESP_LOGI(TAG, "✅ Conexión bajo demanda establecida con '%s' en intento %d/%d (handle=%u, char=0x%04X)",
+                         target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES, current_conn_handle, write_handle);
                 break;
             }
 
-            if (!linked && now_ms >= phase1_deadline) {
-                ESP_LOGW(TAG, "⚠️ Timeout esperando conexión con '%s' (fase 1: %lu ms); cancelando intento GAP",
-                         target_dev.name, (unsigned long)phase1_timeout_ms);
-                g_pending_connection.cancelled = true;
-                ble_gap_conn_cancel();
-                break;
+            /* Limpieza segura entre reintentos */
+            ESP_LOGW(TAG, "⚠️ Intento %d/%d fallido para '%s'. Limpiando estado...",
+                     attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES, target_dev.name);
+            ble_gap_conn_cancel();
+            g_pending_connection.is_active = false;
+            update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+
+            if (attempt < BLE_ONDEMAND_CONNECT_MAX_RETRIES) {
+                vTaskDelay(pdMS_TO_TICKS(BLE_ONDEMAND_CONNECT_BACKOFF_MS));
             }
         }
 
         if (!conn_success || current_conn_handle == BLE_HS_CONN_HANDLE_NONE || current_conn_handle == 0) {
-            ESP_LOGE(TAG, "❌ Conexión bajo demanda fallida con '%s'. Reseteando candado y estado a DISCONNECTED.", target_dev.name);
+            ESP_LOGE(TAG, "❌ Conexión bajo demanda fallida con '%s' tras %d intentos. Reseteando candado y estado a DISCONNECTED.",
+                     target_dev.name, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
             g_pending_connection.is_active = false;
             update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
             return ESP_FAIL;

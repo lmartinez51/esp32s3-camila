@@ -219,129 +219,174 @@ esp_err_t ble_transport_connect_and_wait(const uint8_t addr[6], uint8_t addr_typ
     *out_conn_handle = 0;
     *out_char_handle = 0;
 
-    ble_device_info_t dev = {0};
-    if (!ble_transport_snapshot_device(addr, &dev))
-    {
-        ESP_LOGI(TAG, "connect: MAC %02X:%02X:%02X:%02X:%02X:%02X no esta en snapshot; iniciando conexion on-demand",
-                 addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-        memcpy(dev.addr, addr, 6);
-        dev.addr_type = addr_type;
-        dev.state = BLE_DEVICE_STATE_DISCONNECTED;
-    }
+    const uint32_t eff_phase1_timeout_ms = (phase1_timeout_ms > 0 && phase1_timeout_ms <= BLE_TRANSPORT_PHASE1_TIMEOUT_MS)
+                                           ? phase1_timeout_ms
+                                           : BLE_TRANSPORT_PHASE1_TIMEOUT_MS;
+    const uint32_t eff_phase2_timeout_ms = (phase2_timeout_ms > 0)
+                                           ? phase2_timeout_ms
+                                           : BLE_TRANSPORT_PHASE2_TIMEOUT_MS;
 
-    /* Reutilizar conexion ya lista (el legado ya la descubrio). */
-    if (dev.conn_handle != BLE_HS_CONN_HANDLE_NONE && dev.conn_handle != 0 &&
-        dev.char_discovered && dev.char_val_handle > 0 &&
-        (dev.state == BLE_DEVICE_STATE_CONNECTED || dev.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE))
-    {
-        *out_conn_handle = dev.conn_handle;
-        *out_char_handle = dev.char_val_handle;
-        ESP_LOGI(TAG, "connect: conexion existente reutilizada (handle %u, char 0x%04X)",
-                 dev.conn_handle, dev.char_val_handle);
-        return ESP_OK;
-    }
-
-    /* Iniciar conexion si no hay un intento en curso. */
-    if (dev.state != BLE_DEVICE_STATE_CONNECTING)
-    {
-        esp_err_t rc = ble_device_connect(dev.addr, dev.addr_type);
-        if (rc != ESP_OK)
-        {
-            ESP_LOGW(TAG, "connect: ble_device_connect devolvio %s", esp_err_to_name(rc));
-            return rc;
-        }
-    }
-    else
-    {
-        ESP_LOGI(TAG, "connect: intento ya en curso, entrando en espera por fases");
-    }
-
-    /* Espera por fases (politica C8): abortar si el estado sale de CONNECTING
-     * sin enlace (robot apagado) o si se agota cada presupuesto. */
-    const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    uint32_t phase1_deadline = now_ms + phase1_timeout_ms;
-    uint32_t phase2_deadline = 0;
-    bool linked = false;
-    bool conn_success = false;
-    bool attempt_failed = false;
     uint16_t conn_handle = 0;
     uint16_t char_handle = 0;
+    bool conn_success = false;
 
-    while (1)
+    for (int attempt = 1; attempt <= (int)BLE_TRANSPORT_MAX_RETRIES; attempt++)
     {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000ULL);
-
-        ble_device_info_t snap = {0};
-        if (ble_transport_snapshot_device(addr, &snap))
+        ble_device_info_t dev = {0};
+        char dev_name[BLE_DEVICE_MAX_NAME_LEN] = "device";
+        if (ble_transport_snapshot_device(addr, &dev))
         {
-            if (snap.conn_handle != BLE_HS_CONN_HANDLE_NONE && snap.conn_handle != 0)
+            if (dev.name[0] != '\0')
             {
-                conn_handle = snap.conn_handle;
-                if (!linked)
+                strlcpy(dev_name, dev.name, sizeof(dev_name));
+            }
+            /* Reutilizar conexion ya lista (el legado ya la descubrio). */
+            if (dev.conn_handle != BLE_HS_CONN_HANDLE_NONE && dev.conn_handle != 0 &&
+                dev.char_discovered && dev.char_val_handle > 0 &&
+                (dev.state == BLE_DEVICE_STATE_CONNECTED || dev.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE))
+            {
+                *out_conn_handle = dev.conn_handle;
+                *out_char_handle = dev.char_val_handle;
+                ESP_LOGI(TAG, "connect: conexion existente reutilizada para '%s' (handle %u, char 0x%04X)",
+                         dev_name, dev.conn_handle, dev.char_val_handle);
+                return ESP_OK;
+            }
+        }
+        else
+        {
+            ESP_LOGI(TAG, "connect: MAC %02X:%02X:%02X:%02X:%02X:%02X no esta en snapshot; iniciando conexion on-demand",
+                     addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+            memcpy(dev.addr, addr, 6);
+            dev.addr_type = addr_type;
+            dev.state = BLE_DEVICE_STATE_DISCONNECTED;
+        }
+
+        if (attempt > 1)
+        {
+            ESP_LOGW(TAG, "🔄 Retrying BLE transport connection to '%s' (attempt %d/%d)...",
+                     dev_name, attempt, (int)BLE_TRANSPORT_MAX_RETRIES);
+        }
+        else
+        {
+            ESP_LOGI(TAG, "connect: iniciando intento %d/%d para '%s'",
+                     attempt, (int)BLE_TRANSPORT_MAX_RETRIES, dev_name);
+        }
+
+        /* Iniciar conexion si no hay un intento en curso. */
+        if (dev.state != BLE_DEVICE_STATE_CONNECTING)
+        {
+            esp_err_t rc = ble_device_connect(dev.addr, dev.addr_type);
+            if (rc != ESP_OK)
+            {
+                ESP_LOGW(TAG, "connect: ble_device_connect devolvio %s para '%s' (intento %d/%d)",
+                         esp_err_to_name(rc), dev_name, attempt, (int)BLE_TRANSPORT_MAX_RETRIES);
+                if (attempt < (int)BLE_TRANSPORT_MAX_RETRIES)
                 {
-                    linked = true;
-                    phase2_deadline = now + phase2_timeout_ms;
+                    vTaskDelay(pdMS_TO_TICKS(BLE_TRANSPORT_RETRY_BACKOFF_MS));
+                    continue;
                 }
-                if (snap.char_discovered && snap.char_val_handle > 0 &&
-                    (snap.state == BLE_DEVICE_STATE_CONNECTED || snap.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE))
+                return rc;
+            }
+        }
+        else
+        {
+            ESP_LOGI(TAG, "connect: intento ya en curso, entrando en espera por fases");
+        }
+
+        /* Espera por fases (politica C8): abortar si el estado sale de CONNECTING
+         * sin enlace (robot apagado) o si se agota cada presupuesto. */
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        uint32_t phase1_deadline = now_ms + eff_phase1_timeout_ms;
+        uint32_t phase2_deadline = 0;
+        bool linked = false;
+        bool attempt_failed = false;
+
+        while (1)
+        {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
+            ble_device_info_t snap = {0};
+            if (ble_transport_snapshot_device(addr, &snap))
+            {
+                if (snap.conn_handle != BLE_HS_CONN_HANDLE_NONE && snap.conn_handle != 0)
                 {
-                    char_handle = snap.char_val_handle;
-                    conn_success = true;
+                    conn_handle = snap.conn_handle;
+                    if (!linked)
+                    {
+                        linked = true;
+                        phase2_deadline = now + eff_phase2_timeout_ms;
+                    }
+                    if (snap.char_discovered && snap.char_val_handle > 0 &&
+                        (snap.state == BLE_DEVICE_STATE_CONNECTED || snap.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE))
+                    {
+                        char_handle = snap.char_val_handle;
+                        conn_success = true;
+                    }
+                }
+                else if (linked)
+                {
+                    ESP_LOGW(TAG, "connect: el enlace con '%s' se cayo durante la espera GATT", dev_name);
+                    linked = false;
+                }
+                else if (snap.state != BLE_DEVICE_STATE_CONNECTING)
+                {
+                    /* El intento ya termino sin enlace (error/desconexion):
+                     * abortar de inmediato en lugar de agotar la fase 1. */
+                    ESP_LOGW(TAG, "connect: intento %d con '%s' termino sin enlace (estado %d). Abortando.",
+                             attempt, dev_name, (int)snap.state);
+                    attempt_failed = true;
                 }
             }
-            else if (linked)
+
+            if (attempt_failed || conn_success)
             {
-                ESP_LOGW(TAG, "connect: el enlace se cayo durante la espera GATT");
-                linked = false;
+                break;
             }
-            else if (snap.state != BLE_DEVICE_STATE_CONNECTING)
+
+            if (linked && phase2_deadline != 0 && now >= phase2_deadline)
             {
-                /* El intento ya termino sin enlace (error/desconexion):
-                 * abortar de inmediato en lugar de agotar la fase 1. */
-                ESP_LOGW(TAG, "connect: el intento termino sin enlace (estado %d). Abortando.",
-                         (int)snap.state);
-                attempt_failed = true;
+                ESP_LOGW(TAG, "connect: timeout GATT con '%s' (fase 2: %lu ms)",
+                         dev_name, (unsigned long)eff_phase2_timeout_ms);
+                if (conn_handle != BLE_HS_CONN_HANDLE_NONE && conn_handle != 0)
+                {
+                    ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                }
+                break;
+            }
+
+            if (!linked && now >= phase1_deadline)
+            {
+                ESP_LOGW(TAG, "connect: timeout de enlace con '%s' (fase 1: %lu ms); cancelando intento GAP",
+                         dev_name, (unsigned long)eff_phase1_timeout_ms);
+                int rc_cancel = ble_gap_conn_cancel();
+                if (rc_cancel != 0 && rc_cancel != BLE_HS_EALREADY)
+                {
+                    ESP_LOGD(TAG, "ble_gap_conn_cancel rc=%d", rc_cancel);
+                }
+                break;
             }
         }
 
-        if (attempt_failed || conn_success)
+        if (conn_success && conn_handle != BLE_HS_CONN_HANDLE_NONE && conn_handle != 0)
         {
-            break;
+            *out_conn_handle = conn_handle;
+            *out_char_handle = char_handle;
+            ESP_LOGI(TAG, "connect: lista para '%s' (handle %u, char 0x%04X) en intento %d/%d",
+                     dev_name, conn_handle, char_handle, attempt, (int)BLE_TRANSPORT_MAX_RETRIES);
+            return ESP_OK;
         }
 
-        if (linked && phase2_deadline != 0 && now >= phase2_deadline)
+        /* Intento fallido: cancelar GAP y aplicar backoff antes de reintentar */
+        ble_gap_conn_cancel();
+        if (attempt < (int)BLE_TRANSPORT_MAX_RETRIES)
         {
-            ESP_LOGW(TAG, "connect: timeout GATT (fase 2: %lu ms)", (unsigned long)phase2_timeout_ms);
-            if (conn_handle != BLE_HS_CONN_HANDLE_NONE && conn_handle != 0)
-            {
-                ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-            }
-            break;
-        }
-
-        if (!linked && now >= phase1_deadline)
-        {
-            ESP_LOGW(TAG, "connect: timeout de enlace (fase 1: %lu ms); cancelando intento GAP para evitar conexion zombi", (unsigned long)phase1_timeout_ms);
-            int rc_cancel = ble_gap_conn_cancel();
-            if (rc_cancel != 0 && rc_cancel != BLE_HS_EALREADY)
-            {
-                ESP_LOGD(TAG, "ble_gap_conn_cancel rc=%d", rc_cancel);
-            }
-            break;
+            vTaskDelay(pdMS_TO_TICKS(BLE_TRANSPORT_RETRY_BACKOFF_MS));
         }
     }
 
-    if (!conn_success || conn_handle == BLE_HS_CONN_HANDLE_NONE || conn_handle == 0)
-    {
-        ESP_LOGE(TAG, "connect: conexion bajo demanda fallida");
-        return ESP_FAIL;
-    }
-
-    *out_conn_handle = conn_handle;
-    *out_char_handle = char_handle;
-    ESP_LOGI(TAG, "connect: lista (handle %u, char 0x%04X)", conn_handle, char_handle);
-    return ESP_OK;
+    ESP_LOGE(TAG, "connect: conexion bajo demanda fallida tras %d intentos", (int)BLE_TRANSPORT_MAX_RETRIES);
+    return ESP_FAIL;
 }
 
 /* ── Raw I/O ───────────────────────────────────────────────────────────── */
