@@ -542,6 +542,8 @@ esp_err_t robot_hal_execute(const char *alias,
         return ESP_ERR_TIMEOUT;
     }
 
+    const char *target_alias = (dev && dev->alias[0] != '\0') ? dev->alias : alias;
+
     /* Fail-fast probe (Phase 3): skip only while the presence cache is
      * fresh. Absent results are never cached, so an offline device gets a
      * <500 ms answer on every command. */
@@ -562,15 +564,15 @@ esp_err_t robot_hal_execute(const char *alias,
             esp_err_t perr = drv->probe(drv, &dev->endpoint, &present);
             if (perr == ESP_OK && !present)
             {
-                robot_hal_set_device_presence(alias, false);
+                robot_hal_set_device_presence(target_alias, false);
                 out->code = ROBOT_RESULT_ERR_OFFLINE;
                 snprintf(out->detail, sizeof(out->detail),
-                         "El dispositivo '%s' no esta encendido o fuera de alcance", alias);
+                         "El dispositivo '%s' no esta encendido o fuera de alcance", target_alias);
                 return ESP_OK; /* handled: caller must NOT fall back */
             }
             if (perr == ESP_OK && present)
             {
-                robot_hal_set_device_presence(alias, true);
+                robot_hal_set_device_presence(target_alias, true);
             }
         }
     }
@@ -580,17 +582,17 @@ esp_err_t robot_hal_execute(const char *alias,
      * timeouts propios; este log detecta regresiones). */
     const int64_t t0 = esp_timer_get_time();
     s_driver_inflight[drv_idx]++;
-    esp_err_t xerr = drv->execute(drv, alias, action, params, out);
+    esp_err_t xerr = drv->execute(drv, target_alias, action, params, out);
     s_driver_inflight[drv_idx]--;
     const int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
     if (elapsed_ms > (int64_t)CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS)
     {
         ESP_LOGE(TAG, "Driver '%s' tardo %lld ms en '%s' (watchdog %d ms): "
                       "posible conexion colgada, revisar transporte",
-                 drv->profile_id, (long long)elapsed_ms, alias,
+                 drv->profile_id, (long long)elapsed_ms, target_alias,
                  (int)CONFIG_ROBOT_HAL_EXEC_WATCHDOG_MS);
     }
-    robot_hal_set_device_presence(alias, xerr == ESP_OK && out->code == ROBOT_RESULT_OK);
+    robot_hal_set_device_presence(target_alias, xerr == ESP_OK && out->code == ROBOT_RESULT_OK);
     return xerr;
 }
 

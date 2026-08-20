@@ -26,6 +26,7 @@
 #include "ble_common.h"
 #include "ble_device_control.h"
 #include "ble_device_callbacks.h"
+#include "host/ble_gap.h"
 #include "alert_dispatcher.h"
 #include "webrtc.h"
 #include "csi_handler.h"
@@ -174,6 +175,9 @@ static void orchestrator_initial_ble_discovery_task(void *param)
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
 
     ESP_LOGI(TAG, "Fase dedicada de descubrimiento BLE completada; iniciando WebRTC");
+
+    ble_device_stop_smart_task();
+    ble_gap_conn_cancel();
 
     s_initial_discovery_task_handle = NULL;
     orchestrator_post_event(ORCH_EVENT_DISCOVERY_COMPLETE);

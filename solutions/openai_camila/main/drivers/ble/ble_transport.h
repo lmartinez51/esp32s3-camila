@@ -37,7 +37,7 @@ extern "C"
 #define BLE_TRANSPORT_MAX_RETRIES        3u
 #define BLE_TRANSPORT_RETRY_BACKOFF_MS   120u
 #define BLE_TRANSPORT_PHASE1_TIMEOUT_MS  1500u  /* link establishment    */
-#define BLE_TRANSPORT_PHASE2_TIMEOUT_MS  6000u  /* GATT discovery        */
+#define BLE_TRANSPORT_PHASE2_TIMEOUT_MS  2500u  /* GATT discovery        */
 
 /**
  * @brief Bounded passive scan probe — MAC match.

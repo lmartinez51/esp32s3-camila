@@ -557,12 +557,12 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
         st->last_brightness = pct;
     }
 
-    /* 2. Direct Bounded Connect (3500 ms timeout) */
+    /* 2. Direct Bounded Connect (1500 ms Phase 1 timeout, 2500 ms Phase 2 GATT) */
     uint16_t conn_handle = 0;
     uint16_t unused_char_handle = 0;
     esp_err_t err = ble_transport_connect_and_wait(dev->endpoint.addr, dev->endpoint.addr_type,
-                                                   3500, /* 3500 ms bounded connection timeout */
-                                                   1000, /* 1000 ms GATT discovery timeout */
+                                                   1500, /* 1500 ms bounded connection timeout */
+                                                   2500, /* 2500 ms GATT discovery timeout */
                                                    &conn_handle, &unused_char_handle);
     if (err != ESP_OK || conn_handle == 0)
     {
@@ -577,6 +577,11 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
     if (!st->handles_cached && dev->endpoint.value_handle > 0)
     {
         st->on_off_handle = dev->endpoint.value_handle;
+        st->handles_cached = true;
+    }
+    if (!st->handles_cached && unused_char_handle > 0)
+    {
+        st->on_off_handle = unused_char_handle;
         st->handles_cached = true;
     }
 
@@ -704,41 +709,18 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
 
     /* 4. Write characteristic with bounded timeout <= 1000 ms. Algunos focos
      * Hue-compatibles exigen vínculo cifrado: si el write falla con
-     * Insufficient Authentication (0x105) o Insufficient Encryption (0x10F),
-     * se abre la ventana de emparejamiento (macro "make discoverable"
-     * 97fe6561-2004 = 0x01) y se inicia bonding SMP Just Works. */
+     * Insufficient Authentication (0x105 / 261) o Insufficient Encryption (0x10F),
+     * se abre la ventana de emparejamiento y se inicia seguridad SMP IN-PLACE sobre
+     * la conexión activa (sin desconectar ni reconectar). */
     int att_status = 0;
     char pairing_fail[256] = "";
     err = ble_hue_write_char(conn_handle, target_handle, payload, payload_len, &att_status);
-    if (err != ESP_OK && (att_status == 0x105 || att_status == 0x10F))
+    if (err != ESP_OK && (att_status == 0x105 || att_status == 0x10F || att_status == 261))
     {
-        ESP_LOGW(TAG, "El foco '%s' exige vínculo cifrado (ATT 0x%03X); abriendo ventana de pairing...",
-                 alias, att_status);
+        ESP_LOGW(TAG, "El foco '%s' exige vínculo cifrado (ATT 0x%03X / %d); iniciando seguridad SMP in-place...",
+                 alias, att_status, att_status);
 
-        /* 1. El enlace actual quedó marcado por el write no autorizado (algunos
-         * firmware Hue escalan a 'todos los writes requieren auth' tras un
-         * ATT 0x105). Cerrarlo y reconectar limpio antes del flujo canónico:
-         * make-discoverable PRIMERO, SMP después. */
-        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        vTaskDelay(pdMS_TO_TICKS(150));
-        conn_handle = 0;
-        unused_char_handle = 0;
-        err = ble_transport_connect_and_wait(dev->endpoint.addr, dev->endpoint.addr_type,
-                                             3500, 1000,
-                                             &conn_handle, &unused_char_handle);
-        if (err != ESP_OK || conn_handle == 0)
-        {
-            xSemaphoreGive(ctx->mutex);
-            out->code = (err == ESP_ERR_TIMEOUT) ? ROBOT_RESULT_ERR_TIMEOUT : ROBOT_RESULT_ERR_TRANSPORT;
-            snprintf(out->detail, sizeof(out->detail),
-                     "Fallo reconexión para pairing de '%s': %s", alias, esp_err_to_name(err));
-            return err;
-        }
-
-        /* 2. Abrir la ventana "make discoverable" (97fe6561-2004 = 0x01).
-         * Primer intento con respuesta; si el ATT la rechaza (0x105/0x10F),
-         * fallback Write-Without-Response: en ese camino el servidor ATT no
-         * puede devolver error y algunos firmware aceptan la macro igualmente. */
+        /* Si make-discoverable está disponible, abrir la ventana */
         if (st->make_discoverable_handle > 0)
         {
             uint8_t md = 0x01;
@@ -757,34 +739,25 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
             {
                 ESP_LOGI(TAG, "Hue make-discoverable (0x01 -> 0x%04X): OK", st->make_discoverable_handle);
             }
-            /* Philips tarda un instante en entrar en modo emparejable */
-            vTaskDelay(pdMS_TO_TICKS(800));
-        }
-        else
-        {
-            ESP_LOGW(TAG, "Char make-discoverable (97fe6561-2004) no encontrado; intentando bonding directo...");
+            vTaskDelay(pdMS_TO_TICKS(150));
         }
 
+        /* Iniciar seguridad/cifrado SMP IN-PLACE directamente sobre el enlace activo */
         int rc_sec = ble_gap_security_initiate(conn_handle);
 
         bool encrypted = false;
         if (rc_sec != 0)
         {
-            /* NimBLE no pudo iniciar el pairing. BLE_HS_ENOTSUP (8) ocurre
-             * cuando el almacen de bonds esta lleno y no hay store_status_cb
-             * que libere espacio (el foco NO rechazo nada; el pairing ni
-             * siquiera llego a enviarse). */
-            ESP_LOGW(TAG, "ble_gap_security_initiate fallo con rc=%d (%s); el pairing no llego a iniciarse",
+            ESP_LOGW(TAG, "ble_gap_security_initiate in-place fallo con rc=%d (%s)",
                      rc_sec, ble_hue_hs_err_name(rc_sec));
             snprintf(pairing_fail, sizeof(pairing_fail),
-                     "no se pudo iniciar el emparejamiento (NimBLE rc=%d: %s). "
-                     "Vuelve a intentarlo en unos segundos.",
+                     "no se pudo iniciar el emparejamiento (NimBLE rc=%d: %s).",
                      rc_sec, ble_hue_hs_err_name(rc_sec));
         }
         else
         {
-            ESP_LOGI(TAG, "ble_gap_security_initiate rc=0; esperando cifrado...");
-            for (int i = 0; i < 100; i++) /* hasta ~2500 ms */
+            ESP_LOGI(TAG, "ble_gap_security_initiate in-place rc=0; esperando cifrado...");
+            for (int i = 0; i < 48; i++) /* hasta ~1200 ms */
             {
                 vTaskDelay(pdMS_TO_TICKS(25));
                 struct ble_gap_conn_desc desc;
@@ -802,41 +775,28 @@ static esp_err_t ble_hue_execute(robot_driver_t *drv,
 
         if (encrypted)
         {
-            /* Esperar a que concluya el intercambio de claves SMP y se asiente el enlace cifrado */
-            vTaskDelay(pdMS_TO_TICKS(150));
-            ESP_LOGW(TAG, "Enlace cifrado; reintentando write...");
+            /* Esperar a que se asiente el enlace cifrado */
+            vTaskDelay(pdMS_TO_TICKS(100));
+            ESP_LOGI(TAG, "Enlace cifrado in-place exitoso; reintentando escritura GATT en handle 0x%04X...", target_handle);
             att_status = 0;
             err = ble_hue_write_char(conn_handle, target_handle, payload, payload_len, &att_status);
             if (err != ESP_OK)
             {
-                ESP_LOGW(TAG, "Primer reintento falló con ATT status 0x%03X; reintentando tras 150 ms...", att_status);
-                vTaskDelay(pdMS_TO_TICKS(150));
+                ESP_LOGW(TAG, "Primer reintento falló con ATT status 0x%03X; reintentando tras 100 ms...", att_status);
+                vTaskDelay(pdMS_TO_TICKS(100));
                 att_status = 0;
                 err = ble_hue_write_char(conn_handle, target_handle, payload, payload_len, &att_status);
+            }
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(TAG, "✅ Reintento de escritura tras cifrado in-place exitoso en 0x%04X", target_handle);
             }
         }
         else if (pairing_fail[0] == '\0')
         {
-            /* El foco rechazó el bonding SMP (p. ej. 0x505): en la práctica
-             * ocurre cuando el foco YA está emparejado con otro dispositivo
-             * (teléfono/app Hue). La ventana make-discoverable de la app Hue
-             * o un factory reset real (5 ciclos de encendido) lo desbloquean. */
-            ESP_LOGW(TAG, "No se logro cifrar el enlace: el foco '%s' rechazó el pairing (SMP). "
-                          "Probablemente ya está emparejado con otro dispositivo. "
-                          "Acción sugerida: app Hue -> Ajustes -> Asistentes de voz -> 'Hacer visible', "
-                          "o factory reset del foco (encender/apagar 5 veces seguidas).", alias);
+            ESP_LOGW(TAG, "No se logro cifrar el enlace in-place con '%s'.", alias);
             snprintf(pairing_fail, sizeof(pairing_fail),
-                     "el foco rechazó el emparejamiento (SMP): probablemente ya está emparejado con "
-                     "otro dispositivo. Acción sugerida: app Hue -> Ajustes -> Asistentes de voz -> "
-                     "'Hacer visible', o factory reset del foco (encender/apagar 5 veces seguidas).");
-        }
-
-        if (!encrypted && pairing_fail[0] != '\0')
-        {
-            /* El pairing falló (rechazo SMP o fallo al iniciarlo) y el foco NO
-             * cambió de estado. err quedó con ESP_OK por la reconexión del
-             * flujo de pairing: forzarlo a fallo para NO reportar éxito falso
-             * al chatbot (la luz sigue como estaba). */
+                     "el foco '%s' rechazó el emparejamiento SMP.", alias);
             err = ESP_FAIL;
         }
     }

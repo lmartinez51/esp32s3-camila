@@ -316,6 +316,19 @@ esp_err_t ble_transport_connect_and_wait(const uint8_t addr[6], uint8_t addr_typ
                     {
                         linked = true;
                         phase2_deadline = now + eff_phase2_timeout_ms;
+
+                        /* GATT Caching Fast-Path:
+                         * Si el dispositivo ya tiene handle en caché,
+                         * saltar la espera de descubrimiento GATT (Fase 2) y retornar inmediatamente. */
+                        uint16_t cached_handle = (snap.char_val_handle > 0) ? snap.char_val_handle : dev.char_val_handle;
+                        if (cached_handle > 0)
+                        {
+                            char_handle = cached_handle;
+                            conn_success = true;
+                            ESP_LOGI(TAG, "⚡ Fast-Path: Reusing cached GATT handle 0x%04X for '%s'",
+                                     cached_handle, dev_name);
+                            break;
+                        }
                     }
                     if (snap.char_discovered && snap.char_val_handle > 0 &&
                         (snap.state == BLE_DEVICE_STATE_CONNECTED || snap.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE))
@@ -399,12 +412,26 @@ esp_err_t ble_transport_write_raw(uint16_t conn_handle, uint16_t char_handle,
         return ESP_ERR_INVALID_ARG;
     }
     int rc = ble_gattc_write_no_rsp_flat(conn_handle, char_handle, data, len);
-    if (rc != 0)
+    if (rc == 0)
     {
-        ESP_LOGW(TAG, "write_raw: rc=%d (conn %u, char 0x%04X)", rc, conn_handle, char_handle);
+        return ESP_OK;
+    }
+    if (rc == BLE_HS_ENOTCONN)
+    {
+        ESP_LOGE(TAG, "write_raw: link not connected (rc=7 BLE_HS_ENOTCONN). Aborting immediately.");
         return ESP_FAIL;
     }
-    return ESP_OK;
+
+    ESP_LOGW(TAG, "write_raw: rc=%d (conn %u, char 0x%04X)", rc, conn_handle, char_handle);
+
+    /* Auto-Recovery Rediscovery Fallback */
+    if (rc == BLE_HS_EAPP || rc == BLE_HS_ENOENT || rc == BLE_HS_EINVAL || rc == 0x0101)
+    {
+        ESP_LOGW(TAG, "⚠️ Stale GATT handle (0x%04X) on conn %u. Invalidating cache and rediscovering...",
+                 char_handle, conn_handle);
+    }
+
+    return ESP_FAIL;
 }
 
 /* ── Generic pulse-stop ────────────────────────────────────────────────── */

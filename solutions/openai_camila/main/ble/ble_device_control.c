@@ -342,6 +342,7 @@ static struct
     bool is_active;
     bool cancelled;     // true si la operación on-demand fue abortada por timeout
     bool is_profiling;  // true si la conexión en vuelo pertenece al perfilado smart (única que INCR ops)
+    bool is_ondemand;   // true si la conexión pertenece a un comando on-demand (ble_device_send_command_by_alias_or_name)
 } g_pending_connection;
 
 typedef struct
@@ -1993,6 +1994,18 @@ static int start_service_discovery(uint16_t conn_handle, ble_device_info_t *devi
         return -1;
     }
 
+    /* Fast-Path check: Suppress service discovery if known handle is present */
+    if ((device->is_known || device->is_configured) && device->char_val_handle > 0 && device->char_discovered)
+    {
+        ESP_LOGI(TAG, "⚡ Fast-Path: Omitiendo descubrimiento GATT para '%s' (handle 0x%04X)",
+                 device->name, device->char_val_handle);
+        update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+        if (s_ondemand_conn_sem != NULL) {
+            xSemaphoreGive(s_ondemand_conn_sem);
+        }
+        return 0;
+    }
+
     update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERING_SVCS);
 
     // Proceder al descubrimiento de servicios directamente
@@ -2049,6 +2062,16 @@ static int on_mtu_exchange(uint16_t conn_handle, const struct ble_gatt_error *er
 
         // Para otros errores, continuar con un MTU por defecto
         ESP_LOGW(TAG, "Continuando con MTU por defecto para '%s'", device->name);
+    }
+
+    /* Si el dispositivo ya tiene handle válido y perfil aprendido (Fast-Path), NO iniciar descubrimiento GATT */
+    if ((device->is_known || device->is_configured) && device->char_val_handle > 0 && device->char_discovered)
+    {
+        update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+        if (s_ondemand_conn_sem != NULL) {
+            xSemaphoreGive(s_ondemand_conn_sem);
+        }
+        return 0;
     }
 
     // Proceder al descubrimiento de servicios directamente
@@ -2189,9 +2212,51 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                 if (device)
                 {
                     device->conn_handle = event->connect.conn_handle;
-                    device->char_val_handle = 0;
-                    device->char_discovered = false; // Perfil de la sesión previa no aplica a este enlace
-                    update_device_state(device->addr, BLE_DEVICE_STATE_CONNECTED);
+
+                    /* Preserve or resolve cached handle for Fast-Path */
+                    uint16_t fast_handle = device->char_val_handle;
+                    if (fast_handle == 0 &&
+                        (device->is_known || device->is_configured) &&
+                        (strstr(device->name, "ELEGOO") != NULL || strstr(device->alias, "Carro") != NULL))
+                    {
+                        fast_handle = 0x0006;
+                        device->char_val_handle = 0x0006;
+                    }
+
+                    const bool has_fast_path = (device->is_known || device->is_configured) && (fast_handle > 0);
+
+                    if (has_fast_path)
+                    {
+                        device->char_discovered = true;
+                        device->char_val_handle = fast_handle;
+                        update_device_state(device->addr, BLE_DEVICE_STATE_DISCOVERY_COMPLETE);
+                        ESP_LOGI(TAG, "⚡ Fast-Path: Perfil conocido para '%s' (handle 0x%04X); omitiendo descubrimiento de servicios.",
+                                 device->name, fast_handle);
+
+                        if (g_pending_connection.is_profiling)
+                        {
+                            /* Conexión de perfilado de arranque / background:
+                             * el perfil ya es conocido por Fast-Path. Desconectar de inmediato
+                             * para apagar el LED del robot y liberar la radio para WebRTC. */
+                            ESP_LOGI(TAG, "🔌 Perfilado de arranque completado para '%s' (handle %u). Desconectando para liberar radio...",
+                                     device->name, event->connect.conn_handle);
+                            ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                            g_pending_connection.is_profiling = false;
+                        }
+                        else
+                        {
+                            if (s_ondemand_conn_sem != NULL)
+                            {
+                                xSemaphoreGive(s_ondemand_conn_sem);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        device->char_val_handle = 0;
+                        device->char_discovered = false;
+                        update_device_state(device->addr, BLE_DEVICE_STATE_CONNECTED);
+                    }
 
                     if (device_callbacks.on_device_connected)
                     {
@@ -2204,6 +2269,12 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
                     {
                         ESP_LOGW(TAG, "⚠️ Conexión on-demand previamente cancelada; terminando enlace %d", event->connect.conn_handle);
                         ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                        return 0;
+                    }
+
+                    /* Si Fast-Path ya está activo, NO realizar MTU exchange ni GATT discovery para evitar colisiones (EBUSY 6) */
+                    if (has_fast_path)
+                    {
                         return 0;
                     }
 
@@ -2503,7 +2574,10 @@ static void update_device_state(uint8_t addr[6], ble_device_state_t new_state)
          * el enlace de inmediato para liberar la radio y CPU al 100% antes de que WebRTC inicie. */
         if (was_profiling)
         {
-            DECR_ACTIVE_OPS();
+            if (atomic_load(&g_active_ble_operations) > 0)
+            {
+                DECR_ACTIVE_OPS();
+            }
             if (device->conn_handle != BLE_HS_CONN_HANDLE_NONE && device->conn_handle != 0)
             {
                 ESP_LOGI(TAG, "🔌 Perfilado de arranque completado para '%s' (handle %u). Desconectando para liberar radio...",
@@ -4165,33 +4239,44 @@ static void smart_ble_discovery_btdevices_task(void *param)
                     // 1. Revisar si el explorador encontró un candidato.
                     if (best_candidate.found)
                     {
-                        ESP_LOGW(TAG, "🏆 Intentando perfilar al mejor candidato encontrado (RSSI: %d)", best_candidate.rssi);
-
-                        // 1. Rellenar el expediente con los datos del candidato
-                        if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+                        ble_device_info_t *cand_dev = find_device_by_addr_internal(best_candidate.addr);
+                        if (cand_dev != NULL && (cand_dev->is_known || cand_dev->is_configured || cand_dev->char_val_handle > 0))
                         {
-                            memcpy(g_pending_connection.addr, best_candidate.addr, 6);
-                            g_pending_connection.addr_type = best_candidate.addr_type;
-                            g_pending_connection.is_active = true;
-                            g_pending_connection.is_profiling = true;
-                            xSemaphoreGive(devices_mutex);
+                            ESP_LOGI(TAG, "Candidato '%s' ya es conocido/configurado (handle 0x%04X); omitiendo conexión de perfilado en arranque",
+                                     cand_dev->name, cand_dev->char_val_handle);
+                            best_candidate.found = false;
                         }
-
-                        /* INCR ANTES de iniciar la conexión: el evento GAP de
-                         * fallo puede llegar de forma asíncrona y debe poder
-                         * hacer DECR simétrico. Si ble_gap_connect se rechaza
-                         * (rc != 0), hacemos DECR aquí mismo (no habrá evento). */
-                        INCR_ACTIVE_OPS();
-
-                        // 2. Ahora, iniciar la operación de conexión
-                        esp_err_t conn_result = ble_device_connect(best_candidate.addr, best_candidate.addr_type);
-                        if (conn_result != ESP_OK)
+                        else
                         {
-                            // Si el inicio falla, limpiar el expediente y balancear el INCR
-                            ESP_LOGW(TAG, "Perfilado rechazado por ble_device_connect: %s", esp_err_to_name(conn_result));
-                            g_pending_connection.is_active = false;
-                            g_pending_connection.is_profiling = false;
-                            DECR_ACTIVE_OPS();
+                            ESP_LOGW(TAG, "🏆 Intentando perfilar al mejor candidato encontrado (RSSI: %d)", best_candidate.rssi);
+
+                            // 1. Rellenar el expediente con los datos del candidato
+                            if (xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+                            {
+                                memcpy(g_pending_connection.addr, best_candidate.addr, 6);
+                                g_pending_connection.addr_type = best_candidate.addr_type;
+                                g_pending_connection.is_active = true;
+                                g_pending_connection.is_profiling = true;
+                                g_pending_connection.is_ondemand = false;
+                                xSemaphoreGive(devices_mutex);
+                            }
+
+                            /* INCR ANTES de iniciar la conexión: el evento GAP de
+                             * fallo puede llegar de forma asíncrona y debe poder
+                             * hacer DECR simétrico. Si ble_gap_connect se rechaza
+                             * (rc != 0), hacemos DECR aquí mismo (no habrá evento). */
+                            INCR_ACTIVE_OPS();
+
+                            // 2. Ahora, iniciar la operación de conexión
+                            esp_err_t conn_result = ble_device_connect(best_candidate.addr, best_candidate.addr_type);
+                            if (conn_result != ESP_OK)
+                            {
+                                // Si el inicio falla, limpiar el expediente y balancear el INCR
+                                ESP_LOGW(TAG, "Perfilado rechazado por ble_device_connect: %s", esp_err_to_name(conn_result));
+                                g_pending_connection.is_active = false;
+                                g_pending_connection.is_profiling = false;
+                                DECR_ACTIVE_OPS();
+                            }
                         }
                     }
                     // --- FIN DEL NUEVO BLOQUE DE ACCIÓN ---
@@ -4214,6 +4299,26 @@ static void smart_ble_discovery_btdevices_task(void *param)
                             break;
                         }
                         wait_cycles++;
+
+                        /* Early completion: Si el candidato ya completó el perfilado o se desconectó, terminar de inmediato */
+                        if (best_candidate.found)
+                        {
+                            ble_device_info_t *cand_dev = find_device_by_addr_internal(best_candidate.addr);
+                            if (cand_dev != NULL && (cand_dev->state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE ||
+                                                     cand_dev->state == BLE_DEVICE_STATE_DISCONNECTED ||
+                                                     cand_dev->is_known))
+                            {
+                                if (cand_dev->conn_handle != BLE_HS_CONN_HANDLE_NONE && cand_dev->conn_handle != 0)
+                                {
+                                    ESP_LOGI(TAG, "🔌 Perfilado de arranque completado para '%s'. Desconectando enlace %u...",
+                                             cand_dev->name, cand_dev->conn_handle);
+                                    ble_gap_terminate(cand_dev->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                                }
+                                atomic_store(&g_active_ble_operations, 0);
+                                g_pending_connection.is_profiling = false;
+                                break;
+                            }
+                        }
 
                         int current_ops = atomic_load(&g_active_ble_operations);
 
@@ -4909,6 +5014,16 @@ static int on_gatt_write_cb(uint16_t conn_handle, const struct ble_gatt_error *e
         } else {
             ESP_LOGE(TAG, "❌ Error de peer en escritura GATT! conn_handle=%d, status=%d (0x%02X), att_handle=0x%04X",
                      conn_handle, error->status, error->status, error->att_handle);
+            /* Auto-Recovery Rediscovery Fallback */
+            if (error->status == 0x0101 || error->status == BLE_HS_EAPP || error->status == BLE_HS_ENOENT || error->status == BLE_HS_EINVAL) {
+                ble_device_info_t *dev = find_device_by_conn_handle(conn_handle);
+                if (dev != NULL) {
+                    ESP_LOGW(TAG, "⚠️ Stale GATT handle for '%s'. Invalidating cache and rediscovering...", dev->name);
+                    dev->char_val_handle = 0;
+                    dev->char_discovered = false;
+                    start_service_discovery(conn_handle, dev);
+                }
+            }
         }
     }
     if (arg != NULL) {
@@ -5033,8 +5148,39 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
     if (write_rc == 0) {
         ESP_LOGD(TAG, "GATT write accepted: handle=0x%04X len=%u", char_handle, payload_len);
         ESP_LOGD(TAG, "Note: Write-Without-Response operation accepted by NimBLE host stack; physical movement is the final validation.");
+    } else if (write_rc == BLE_HS_ENOTCONN) {
+        ESP_LOGE(TAG, "❌ GATT write failed: enlace no conectado (rc=7 BLE_HS_ENOTCONN). Abortando transmisión.");
+        return;
     } else {
-        ESP_LOGE(TAG, "❌ GATT write failed: handle=0x%04X rc=%d", char_handle, write_rc);
+        ESP_LOGW(TAG, "⚠️ GATT write returned rc=%d (handle=0x%04X)", write_rc, char_handle);
+        /* Auto-Recovery Rediscovery Fallback */
+        if (write_rc == BLE_HS_EAPP || write_rc == BLE_HS_ENOENT || write_rc == BLE_HS_EINVAL || write_rc == 0x0101) {
+            ble_device_info_t *dev = find_device_by_conn_handle(conn_handle);
+            const char *dname = dev ? dev->name : "device";
+            ESP_LOGW(TAG, "⚠️ Stale GATT handle for '%s'. Invalidating cache and rediscovering...", dname);
+            if (dev != NULL) {
+                dev->char_val_handle = 0;
+                dev->char_discovered = false;
+                if (s_ondemand_conn_sem != NULL) {
+                    while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
+                }
+                int disc_rc = start_service_discovery(conn_handle, dev);
+                if (disc_rc == 0 && s_ondemand_conn_sem != NULL) {
+                    if (xSemaphoreTake(s_ondemand_conn_sem, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                        if (dev->char_val_handle > 0) {
+                            char_handle = dev->char_val_handle;
+                            ESP_LOGI(TAG, "🔄 Retrying GATT write with discovered handle 0x%04X...", char_handle);
+                            write_rc = ble_gattc_write_no_rsp_flat(conn_handle, char_handle, payload, payload_len);
+                            if (write_rc == 0) {
+                                ESP_LOGI(TAG, "✅ Auto-recovery write succeeded on handle 0x%04X", char_handle);
+                            } else {
+                                ESP_LOGE(TAG, "❌ Auto-recovery write retry failed: rc=%d", write_rc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5045,11 +5191,16 @@ static void ble_pulse_stop_task(void *param)
         vTaskDelay(pdMS_TO_TICKS(p->duration_ms));
         ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
         if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
-            const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
-            send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd, 0);
-            vTaskDelay(pdMS_TO_TICKS(300));
-            ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
-            ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            struct ble_gap_conn_desc cd;
+            if (ble_gap_conn_find(p->conn_handle, &cd) == 0) {
+                const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
+                send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd, 0);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
+                ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            } else {
+                ESP_LOGW(TAG, "🔌 Enlace %u ya no está conectado al momento del pulso STOP", p->conn_handle);
+            }
         }
         free(p);
     }
@@ -5061,82 +5212,146 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
     if (!name_or_alias || !action) return ESP_ERR_INVALID_ARG;
 
     const ble_command_entry_t *cmd = ble_find_command_entry(action);
+    uint32_t pulse_duration = (duration_ms > 0) ? duration_ms : cmd->default_duration_ms;
+    bool ack_failed = false;
 
     ble_device_info_t target_dev = {0};
     bool dev_found = false;
 
     if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        /* Pase 0: Coincidencia por dirección MAC (ej. "EF:7D:13:2D:87:48") */
         for (int i = 0; i < discovered_count; i++) {
-            if (strstr(discovered_devices[i].name, name_or_alias) != NULL ||
-                (strlen(discovered_devices[i].alias) > 0 && strstr(discovered_devices[i].alias, name_or_alias) != NULL) ||
-                (strstr(name_or_alias, "ELEGOO") != NULL && strstr(discovered_devices[i].name, "ELEGOO") != NULL) ||
-                (strstr(name_or_alias, "Carro") != NULL && (strstr(discovered_devices[i].name, "ELEGOO") != NULL || strstr(discovered_devices[i].alias, "Carro") != NULL))) {
+            char mac_str[18];
+            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     discovered_devices[i].addr[0], discovered_devices[i].addr[1],
+                     discovered_devices[i].addr[2], discovered_devices[i].addr[3],
+                     discovered_devices[i].addr[4], discovered_devices[i].addr[5]);
+            if (strcasecmp(mac_str, name_or_alias) == 0) {
                 memcpy(&target_dev, &discovered_devices[i], sizeof(ble_device_info_t));
                 dev_found = true;
+                break;
+            }
+        }
+
+        /* Pase 1: Coincidencia exacta (case-insensitive) por alias o name */
+        if (!dev_found) {
+            for (int i = 0; i < discovered_count; i++) {
+                if ((discovered_devices[i].alias[0] != '\0' && strcasecmp(discovered_devices[i].alias, name_or_alias) == 0) ||
+                    strcasecmp(discovered_devices[i].name, name_or_alias) == 0) {
+                    memcpy(&target_dev, &discovered_devices[i], sizeof(ble_device_info_t));
+                    dev_found = true;
+                    break;
+                }
+            }
+        }
+
+        /* Pase 2: Coincidencia por substring (case-insensitive) */
+        if (!dev_found) {
+            for (int i = 0; i < discovered_count; i++) {
+                if ((discovered_devices[i].alias[0] != '\0' && strcasestr(discovered_devices[i].alias, name_or_alias) != NULL) ||
+                    strcasestr(discovered_devices[i].name, name_or_alias) != NULL ||
+                    strcasestr(name_or_alias, discovered_devices[i].name) != NULL) {
+                    memcpy(&target_dev, &discovered_devices[i], sizeof(ble_device_info_t));
+                    dev_found = true;
+                    ESP_LOGI(TAG, "Dispositivo '%s' ('%s') encontrado por coincidencia parcial con '%s'",
+                             target_dev.name, target_dev.alias, name_or_alias);
+                    break;
+                }
+            }
+        }
+
+        /* Pase 3: Coincidencia por sinónimos de Robot / Carro / ELEGOO */
+        if (!dev_found) {
+            bool is_car_query = (strcasecmp(name_or_alias, "carro") == 0 ||
+                                 strcasecmp(name_or_alias, "robot") == 0 ||
+                                 strcasecmp(name_or_alias, "carrito") == 0 ||
+                                 strcasecmp(name_or_alias, "coche") == 0 ||
+                                 strcasecmp(name_or_alias, "elegoo") == 0 ||
+                                 strcasecmp(name_or_alias, "bt16") == 0);
+            if (is_car_query) {
+                for (int i = 0; i < discovered_count; i++) {
+                    if (strcasestr(discovered_devices[i].name, "ELEGOO") != NULL ||
+                        strcasestr(discovered_devices[i].name, "BT16") != NULL ||
+                        strcasestr(discovered_devices[i].alias, "Robot") != NULL ||
+                        strcasestr(discovered_devices[i].alias, "Carro") != NULL ||
+                        discovered_devices[i].matched_profile_index == PROFILE_INDEX_ELEGOO) {
+                        memcpy(&target_dev, &discovered_devices[i], sizeof(ble_device_info_t));
+                        dev_found = true;
+                        ESP_LOGI(TAG, "Dispositivo '%s' ('%s') seleccionado como coincidencia de Robot/Carro para '%s'",
+                                 target_dev.name, target_dev.alias, name_or_alias);
+                        break;
+                    }
+                }
+            }
+        }
+
+        xSemaphoreGive(devices_mutex);
+    }
+
+    if (!dev_found) {
+        ESP_LOGE(TAG, "❌ Dispositivo '%s' no encontrado en la tabla de descubrimiento para comando on-demand.", name_or_alias);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint16_t current_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    uint16_t write_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : 0x0006;
+    bool link_alive = false;
+
+    if (devices_mutex != NULL && xSemaphoreTake(devices_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        for (int i = 0; i < discovered_count; i++) {
+            if (memcmp(discovered_devices[i].addr, target_dev.addr, 6) == 0) {
+                if (discovered_devices[i].conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+                    discovered_devices[i].conn_handle != 0 &&
+                    discovered_devices[i].char_discovered &&
+                    discovered_devices[i].char_val_handle > 0 &&
+                    (discovered_devices[i].state == BLE_DEVICE_STATE_CONNECTED ||
+                     discovered_devices[i].state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE)) {
+                    current_conn_handle = discovered_devices[i].conn_handle;
+                    write_handle = discovered_devices[i].char_val_handle;
+                    link_alive = true;
+                    ESP_LOGI(TAG, "🔗 Reutilizando conexión activa existente (handle=%u, char=0x%04X) para '%s'",
+                             current_conn_handle, write_handle, target_dev.name);
+                }
                 break;
             }
         }
         xSemaphoreGive(devices_mutex);
     }
 
-    if (!dev_found) {
-        ESP_LOGW(TAG, "No se encontró el dispositivo '%s' en la tabla RAM para enviar comando", name_or_alias);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    /* Custom Duration Precedence: Caller's duration_ms takes precedence over default_duration_ms if > 0 */
-    uint32_t pulse_duration = 0;
-    if (cmd->requires_stop_pulse) {
-        pulse_duration = (duration_ms > 0) ? duration_ms : cmd->default_duration_ms;
-    }
-
-    ESP_LOGI(TAG, "🤖 Enviando comando BLE: Acción='%s' (CMD='%s') a '%s' por %lu ms",
-             action, cmd->action_name, target_dev.name, pulse_duration);
-
-    bool ack_failed = false; /* MOVE_HEAD: true si el ACK {0_ok} no llegó a tiempo */
-
-    uint16_t current_conn_handle = target_dev.conn_handle;
-    uint16_t write_handle = (target_dev.char_val_handle > 0) ? target_dev.char_val_handle : 0x0006;
-
-    /* KEEP-ALIVE: un enlace aprendido (DISCOVERY_COMPLETE) con handle válido
-     * se reutiliza, igual que ble_transport; solo conectar si no hay enlace. */
-    bool link_alive = (current_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
-                       current_conn_handle != 0 &&
-                       (target_dev.state == BLE_DEVICE_STATE_CONNECTED ||
-                        target_dev.state == BLE_DEVICE_STATE_DISCOVERY_COMPLETE));
-
     if (!link_alive) {
         bool conn_success = false;
-        for (int attempt = 1; attempt <= BLE_ONDEMAND_CONNECT_MAX_RETRIES; attempt++) {
-            ESP_LOGI(TAG, "Iniciando conexión bajo demanda con %s (intento %d/%d)...",
-                     target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
-            ble_log_memory_snapshot("ble_central:ondemand_connect_during_audio");
 
-            /* Drain any stale token left by a previous timed-out operation (mandatory amendment) */
-            if (s_ondemand_conn_sem != NULL) {
-                while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain */ }
+        for (int attempt = 1; attempt <= BLE_ONDEMAND_CONNECT_MAX_RETRIES; attempt++) {
+            if (attempt > 1) {
+                ESP_LOGW(TAG, "🔄 Reintentando conexión BLE on-demand con '%s' (intento %d/%d)...",
+                         target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
+            } else {
+                ESP_LOGI(TAG, "🚗 Iniciando conexión BLE on-demand con '%s' (intento %d/%d)...",
+                         target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
             }
 
-            /* Fresh attempt: clear cancellation intent from any previous timeout */
-            g_pending_connection.cancelled = false;
-            g_pending_connection.is_active = true;
-            /* Expediente del intento en curso: necesario para que los callbacks de
-             * error de conexión y de desconexión puedan resolver el dispositivo y
-             * marcar el fallo */
-            memcpy(g_pending_connection.addr, target_dev.addr, 6);
-            g_pending_connection.addr_type = target_dev.addr_type;
+            if (s_ondemand_conn_sem == NULL) {
+                s_ondemand_conn_sem = xSemaphoreCreateBinary();
+            }
+            if (s_ondemand_conn_sem != NULL) {
+                while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain stale token */ }
+            }
 
-            esp_err_t connect_rc = ble_device_connect(target_dev.addr, target_dev.addr_type);
-            if (connect_rc != ESP_OK) {
-                ESP_LOGW(TAG, "⚠️ ble_device_connect devolvió %s para '%s' (intento %d/%d)",
-                         esp_err_to_name(connect_rc), target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES);
-                g_pending_connection.is_active = false;
-                update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+            g_pending_connection.cancelled = false;
+            g_pending_connection.is_ondemand = true;
+            g_pending_connection.is_profiling = false;
+
+            esp_err_t connect_err = ble_device_connect(target_dev.addr, target_dev.addr_type);
+            if (connect_err != ESP_OK) {
+                ESP_LOGW(TAG, "⚠️ ble_device_connect falló para '%s' (intento %d/%d): %s",
+                         target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES, esp_err_to_name(connect_err));
                 if (attempt < BLE_ONDEMAND_CONNECT_MAX_RETRIES) {
                     vTaskDelay(pdMS_TO_TICKS(BLE_ONDEMAND_CONNECT_BACKOFF_MS));
                     continue;
                 }
-                return ESP_FAIL;
+                g_pending_connection.is_active = false;
+                update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+                return connect_err;
             }
 
             /*
@@ -5168,6 +5383,30 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                                 if (!linked) {
                                     linked = true;
                                     phase2_deadline = now_ms + phase2_timeout_ms;
+
+                                    /* GATT Caching Fast-Path:
+                                     * Si el dispositivo ya es conocido/configurado o tiene handle en caché
+                                     * (o es ELEGOO BT16 con handle conocido 0x0006), saltar la espera de
+                                     * descubrimiento GATT (Fase 2) y proceder directamente a la transmisión. */
+                                    uint16_t cached_handle = dev->char_val_handle;
+                                    if (cached_handle == 0 && target_dev.char_val_handle > 0) {
+                                        cached_handle = target_dev.char_val_handle;
+                                    }
+                                    if (cached_handle == 0 &&
+                                        (strstr(dev->name, "ELEGOO") != NULL || strstr(dev->alias, "Carro") != NULL ||
+                                         strstr(target_dev.name, "ELEGOO") != NULL || strstr(target_dev.alias, "Carro") != NULL)) {
+                                        cached_handle = 0x0006;
+                                    }
+
+                                    if (cached_handle > 0 && (dev->is_known || dev->is_configured || target_dev.is_known || target_dev.is_configured)) {
+                                        dev->char_val_handle = cached_handle;
+                                        dev->char_discovered = true;
+                                        write_handle = cached_handle;
+                                        conn_success = true;
+                                        ESP_LOGI(TAG, "⚡ Fast-Path: Reusing cached GATT handle 0x%04X for '%s'",
+                                                 cached_handle, target_dev.name);
+                                        break;
+                                    }
                                 }
                                 /* SOLO se considera lista la conexión tras el descubrimiento
                                  * GATT COMPLETO de esta sesión (DISCOVERY_COMPLETE + perfil
@@ -5352,12 +5591,18 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                 if (ack_capable) {
                     uint32_t waited_ms = 0;
                     while (waited_ms < 1000 && !s_elegoo_ack_ok) {
+                        struct ble_gap_conn_desc cd;
+                        if (ble_gap_conn_find(current_conn_handle, &cd) != 0) {
+                            ESP_LOGW(TAG, "⚠️ Enlace desconectado durante espera de ACK; abortando.");
+                            ack_failed = true;
+                            break;
+                        }
                         vTaskDelay(pdMS_TO_TICKS(25));
                         waited_ms += 25;
                     }
                     if (s_elegoo_ack_ok) {
                         ESP_LOGI(TAG, "✅ ACK {0_ok} recibido para '%s' (%lu ms)", cmd->action_name, waited_ms);
-                    } else {
+                    } else if (!ack_failed) {
                         /* Sin confirmación del UNO: el comando pudo no haberse
                          * ejecutado (p. ej. firmware de fábrica antiguo sin
                          * case 6, o BT16 sin respuesta). Se reporta

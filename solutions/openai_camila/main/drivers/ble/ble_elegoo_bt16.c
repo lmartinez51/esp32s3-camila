@@ -145,12 +145,15 @@ static esp_err_t ble_elegoo_execute(robot_driver_t *drv,
         break;
     }
 
-    esp_err_t err = ble_device_send_command_by_alias_or_name(alias, action_str, param_val);
+    const robot_device_t *dev = robot_hal_get_device(alias);
+    const char *target_name = (dev && dev->alias[0] != '\0') ? dev->alias : alias;
+
+    esp_err_t err = ble_device_send_command_by_alias_or_name(target_name, action_str, param_val);
     if (err != ESP_OK)
     {
         out->code = ble_elegoo_map_error(err);
         snprintf(out->detail, sizeof(out->detail),
-                 "BLE '%s' (%s): %s", alias, action_str, esp_err_to_name(err));
+                 "BLE '%s' (%s): %s", target_name, action_str, esp_err_to_name(err));
         return err;
     }
 
