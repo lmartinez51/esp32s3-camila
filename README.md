@@ -6,11 +6,11 @@
   <img src="assets/infographic.png" width="100%" alt="ESP32-S3-BOX3 Camila Infographic">
 </p>
 
-An advanced and feature-rich WebRTC framework for ESP32, specifically optimized for real-time AI communication. This project is built upon the base of the [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) and extends it with significantly more functionality, proactive behaviors, and custom integrations.
+An advanced and feature-rich WebRTC framework for ESP32, specifically optimized for real-time AI communication and multi-protocol hardware control. This project is built upon the base of the [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) and extends it with significantly more functionality, proactive behaviors, custom robotics HAL drivers, and home automation integrations.
 
-**Camila** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** and running on an **ESP32‑S3‑BOX3**. The project integrates BLE smartphone proximity identity validation, low-latency audio capture and playback, WebRTC streaming, BLE-driven provisioning, WiFi auto-reconnect, and an on-device LCD UI into a compact embedded system.
+**Camila** is a real-time conversational AI assistant powered by the **OpenAI Realtime API** running on an **ESP32‑S3‑BOX3**. The project integrates BLE smartphone proximity identity validation, low-latency audio capture and playback, WebRTC streaming, a Modular Robot HAL ecosystem (supporting BLE robotics, Philips Hue BLE smart lighting, Universal IR remote control, and WiFi pan-tilt peripherals), BLE-driven provisioning, WiFi auto-reconnect, an embedded Lua 5.4 automation engine (ESP-Claw), and an on-device LCD UI into a compact embedded system.
 
-Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican accent modeled after Lorenzo's best friend *Giovanna Ortiz*. The assistant is designed to be friendly, brief, and humorous, and also to behave sensibly when asked to be silent — keeping the session alive and communicating via text on the display when necessary.
+Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican accent. The assistant is designed to be friendly, brief, witty, and humorous, and also to behave sensibly when asked to be silent — keeping the session alive and communicating via text on the display when necessary.
 
 ---
 

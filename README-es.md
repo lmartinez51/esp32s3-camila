@@ -2,11 +2,11 @@
 
 *Leer en [Inglés](README.md)*
 
-Un framework WebRTC avanzado y rico en funciones para ESP32, optimizado específicamente para comunicación con IA en tiempo real. Este proyecto está construido sobre la base de [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) y la expande con muchas más funcionalidades, comportamientos proactivos e integraciones personalizadas.
+Un framework WebRTC avanzado y rico en funciones para ESP32, optimizado específicamente para comunicación con IA en tiempo real y control de hardware multiprotocolo. Este proyecto está construido sobre la base de [Espressif WebRTC Solution (OpenAI Demo)](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo) y la expande con muchas más funcionalidades, comportamientos proactivos, controladores HAL de robótica y automatización del hogar.
 
-**Camila** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra validación de identidad por proximidad BLE del smartphone, captura y reproducción de audio de baja latencia, transmisión WebRTC, aprovisionamiento vía BLE, reconexión automática de WiFi y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
+**Camila** es un asistente de IA conversacional en tiempo real impulsado por la **API Realtime de OpenAI** ejecutándose en un **ESP32‑S3‑BOX3**. El proyecto integra validación de identidad por proximidad BLE del smartphone, captura y reproducción de audio de baja latencia, transmisión WebRTC, un ecosistema de HAL de Robótica Modular (con soporte para robótica BLE, focos inteligentes Philips Hue BLE, control remoto infrarrojo Universal IR y periféricos WiFi pan-tilt), aprovisionamiento vía BLE, reconexión automática de WiFi, un motor de automatización integrado en Lua 5.4 (ESP-Claw) y una interfaz gráfica en pantalla (LCD UI) en un sistema embebido compacto.
 
-Camila es una asistente sarcástica y llena de energía que habla español con acento mexicano, modelada en base a la mejor amiga de Lorenzo, *Giovanna Ortiz*. El asistente está diseñado para ser amigable, conciso y divertido, y también para comportarse de manera sensata cuando se le pide que guarde silencio — manteniendo la sesión activa y comunicándose mediante texto en la pantalla cuando es necesario.
+Camila es una asistente sarcástica y llena de energía que habla español con acento mexicano. El asistente está diseñado para ser amigable, conciso, ingenioso y divertido, y también para comportarse de manera sensata cuando se le pide que guarde silencio — manteniendo la sesión activa y comunicándose mediante texto en la pantalla cuando es necesario.
 
 ---
 
