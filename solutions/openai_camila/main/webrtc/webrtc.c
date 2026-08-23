@@ -1822,7 +1822,7 @@ static void web_search_task(void *arg)
     orchestrator_log_heap_snapshot("active_session:tool_call");
 
     // 1. Mostrar el mensaje de estado en la pantalla al iniciar la tarea.
-    ui_show_status_message("CONSULTING: Searching Google...", COLOR_YELLOW_BGR565);
+    ui_show_status_message("Surfing the web...", COLOR_YELLOW_BGR565);
 
     char *response = get_web_info(ctx->query);
     if (!response)

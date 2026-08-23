@@ -38,7 +38,15 @@ typedef struct {
     char target[256];       // e.g., "tv.power"
 } rule_action_t;
 
+typedef enum {
+    CLAW_MSG_TYPE_RULE = 0,
+    CLAW_MSG_TYPE_RAW_SCRIPT,
+    CLAW_MSG_TYPE_SKILL_FILE
+} esp_claw_msg_type_t;
+
 typedef struct esp_claw_rule_t {
+    esp_claw_msg_type_t type;
+    char script_payload[256];
     char call_id[128];
     char trigger[32];
     
@@ -58,6 +66,7 @@ typedef struct {
 
 esp_err_t esp_claw_init(void);
 esp_err_t esp_claw_execute_script(const char* script);
+esp_err_t esp_claw_run_skill(const char* skill_name);
 esp_err_t esp_claw_send_command(const char* device, const char* action);
 esp_err_t esp_claw_send_rule(esp_claw_rule_t* rule);
 esp_err_t esp_claw_request_list(char* out_buffer, size_t max_len);

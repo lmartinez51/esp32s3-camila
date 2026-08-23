@@ -395,6 +395,12 @@ static SemaphoreHandle_t ble_control_worker_stop_signal = NULL;
 static SemaphoreHandle_t s_ondemand_conn_sem = NULL;  /* Binary sem: signals on-demand GATT discovery done/failed */
 static bool smart_task_shutdown_requested = false;
 
+#define BLE_ONDEMAND_IDLE_TIMEOUT_US (3000 * 1000ULL)
+static esp_timer_handle_t s_ondemand_idle_timer = NULL;
+static uint16_t s_ondemand_active_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t s_ondemand_active_char_handle = 0;
+static uint32_t s_pulse_stop_generation = 0;
+
 /* Private function declarations */
 static int ble_gap_scan_event_handler(struct ble_gap_event *event, void *arg);
 static int ble_gap_identity_validation_event_handler(struct ble_gap_event *event, void *arg);
@@ -1805,9 +1811,14 @@ esp_err_t ble_device_connect(uint8_t device_addr[6], uint8_t addr_type)
     if (rc != 0)
     {
         ESP_LOGE(TAG, "Error iniciando conexión: %d", rc);
+        if (rc == BLE_HS_EALREADY || rc == BLE_HS_EBUSY) {
+            ESP_LOGW(TAG, "⚠️ NimBLE GAP ocupado/atascado (rc=%d). Ejecutando ble_gap_conn_cancel()...", rc);
+            ble_gap_conn_cancel();
+        }
         g_pending_connection.is_active = false;
-        update_device_state(device_addr, BLE_DEVICE_STATE_ERROR);
-        return ESP_FAIL;
+        g_pending_connection.cancelled = true;
+        update_device_state(device_addr, BLE_DEVICE_STATE_DISCONNECTED);
+        return (rc == BLE_HS_EALREADY || rc == BLE_HS_EBUSY) ? BLE_ERR_GAP_BUSY : ESP_FAIL;
     }
 
     return ESP_OK;
@@ -2423,6 +2434,14 @@ static int ble_gap_connect_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         // Always clear pending connection lock on disconnect event
         g_pending_connection.is_active = false;
+
+        if (event->disconnect.conn.conn_handle == s_ondemand_active_conn_handle) {
+            s_ondemand_active_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            s_ondemand_active_char_handle = 0;
+            if (s_ondemand_idle_timer != NULL) {
+                esp_timer_stop(s_ondemand_idle_timer);
+            }
+        }
 
         // Limpiar contexto de discovery si lo hubiera
         cleanup_discovery_context(event->disconnect.conn.conn_handle);
@@ -5003,6 +5022,7 @@ typedef struct {
     uint16_t conn_handle;
     uint16_t char_handle;
     uint32_t duration_ms;
+    uint32_t generation;
 } ble_pulse_stop_param_t;
 
 static int on_gatt_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -5184,23 +5204,79 @@ static void send_elegoo_command_payload(uint16_t conn_handle, uint16_t char_hand
     }
 }
 
+static void ondemand_idle_timer_callback(void *arg)
+{
+    uint16_t handle = s_ondemand_active_conn_handle;
+    if (handle != BLE_HS_CONN_HANDLE_NONE && handle != 0) {
+        struct ble_gap_conn_desc cd;
+        if (ble_gap_conn_find(handle, &cd) == 0) {
+            const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
+            if (stop_cmd && s_ondemand_active_char_handle > 0) {
+                send_elegoo_command_payload(handle, s_ondemand_active_char_handle, stop_cmd, 0);
+            }
+            ESP_LOGI(TAG, "🔌 Inactividad de 3000 ms alcanzada. Desconectando enlace BLE on-demand (handle %u) para liberar radio...", handle);
+            ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
+    }
+    s_ondemand_active_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_ondemand_active_char_handle = 0;
+}
+
+static void ble_ondemand_touch_activity(uint16_t conn_handle, uint16_t char_handle)
+{
+    s_ondemand_active_conn_handle = conn_handle;
+    if (char_handle > 0) {
+        s_ondemand_active_char_handle = char_handle;
+    }
+
+    if (s_ondemand_idle_timer == NULL) {
+        esp_timer_create_args_t timer_args = {
+            .callback = &ondemand_idle_timer_callback,
+            .name = "ble_ondemand_idle"
+        };
+        esp_timer_create(&timer_args, &s_ondemand_idle_timer);
+    }
+    if (s_ondemand_idle_timer != NULL) {
+        esp_timer_stop(s_ondemand_idle_timer);
+        esp_timer_start_once(s_ondemand_idle_timer, BLE_ONDEMAND_IDLE_TIMEOUT_US);
+    }
+}
+
+void ble_device_refresh_ondemand_activity(void)
+{
+    if (s_ondemand_active_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ondemand_active_conn_handle != 0) {
+        ble_ondemand_touch_activity(s_ondemand_active_conn_handle, s_ondemand_active_char_handle);
+    }
+}
+
+void ble_device_close_ondemand_connection(void)
+{
+    if (s_ondemand_idle_timer != NULL) {
+        esp_timer_stop(s_ondemand_idle_timer);
+    }
+    ondemand_idle_timer_callback(NULL);
+}
+
 static void ble_pulse_stop_task(void *param)
 {
     ble_pulse_stop_param_t *p = (ble_pulse_stop_param_t *)param;
     if (p) {
         vTaskDelay(pdMS_TO_TICKS(p->duration_ms));
-        ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
-        if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
-            struct ble_gap_conn_desc cd;
-            if (ble_gap_conn_find(p->conn_handle, &cd) == 0) {
-                const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
-                send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd, 0);
-                vTaskDelay(pdMS_TO_TICKS(150));
-                ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) para liberar radio y CPU...", p->conn_handle);
-                ble_gap_terminate(p->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-            } else {
-                ESP_LOGW(TAG, "🔌 Enlace %u ya no está conectado al momento del pulso STOP", p->conn_handle);
+        if (p->generation == s_pulse_stop_generation) {
+            ESP_LOGI(TAG, "⏱️ Impulso temporizado de %lu ms completado. Enviando comando STOP...", p->duration_ms);
+            if (p->conn_handle != BLE_HS_CONN_HANDLE_NONE && p->conn_handle != 0) {
+                struct ble_gap_conn_desc cd;
+                if (ble_gap_conn_find(p->conn_handle, &cd) == 0) {
+                    const ble_command_entry_t *stop_cmd = ble_find_command_entry("STOP");
+                    send_elegoo_command_payload(p->conn_handle, p->char_handle, stop_cmd, 0);
+                    ble_ondemand_touch_activity(p->conn_handle, p->char_handle);
+                } else {
+                    ESP_LOGW(TAG, "🔌 Enlace %u ya no está conectado al momento del pulso STOP", p->conn_handle);
+                }
             }
+        } else {
+            ESP_LOGD(TAG, "⏱️ Pulso STOP anterior (gen %lu) invalidado por nuevo comando (gen %lu)",
+                     p->generation, s_pulse_stop_generation);
         }
         free(p);
     }
@@ -5345,12 +5421,17 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             if (connect_err != ESP_OK) {
                 ESP_LOGW(TAG, "⚠️ ble_device_connect falló para '%s' (intento %d/%d): %s",
                          target_dev.name, attempt, BLE_ONDEMAND_CONNECT_MAX_RETRIES, esp_err_to_name(connect_err));
+                ble_gap_conn_cancel();
+                g_pending_connection.is_active = false;
+                g_pending_connection.cancelled = true;
+                update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
+                if (s_ondemand_conn_sem != NULL) {
+                    while (xSemaphoreTake(s_ondemand_conn_sem, 0) == pdTRUE) { /* drain stale token */ }
+                }
                 if (attempt < BLE_ONDEMAND_CONNECT_MAX_RETRIES) {
                     vTaskDelay(pdMS_TO_TICKS(BLE_ONDEMAND_CONNECT_BACKOFF_MS));
                     continue;
                 }
-                g_pending_connection.is_active = false;
-                update_device_state(target_dev.addr, BLE_DEVICE_STATE_DISCONNECTED);
                 return connect_err;
             }
 
@@ -5554,9 +5635,8 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             telem_success = false;
         }
 
-        /* Step 5: Disconnect cleanly */
-        ESP_LOGD(TAG, "🔌 Disconnecting BLE session...");
-        ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        /* Step 5: Keep session active with inactivity timer */
+        ble_ondemand_touch_activity(current_conn_handle, target_dev.char_val_handle > 0 ? target_dev.char_val_handle : ELEGOO_COMMAND_VALUE_HANDLE);
 
         if (!telem_success) {
             return ESP_FAIL;
@@ -5603,16 +5683,14 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
                     if (s_elegoo_ack_ok) {
                         ESP_LOGI(TAG, "✅ ACK {0_ok} recibido para '%s' (%lu ms)", cmd->action_name, waited_ms);
                     } else if (!ack_failed) {
-                        /* Sin confirmación del UNO: el comando pudo no haberse
-                         * ejecutado (p. ej. firmware de fábrica antiguo sin
-                         * case 6, o BT16 sin respuesta). Se reporta
-                         * ESP_ERR_TIMEOUT para que el HAL/adaptador lo
-                         * informen como fallo y Camila no mienta. */
                         ESP_LOGW(TAG, "⚠️ Sin ACK {0_ok} para '%s' tras 1000 ms; reportando fallo", cmd->action_name);
                         ack_failed = true;
                     }
                 }
             } else {
+                if (strcmp(cmd->action_name, "STOP") == 0) {
+                    s_pulse_stop_generation++; // invalidate pending timed stop tasks
+                }
                 send_elegoo_command_payload(current_conn_handle, write_handle, cmd, duration_ms);
             }
         } else {
@@ -5621,6 +5699,7 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
     }
 
     if (cmd->requires_stop_pulse && pulse_duration > 0) {
+        s_pulse_stop_generation++;
         ble_pulse_stop_param_t *param = heap_caps_malloc(sizeof(ble_pulse_stop_param_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!param) {
             param = malloc(sizeof(ble_pulse_stop_param_t)); /* Fallback a DRAM */
@@ -5630,29 +5709,17 @@ esp_err_t ble_device_send_command_by_alias_or_name(const char *name_or_alias, co
             param->conn_handle = current_conn_handle;
             param->char_handle = write_handle;
             param->duration_ms = pulse_duration;
+            param->generation = s_pulse_stop_generation;
             BaseType_t task_ret = xTaskCreatePinnedToCoreWithCaps(ble_pulse_stop_task, "ble_pulse_stop", 3072, param, 5, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (task_ret != pdPASS) {
                 ESP_LOGE(TAG, "❌ Failed to create ble_pulse_stop task; freeing param to prevent leak");
                 free(param);
             }
         }
+        ble_ondemand_touch_activity(current_conn_handle, write_handle);
     } else if (!cmd->expects_notification) {
-        /* Comandos de un solo disparo (MOVE_HEAD, PAN_*, SET_AUTONOMOUS_MODE, STOP):
-         * esperar el pulso del servo (si no se esperó en ACK) y terminar la conexión EXPLÍCITAMENTE.
-         * Sin esto, el enlace queda abierto de forma permanente (LED rojo fijo),
-         * acaparando el radio y bloqueando otros periféricos BLE (focos Hue). */
-        bool is_head_cmd = (strcmp(cmd->action_name, "MOVE_HEAD") == 0 ||
-                            strcmp(cmd->action_name, "PAN_LEFT") == 0 ||
-                            strcmp(cmd->action_name, "PAN_RIGHT") == 0 ||
-                            strcmp(cmd->action_name, "CENTER") == 0);
-        if (!is_head_cmd) {
-            vTaskDelay(pdMS_TO_TICKS(250));
-        }
-        if (current_conn_handle != BLE_HS_CONN_HANDLE_NONE && current_conn_handle != 0) {
-            ESP_LOGI(TAG, "🔌 Desconectando conexión BLE (handle %u) tras ejecución de '%s'...",
-                     current_conn_handle, cmd->action_name);
-            ble_gap_terminate(current_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        }
+        /* Single-shot command or explicit STOP: keep link alive using inactivity timer */
+        ble_ondemand_touch_activity(current_conn_handle, write_handle);
     }
 
     if (ack_failed) {

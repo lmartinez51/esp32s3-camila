@@ -31,6 +31,23 @@
 
 static const char *const s_robot_tool_jsons[] = {
 
+    /* ── run_skill ───────────────────────────────────────────────────── */
+    "{"
+    "  \"type\": \"function\","
+    "  \"name\": \"run_skill\","
+    "  \"description\": \"Use this tool when the user asks the robot or car to perform a skill, routine, choreography, or autonomous macro (e.g., 'baila', 'haz un baile', 'ejecuta dance', 'dance skill', 'baila un poco').\","
+    "  \"parameters\": {"
+    "    \"type\": \"object\","
+    "    \"properties\": {"
+    "      \"skill_name\": {"
+    "        \"type\": \"string\","
+    "        \"description\": \"Name of the skill to execute (e.g. 'dance.lua' or 'dance').\""
+    "      }"
+    "    },"
+    "    \"required\": [\"skill_name\"]"
+    "  }"
+    "}",
+
     /* ── get_discovered_ble_devices ─────────────────────────────────── */
     "{"
     "  \"type\": \"function\","

@@ -27,14 +27,15 @@ Camila is a sarcastic, highly energetic Spanish-speaking persona with a Mexican 
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
 - 📺 **On-device LCD UI** with a tailored character map, status overlays, atomic 1-pass non-blocking mute countdown bands, dynamic state color indicators, and hardware-accelerated rendering optimizations.
-- 🦎 **ESP-Claw Lua Engine** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, rapid logic prototyping without blocking the main WebRTC C-loop.
+- 🦎 **ESP-Claw Lua Engine & Dynamic Skills** — an embedded Lua 5.4 Virtual Machine (`esp_claw_init`) isolated in its own FreeRTOS task, enabling dynamic script execution, autonomous choreography routines/skills (`run_skill`, e.g. `dance.lua`), and rapid logic prototyping without blocking the main WebRTC C-loop.
 - 🧩 **Modular code base** using FreeRTOS tasks for media, WebRTC, UI, BLE, and assistant management.
 
 ### 🧠 AI Autonomy & Background Tasks
 The chatbot has access to a robust set of background functions to control the device and fetch data:
 - **Web Search**: Real-time web search capabilities for fetching up-to-date information.
 - **Product Lookup**: Consults an external API to retrieve detailed information and prices about specific products (`lookup_product_info`).
-- **BLE Device Discovery & Control**: Queries surrounding Bluetooth devices (`get_discovered_ble_devices`), assigns friendly aliases saved to NVS (`set_ble_device_alias`), and dispatches motion/pulse commands to smart devices and robots (`control_ble_device`).
+- **Autonomous Skills & Choreography**: Executes specialized Lua skill routines (`run_skill`) such as robot dances and dynamic automations.
+- **BLE Device Discovery & Control**: Queries surrounding Bluetooth devices (`get_discovered_ble_devices`), assigns friendly aliases saved to NVS (`set_ble_device_alias`), and dispatches motion/pulse commands to smart devices and robots (`control_ble_device`) with automatic keep-alive lifecycle management.
 - **Device Configuration**: The AI can switch the device into BLE configuration mode upon request (`enter_config_mode`).
 - **Memory Management**: The AI can securely erase WiFi credentials (`delete_credentials`) and the OpenAI API Key (`delete_api_key`) from the device's persistent memory (NVS).
 
@@ -153,6 +154,10 @@ You can control various device features simply by talking to Camila. Here are so
   - *"Camila, ¿a qué distancia hay un obstáculo?"* (Context: "Camila, how far is the obstacle?")
   - *"Camila, mueve la cabeza del robot a 90 grados y activa el modo esquivar obstáculos."* (Context: "Camila, turn the robot head to 90 degrees and start obstacle avoidance.")
   - **Action**: Triggers `control_ble_device` (with actions `FORWARD`, `SPIN_180`, `READ_ULTRASONIC`, `MOVE_HEAD`, `READ_LINE_SENSOR`, `SET_AUTONOMOUS_MODE`).
+- **Autonomous Robot Skills & Choreographies**:
+  - *"Camila, baila un poco."* (Context: "Camila, do a little dance routine.")
+  - *"Camila, ejecuta la coreografía dance."* (Context: "Camila, run the dance choreography.")
+  - **Action**: Triggers `run_skill` (executing `/skills/dance.lua` via the ESP-Claw Lua VM).
 
 ---
 

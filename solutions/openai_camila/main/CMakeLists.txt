@@ -88,5 +88,6 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -w -Wno-error)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LUA_32BITS=1)
 
 littlefs_create_partition_image(littlefs ../data FLASH_IN_PROJECT)

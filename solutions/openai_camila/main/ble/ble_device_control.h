@@ -375,6 +375,16 @@ extern "C"
     esp_err_t ble_device_smart_system_init(void);
 
     /**
+     * @brief Refreshes the on-demand BLE inactivity timer (keep-alive session).
+     */
+    void ble_device_refresh_ondemand_activity(void);
+
+    /**
+     * @brief Immediately closes any active on-demand BLE connection.
+     */
+    void ble_device_close_ondemand_connection(void);
+
+    /**
      * @brief Obtiene el número actual de dispositivos únicos descubiertos.
      * @return El número de dispositivos en la lista interna.
      */

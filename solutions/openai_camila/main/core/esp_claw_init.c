@@ -7,11 +7,15 @@
 #include "freertos/queue.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "cJSON.h"
 #include <unistd.h>
 #include <errno.h>
 
 
+#ifndef LUA_32BITS
+#define LUA_32BITS 1
+#endif
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
@@ -21,8 +25,16 @@
 #include "driver/gpio.h"
 #include "esp_system.h"
 #include "webrtc.h"
+#include "robot_hal.h"
+#include "ble_device_control.h"
 
 static const char *TAG = "ESP_CLAW_ISO";
+
+static int claw_lua_panic_handler(lua_State *L) {
+    const char *msg = lua_tostring(L, -1);
+    ESP_LOGE(TAG, "🚨 FATAL LUA UNPROTECTED ERROR: %s", msg ? msg : "unknown");
+    return 0;
+}
 static QueueHandle_t s_test_queue = NULL;
 static QueueHandle_t s_lua_to_c_queue = NULL;
 static EventGroupHandle_t s_claw_event_group = NULL;
@@ -164,6 +176,81 @@ static int l_inject_webrtc_message(lua_State *L) {
     }
     return 0;
 }
+
+static int l_robot_move(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    int duration = luaL_optinteger(L, 2, 0);
+    int speed = luaL_optinteger(L, 3, 100);
+
+    robot_action_id_t action = robot_action_from_string(dir);
+    robot_action_params_t params = {
+        .duration_ms = (uint32_t)duration,
+        .speed = (uint32_t)speed
+    };
+    robot_result_t res;
+    memset(&res, 0, sizeof(res));
+    esp_err_t err = robot_hal_execute("Robot", action, &params, &res);
+    lua_pushboolean(L, err == ESP_OK && res.code == ROBOT_RESULT_OK);
+    return 1;
+}
+
+static int l_robot_set_servo(lua_State *L) {
+    int angle = luaL_checkinteger(L, 1);
+    robot_action_params_t params = {
+        .angle_deg = (uint16_t)angle
+    };
+    robot_result_t res;
+    memset(&res, 0, sizeof(res));
+    esp_err_t err = robot_hal_execute("Robot", ROBOT_ACTION_MOVE_HEAD, &params, &res);
+    lua_pushboolean(L, err == ESP_OK && res.code == ROBOT_RESULT_OK);
+    return 1;
+}
+
+static int l_robot_get_distance(lua_State *L) {
+    robot_result_t res;
+    memset(&res, 0, sizeof(res));
+    esp_err_t err = robot_hal_execute("Robot", ROBOT_ACTION_READ_ULTRASONIC, NULL, &res);
+    if (err == ESP_OK && res.code == ROBOT_RESULT_OK) {
+        int dist = (res.telemetry[0] != '\0') ? atoi(res.telemetry) : -1;
+        lua_pushinteger(L, dist);
+    } else {
+        lua_pushinteger(L, -1);
+    }
+    return 1;
+}
+
+static int l_robot_sleep_ms(lua_State *L) {
+    int ms = luaL_checkinteger(L, 1);
+    if (ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(ms));
+    }
+    return 0;
+}
+
+static int l_camila_notify(lua_State *L) {
+    const char *msg = luaL_checkstring(L, 1);
+    if (msg) {
+        if (webrtc_is_server_generating()) {
+            sendEvent("response.cancel", NULL);
+        }
+        sendEvent("conversation.item.create", msg);
+        sendEvent("response.create", NULL);
+    }
+    return 0;
+}
+
+static const struct luaL_Reg s_robot_lib[] = {
+    {"move", l_robot_move},
+    {"set_servo", l_robot_set_servo},
+    {"get_distance", l_robot_get_distance},
+    {"sleep_ms", l_robot_sleep_ms},
+    {NULL, NULL}
+};
+
+static const struct luaL_Reg s_camila_lib[] = {
+    {"notify", l_camila_notify},
+    {NULL, NULL}
+};
 
 static void* cjson_spiram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 static void cjson_spiram_free(void* ptr) { heap_caps_free(ptr); }
@@ -388,6 +475,8 @@ static void lua_worker_task(void *arg) {
         return;
     }
 
+    lua_atpanic(L, claw_lua_panic_handler);
+
     ESP_LOGI(TAG, "Loading approved standard libraries (PSRAM)");
     luaL_requiref(L, "_G", luaopen_base, 1);
     lua_pop(L, 1);
@@ -395,12 +484,24 @@ static void lua_worker_task(void *arg) {
     lua_pop(L, 1);
     luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
     lua_pop(L, 1);
+    luaL_requiref(L, "coroutine", luaopen_coroutine, 1);
+    lua_pop(L, 1);
     
     lua_register(L, "c_sys_delay", l_sys_delay);
     lua_register(L, "c_send_response", l_send_response);
     lua_register(L, "c_send_webrtc_response", l_send_webrtc_response);
     lua_register(L, "c_inject_webrtc_message", l_inject_webrtc_message);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
+
+    // Register 'robot' table
+    lua_createtable(L, 0, sizeof(s_robot_lib) / sizeof(s_robot_lib[0]) - 1);
+    luaL_setfuncs(L, s_robot_lib, 0);
+    lua_setglobal(L, "robot");
+
+    // Register 'camila' table
+    lua_createtable(L, 0, sizeof(s_camila_lib) / sizeof(s_camila_lib[0]) - 1);
+    luaL_setfuncs(L, s_camila_lib, 0);
+    lua_setglobal(L, "camila");
 
     ESP_LOGI(TAG, "Lua initialized. Waiting for LUA_SAFE_TO_START_BIT...");
     xEventGroupWaitBits(s_claw_event_group, LUA_SAFE_TO_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
@@ -480,52 +581,102 @@ static void lua_worker_task(void *arg) {
     esp_claw_rule_t* msg_rule = NULL;
     while (1) {
         if (xQueueReceive(s_test_queue, &msg_rule, portMAX_DELAY) == pdTRUE) {
-            ESP_LOGI(TAG, "Received new rule pointer. Mapping to Lua table...");
-            
             if (msg_rule != NULL) {
                 esp_claw_rule_t* current = msg_rule;
                 while (current != NULL) {
                     esp_claw_rule_t* next = current->next;
                     
-                    // (Hardware Lockdown Interceptor Bypass removed for Phase 1 Rollback)
-
-                    lua_pushcfunction(L, c_message_handler);   // [handler]
-                    int handler_idx = lua_gettop(L);
-
-                    lua_getglobal(L, "register_rule");          // [handler, func]
-                    
-                    if (lua_isfunction(L, -1)) {
-                        claw_push_rule_to_lua(L, current);      // [handler, func, arg]
-                        
+                    if (current->type == CLAW_MSG_TYPE_RAW_SCRIPT) {
+                        ble_device_refresh_ondemand_activity();
+                        lua_pushcfunction(L, c_message_handler);
+                        int handler_idx = lua_gettop(L);
                         lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, 50000);
-                        if (lua_pcall(L, 1, 0, handler_idx) != LUA_OK) {
-                            ESP_LOGE(TAG, "Lua Fatal Error:\n%s", lua_tostring(L, -1));
-                            lua_pop(L, 1);
-                            // The Lua side never got to call c_send_webrtc_response
-                            // for this call_id. Left alone, the Realtime agent
-                            // waits forever for a function result that will
-                            // never arrive - that's the "fatal hang". Answer
-                            // it directly from C so the conversation can
-                            // continue.
+                        if (luaL_loadstring(L, current->script_payload) != LUA_OK ||
+                            lua_pcall(L, 0, 0, handler_idx) != LUA_OK) {
+                            ESP_LOGE(TAG, "Raw script execution failed: %s", lua_tostring(L, -1));
                             if (current->call_id[0] != '\0') {
-                                send_function_output(current->call_id, "{\"error\":\"rule execution failed\"}");
+                                send_function_output(current->call_id, "{\"error\":\"script execution failed\"}");
+                                sendEvent("response.create", NULL);
+                            }
+                            lua_pop(L, 1);
+                        } else {
+                            ESP_LOGI(TAG, "Raw script executed successfully");
+                            if (current->call_id[0] != '\0') {
+                                send_function_output(current->call_id, "{\"status\":\"executed\"}");
                                 sendEvent("response.create", NULL);
                             }
                         }
                         lua_sethook(L, instruction_limit_hook, 0, 0);
-                    } else {
-                        lua_pop(L, 1); // pop the non-function value
-                        ESP_LOGE(TAG, "register_rule function not found in Lua environment");
-                        // Same problem as above: nothing Lua-side will ever
-                        // answer this call_id if register_rule doesn't
-                        // exist. Answer it from C so the caller isn't left
-                        // hanging forever.
-                        if (current->call_id[0] != '\0') {
-                            send_function_output(current->call_id, "{\"error\":\"automation engine unavailable\"}");
-                            sendEvent("response.create", NULL);
+                        lua_pop(L, 1); // pop handler
+                    } else if (current->type == CLAW_MSG_TYPE_SKILL_FILE) {
+                        ble_device_refresh_ondemand_activity();
+                        char path[300];
+                        if (strstr(current->script_payload, ".lua")) {
+                            snprintf(path, sizeof(path), "/littlefs/skills/%s", current->script_payload);
+                        } else {
+                            snprintf(path, sizeof(path), "/littlefs/skills/%s.lua", current->script_payload);
                         }
+                        lua_pushcfunction(L, c_message_handler);
+                        int handler_idx = lua_gettop(L);
+                        lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, 50000);
+                        if (luaL_loadfile(L, path) != LUA_OK ||
+                            lua_pcall(L, 0, 0, handler_idx) != LUA_OK) {
+                            ESP_LOGW(TAG, "Skill '%s' execution failed: %s", path, lua_tostring(L, -1));
+                            if (current->call_id[0] != '\0') {
+                                send_function_output(current->call_id, "{\"error\":\"skill execution failed\"}");
+                                sendEvent("response.create", NULL);
+                            }
+                            lua_pop(L, 1);
+                        } else {
+                            ESP_LOGI(TAG, "Skill '%s' executed successfully", path);
+                            if (current->call_id[0] != '\0') {
+                                send_function_output(current->call_id, "{\"status\":\"executed\"}");
+                                sendEvent("response.create", NULL);
+                            }
+                        }
+                        lua_sethook(L, instruction_limit_hook, 0, 0);
+                        lua_pop(L, 1); // pop handler
+                    } else {
+                        ESP_LOGI(TAG, "Received new rule pointer. Mapping to Lua table...");
+
+                        lua_pushcfunction(L, c_message_handler);   // [handler]
+                        int handler_idx = lua_gettop(L);
+
+                        lua_getglobal(L, "register_rule");          // [handler, func]
+                        
+                        if (lua_isfunction(L, -1)) {
+                            claw_push_rule_to_lua(L, current);      // [handler, func, arg]
+                            
+                            lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, 50000);
+                            if (lua_pcall(L, 1, 0, handler_idx) != LUA_OK) {
+                                ESP_LOGE(TAG, "Lua Fatal Error:\n%s", lua_tostring(L, -1));
+                                lua_pop(L, 1);
+                                // The Lua side never got to call c_send_webrtc_response
+                                // for this call_id. Left alone, the Realtime agent
+                                // waits forever for a function result that will
+                                // never arrive - that's the "fatal hang". Answer
+                                // it directly from C so the conversation can
+                                // continue.
+                                if (current->call_id[0] != '\0') {
+                                    send_function_output(current->call_id, "{\"error\":\"rule execution failed\"}");
+                                    sendEvent("response.create", NULL);
+                                }
+                            }
+                            lua_sethook(L, instruction_limit_hook, 0, 0);
+                        } else {
+                            lua_pop(L, 1); // pop the non-function value
+                            ESP_LOGE(TAG, "register_rule function not found in Lua environment");
+                            // Same problem as above: nothing Lua-side will ever
+                            // answer this call_id if register_rule doesn't
+                            // exist. Answer it from C so the caller isn't left
+                            // hanging forever.
+                            if (current->call_id[0] != '\0') {
+                                send_function_output(current->call_id, "{\"error\":\"automation engine unavailable\"}");
+                                sendEvent("response.create", NULL);
+                            }
+                        }
+                        lua_pop(L, 1); // pop the handler
                     }
-                    lua_pop(L, 1); // pop the handler
                     
                     free(current);
                     current = next;
@@ -577,6 +728,38 @@ esp_err_t esp_claw_init(void) {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
+    return ESP_OK;
+}
+
+esp_err_t esp_claw_execute_script(const char* script) {
+    if (s_test_queue == NULL || script == NULL) return ESP_ERR_INVALID_STATE;
+
+    esp_claw_rule_t* req = heap_caps_calloc(1, sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!req) return ESP_ERR_NO_MEM;
+
+    req->type = CLAW_MSG_TYPE_RAW_SCRIPT;
+    strlcpy(req->script_payload, script, sizeof(req->script_payload));
+
+    if (xQueueSend(s_test_queue, &req, pdMS_TO_TICKS(100)) != pdTRUE) {
+        free(req);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+esp_err_t esp_claw_run_skill(const char* skill_name) {
+    if (s_test_queue == NULL || skill_name == NULL) return ESP_ERR_INVALID_STATE;
+
+    esp_claw_rule_t* req = heap_caps_calloc(1, sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!req) return ESP_ERR_NO_MEM;
+
+    req->type = CLAW_MSG_TYPE_SKILL_FILE;
+    strlcpy(req->script_payload, skill_name, sizeof(req->script_payload));
+
+    if (xQueueSend(s_test_queue, &req, pdMS_TO_TICKS(100)) != pdTRUE) {
+        free(req);
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 

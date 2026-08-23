@@ -122,11 +122,17 @@ static const uint8_t font_8x8[][8] = {
     {0x00, 0x1C, 0x30, 0x60, 0x60, 0x60, 0x30, 0x1C}, // 68 '('
     {0x00, 0x38, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x38}, // 69 ')'
     {0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00}, // 70 'B' (mayúscula)
+    {0x58, 0x00, 0x5C, 0x66, 0x66, 0x66, 0x66, 0x00}, // 71 'ñ' (minúscula)
+    {0x58, 0x66, 0x76, 0x7E, 0x6E, 0x66, 0x66, 0x00}, // 72 'Ñ' (mayúscula)
+    {0x00, 0x18, 0x00, 0x18, 0x18, 0x18, 0x18, 0x70}, // 73 'j' (minúscula)
+    {0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x70, 0x00}, // 74 'J' (mayúscula)
+    {0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00}, // 75 'H' (mayúscula)
+    {0x7E, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00, 0x00}, // 76 'Z' (mayúscula)
 };
 
 /**
  * @brief Convierte un string de texto a un mapa de índices de la fuente.
- * @param str El string de entrada (solo soporta caracteres definidos en la fuente).
+ * @param str El string de entrada (soporta ASCII, UTF-8 y Latin-1).
  * @param map_buffer El buffer de salida para los índices.
  * @param max_len El tamaño máximo del buffer.
  * @return El número de caracteres convertidos.
@@ -134,9 +140,44 @@ static const uint8_t font_8x8[][8] = {
 static int convert_string_to_char_map(const char *str, int *map_buffer, int max_len)
 {
     int count = 0;
-    for (int i = 0; str[i] != '\0' && i < max_len; i++)
+    for (int i = 0; str[i] != '\0' && count < max_len; i++)
     {
-        switch (str[i])
+        unsigned char c = (unsigned char)str[i];
+
+        /* ── Soporte para caracteres UTF-8 multi-byte (0xC3 ...) ── */
+        if (c == 0xC3 && (unsigned char)str[i + 1] != '\0')
+        {
+            unsigned char c2 = (unsigned char)str[++i];
+            if (c2 == 0xB1)      { map_buffer[count++] = 71; continue; } // 'ñ'
+            else if (c2 == 0x91) { map_buffer[count++] = 72; continue; } // 'Ñ'
+            else if (c2 == 0xA1) { map_buffer[count++] = 6;  continue; } // 'á' -> 'a'
+            else if (c2 == 0x81) { map_buffer[count++] = 0;  continue; } // 'Á' -> 'A'
+            else if (c2 == 0xA9) { map_buffer[count++] = 14; continue; } // 'é' -> 'e'
+            else if (c2 == 0x89) { map_buffer[count++] = 15; continue; } // 'É' -> 'E'
+            else if (c2 == 0xAD) { map_buffer[count++] = 8;  continue; } // 'í' -> 'i'
+            else if (c2 == 0x8D) { map_buffer[count++] = 1;  continue; } // 'Í' -> 'I'
+            else if (c2 == 0xB3) { map_buffer[count++] = 11; continue; } // 'ó' -> 'o'
+            else if (c2 == 0x93) { map_buffer[count++] = 30; continue; } // 'Ó' -> 'O'
+            else if (c2 == 0xBA || c2 == 0xBC) { map_buffer[count++] = 40; continue; } // 'ú'/'ü' -> 'u'
+            else if (c2 == 0x9A || c2 == 0x9C) { map_buffer[count++] = 44; continue; } // 'Ú'/'Ü' -> 'U'
+            continue;
+        }
+
+        /* ── Soporte para caracteres Latin-1 / ISO-8859-1 directos ── */
+        if (c == 0xF1) { map_buffer[count++] = 71; continue; } // 'ñ'
+        if (c == 0xD1) { map_buffer[count++] = 72; continue; } // 'Ñ'
+        if (c == 0xE1) { map_buffer[count++] = 6;  continue; } // 'á'
+        if (c == 0xC1) { map_buffer[count++] = 0;  continue; } // 'Á'
+        if (c == 0xE9) { map_buffer[count++] = 14; continue; } // 'é'
+        if (c == 0xC9) { map_buffer[count++] = 15; continue; } // 'É'
+        if (c == 0xED) { map_buffer[count++] = 8;  continue; } // 'í'
+        if (c == 0xCD) { map_buffer[count++] = 1;  continue; } // 'Í'
+        if (c == 0xF3) { map_buffer[count++] = 11; continue; } // 'ó'
+        if (c == 0xD3) { map_buffer[count++] = 30; continue; } // 'Ó'
+        if (c == 0xFA || c == 0xFC) { map_buffer[count++] = 40; continue; } // 'ú'/'ü'
+        if (c == 0xDA || c == 0xDC) { map_buffer[count++] = 44; continue; } // 'Ú'/'Ü'
+
+        switch (c)
         {
         /* ── Dígitos ── */
         case '0': map_buffer[count++] = 47; break;
@@ -157,7 +198,9 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'E': map_buffer[count++] = 15; break;  // Antes faltaba
         case 'F': map_buffer[count++] = 19; break;
         case 'G': map_buffer[count++] = 42; break;
+        case 'H': map_buffer[count++] = 75; break;
         case 'I': map_buffer[count++] = 1;  break;  // Antes faltaba
+        case 'J': map_buffer[count++] = 74; break;
         case 'K': map_buffer[count++] = 29; break;
         case 'L': map_buffer[count++] = 63; break;
         case 'M': map_buffer[count++] = 41; break;
@@ -173,6 +216,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'W': map_buffer[count++] = 18; break;
         case 'X': map_buffer[count++] = 58; break;
         case 'Y': map_buffer[count++] = 59; break;
+        case 'Z': map_buffer[count++] = 76; break;
         /* ── Minúsculas ── */
         case 'a': map_buffer[count++] = 6;  break;
         case 'b': map_buffer[count++] = 36; break;
@@ -183,6 +227,7 @@ static int convert_string_to_char_map(const char *str, int *map_buffer, int max_
         case 'g': map_buffer[count++] = 25; break;
         case 'h': map_buffer[count++] = 35; break;
         case 'i': map_buffer[count++] = 8;  break;
+        case 'j': map_buffer[count++] = 73; break;
         case 'k': map_buffer[count++] = 37; break;
         case 'l': map_buffer[count++] = 7;  break;
         case 'm': map_buffer[count++] = 3;  break;
@@ -1102,28 +1147,19 @@ void ui_show_status_message(const char *msg, uint16_t color)
             draw_filled_rect(12, 190, 296, 35, COLOR_BLACK_BGR565);
             int text_map[32];
             int num_chars = convert_string_to_char_map(s_camila_overlay_text, text_map, 32);
-            if (num_chars > 0)
+            int scale = 1;
+            int char_spacing = CHAR_SPACING_SCALE_1X;
+            int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
+            if (text_w > 296)
             {
-                int scale = 2;
-                int char_spacing = CHAR_SPACING_SCALE_2X;
-                int text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-                if (text_w > 296)
-                {
-                    scale = 1;
-                    char_spacing = CHAR_SPACING_SCALE_1X;
-                    text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-                    if (text_w > 296)
-                    {
-                        num_chars = (296 + char_spacing) / (CHAR_WIDTH * scale + char_spacing);
-                        if (num_chars < 1) num_chars = 1;
-                        text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
-                    }
-                }
-                int x = (BSP_LCD_H_RES - text_w) / 2;
-                if (x < 12) x = 12;
-                int y = (scale == 2) ? 195 : 200;
-                display_text(x, y, text_map, num_chars, s_camila_overlay_color, scale);
+                num_chars = (296 + char_spacing) / (CHAR_WIDTH * scale + char_spacing);
+                if (num_chars < 1) num_chars = 1;
+                text_w = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * char_spacing;
             }
+            int x = (BSP_LCD_H_RES - text_w) / 2;
+            if (x < 12) x = 12;
+            int y = 200;
+            display_text(x, y, text_map, num_chars, s_camila_overlay_color, scale);
         }
         else
         {
@@ -1199,7 +1235,7 @@ void camila_ui_show_avatar(void)
     clear_screen();
     draw_screen_border(COLOR_CYAN_BGR565, 2);
 
-    // 1. Top Demo Tech Header (y = 14)
+    // 1. Top Demo Tech Header (y = 18)
     const char *header_text = "ESP32-S3/OPENAI";
     int header_map[32];
     int header_chars = convert_string_to_char_map(header_text, header_map, 32);
@@ -1208,24 +1244,33 @@ void camila_ui_show_avatar(void)
         int header_w = header_chars * (CHAR_WIDTH * 2)+ (header_chars - 1) * CHAR_SPACING_SCALE_2X;
         int x = (BSP_LCD_H_RES - header_w) / 2;
         if (x < 8) x = 8;
-        display_text(x, 18, header_map, header_chars, COLOR_MAGENTA_BGR565, 2);
+        display_text(x, 18, header_map, header_chars, COLOR_BLUE_BGR565, 2);
     }
-    // Horizontal divider line at y = 28 (w = 272, h = 1)
+    // Horizontal divider line at y = 44 (w = 272, h = 2)
     draw_filled_rect(24, 44, 272, 2, COLOR_CYAN_BGR565);
 
-    // 2. Center Hero Title (y = 106)
-    const char *title_text = "AI'M CAMILA";
-    int title_map[32];
-    int title_chars = convert_string_to_char_map(title_text, title_map, 32);
-    if (title_chars > 0)
+    // 2. Center Hero Title - Bitonal Hero Branding (y = 106)
+    const char *aim_text = "AI'M"; // Separado por si despues quiero cambiar el color
+    const char *camila_text = "CAMILA"; 
+    int aim_map[8];
+    int camila_map[12];
+    int aim_chars = convert_string_to_char_map(aim_text, aim_map, 8);
+    int camila_chars = convert_string_to_char_map(camila_text, camila_map, 12);
+    if (aim_chars > 0 && camila_chars > 0)
     {
-        int title_w = title_chars * (CHAR_WIDTH * 2) + (title_chars - 1) * CHAR_SPACING_SCALE_2X;
-        int x = (BSP_LCD_H_RES - title_w) / 2;
-        if (x < 8) x = 8;
-        display_text(x, 106, title_map, title_chars, COLOR_CYAN_BGR565, 2);
+        int aim_w = aim_chars * (CHAR_WIDTH * 2) + (aim_chars - 1) * CHAR_SPACING_SCALE_2X;
+        int space_w = (CHAR_WIDTH * 2) + (2 * CHAR_SPACING_SCALE_2X);
+        int camila_w = camila_chars * (CHAR_WIDTH * 2) + (camila_chars - 1) * CHAR_SPACING_SCALE_2X;
+        int total_w = aim_w + space_w + camila_w;
+        int start_x = (BSP_LCD_H_RES - total_w) / 2;
+        if (start_x < 8) start_x = 8;
+
+        display_text(start_x, 106, aim_map, aim_chars, COLOR_CYAN_BGR565, 2);
+        int camila_x = start_x + aim_w + space_w;
+        display_text(camila_x, 106, camila_map, camila_chars, COLOR_CYAN_BGR565, 2);
     }
-    // Centered accent divider line at y = 131 (x = 120, w = 80, h = 2)
-    draw_filled_rect(75, 131, 170, 2, COLOR_CYAN_BGR565);
+    // Centered extended accent divider line at y = 131 (x = 45, w = 230, h = 2)
+    draw_filled_rect(45, 131, 230, 2, COLOR_CYAN_BGR565);
 
     // 3. Dynamic Subtitle & Mute State Handling (y = 144)
     draw_avatar_subtitle_line();

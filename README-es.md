@@ -23,14 +23,15 @@ Camila es una asistente sarcástica y llena de energía que habla español con a
 - 🔵 **Cliente/Servidor BLE** para el aprovisionamiento de credenciales WiFi y comandos remotos.
 - 📶 **Reconexión WiFi automática** tras recibir nuevas credenciales vía BLE (no requiere reinicio físico).
 - 📺 **Interfaz gráfica en pantalla (LCD UI)** con un mapa de caracteres adaptado, mensajes de estado superpuestos, banda de cuenta regresiva de silencio atómica de 1 paso no bloqueante, indicadores dinámicos por estado y optimizaciones de renderizado acelerado por hardware.
-- 🦎 **Motor Lua ESP-Claw** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, prototipado rápido de lógica sin bloquear el ciclo principal en C de WebRTC.
+- 🦎 **Motor Lua ESP-Claw y Skills Dinámicos** — una Máquina Virtual integrada Lua 5.4 (`esp_claw_init`) aislada en su propia tarea de FreeRTOS, que permite la ejecución dinámica de scripts, rutinas/coreografías autónomas (`run_skill`, ej. `dance.lua`) y prototipado rápido de lógica sin bloquear el ciclo principal en C de WebRTC.
 - 🧩 **Código base modular** utilizando tareas de FreeRTOS para medios, WebRTC, UI, BLE y gestión del asistente.
 
 ### 🧠 Autonomía de IA y Tareas en Segundo Plano
 El asistente cuenta con un conjunto robusto de funciones en segundo plano para controlar el dispositivo y obtener datos:
 - **Búsqueda Web**: Capacidades de búsqueda en la web en tiempo real para obtener información actualizada.
 - **Búsqueda de Productos**: Consulta una API externa para obtener información detallada y precios sobre productos específicos (`lookup_product_info`).
-- **Descubrimiento y Control de Dispositivos BLE**: Consulta dispositivos Bluetooth cercanos (`get_discovered_ble_devices`), asigna apodos amigables guardados en NVS (`set_ble_device_alias`), y envía comandos de movimiento o impulsos a dispositivos inteligentes y robots (`control_ble_device`).
+- **Habilidades Autónomas y Coreografías**: Ejecuta rutinas de habilidades especializadas en Lua (`run_skill`) como bailes robóticos y automatizaciones dinámicas.
+- **Descubrimiento y Control de Dispositivos BLE**: Consulta dispositivos Bluetooth cercanos (`get_discovered_ble_devices`), asigna apodos amigables guardados en NVS (`set_ble_device_alias`), y envía comandos de movimiento o impulsos a dispositivos inteligentes y robots (`control_ble_device`) con temporizador de inactividad y gestión de ciclo de vida de conexión.
 - **Configuración del Dispositivo**: La IA puede poner el dispositivo en modo de configuración BLE si se le solicita (`enter_config_mode`).
 - **Gestión de Memoria**: La IA puede borrar de forma segura las credenciales WiFi (`delete_credentials`) y la clave API de OpenAI (`delete_api_key`) de la memoria persistente del dispositivo (NVS).
 
@@ -149,6 +150,10 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con Camil
   - *"Camila, ¿a qué distancia está el obstáculo?"*
   - *"Camila, mueve la cabeza del robot a 90 grados y activa el modo esquivar obstáculos."*
   - **Acción**: Ejecuta `control_ble_device` (con acciones `FORWARD`, `SPIN_180`, `READ_ULTRASONIC`, `MOVE_HEAD`, `READ_LINE_SENSOR`, `SET_AUTONOMOUS_MODE`).
+- **Habilidades y Coreografías Autónomas de Robótica**:
+  - *"Camila, baila un poco."*
+  - *"Camila, ejecuta la coreografía dance."*
+  - **Acción**: Ejecuta `run_skill` (ejecutando `/skills/dance.lua` mediante la VM de Lua ESP-Claw).
 
 ---
 

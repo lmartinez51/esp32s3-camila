@@ -31,7 +31,7 @@ static void lookup_product_task(void *pvParameters)
         if (xQueueReceive(s_http_queue, &msg, portMAX_DELAY) == pdTRUE)
         {
             ESP_LOGI(TAG, "LOOKUP_PRODUCT_TASK: Query = '%s'", msg.query);
-            ui_show_status_message("CONSULTING: Getting info...", COLOR_YELLOW_BGR565);
+            ui_show_status_message("Consulting info...", COLOR_YELLOW_BGR565);
             char *post_data = NULL;
 
             // Construir el payload JSON de búsqueda estricta

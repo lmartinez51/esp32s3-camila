@@ -55,6 +55,7 @@
 #include "nvs_setup.h"
 #include "network_storage.h"
 #include "nvs_flash.h"
+#include "esp_claw_init.h"
 
 #define TAG "ROBOT_ADAPTER"
 
@@ -114,9 +115,35 @@ static void handle_control_ble_device(const char *call_id, const char *args_json
     ESP_LOGI(TAG, "🤖 Llamada a control_ble_device: Dispositivo='%s', Acción='%s', Duración=%lu ms",
              dev_str, act_str, dur_val);
 
+    const char *display_act = act_str;
+    if (strcasecmp(act_str, "TURN_ON") == 0) display_act = "ON";
+    else if (strcasecmp(act_str, "TURN_OFF") == 0) display_act = "OFF";
+    else if (strcasecmp(act_str, "SET_BRIGHTNESS") == 0) display_act = "BRIGHTNESS";
+
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: %s -> %s", dev_str, act_str);
+    snprintf(ui_sub, sizeof(ui_sub), "%s: %s", dev_str, display_act);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    /* Check if action is a skill execution */
+    if (strcasecmp(act_str, "RUN_SKILL") == 0 || strcasecmp(act_str, "DANCE") == 0 || strcasecmp(act_str, "BAILAR") == 0 || strcasecmp(act_str, "BAILA") == 0)
+    {
+        cJSON *skill_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "skill_name") : NULL;
+        if (!skill_item) skill_item = cJSON_GetObjectItemCaseSensitive(args_root, "skill");
+        const char *skill_str = (cJSON_IsString(skill_item) && skill_item->valuestring) ? skill_item->valuestring : "dance.lua";
+        esp_err_t err = esp_claw_run_skill(skill_str);
+        ui_clear_status_message();
+        if (err == ESP_OK)
+        {
+            send_function_output(call_id, "{\"status\": \"ok\", \"message\": \"Skill started autonomously\"}");
+        }
+        else
+        {
+            send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Failed to dispatch skill\"}");
+        }
+        webrtc_request_response_create();
+        if (args_root) cJSON_Delete(args_root);
+        return;
+    }
 
     robot_action_id_t hal_action = robot_action_from_string(act_str);
 
@@ -326,7 +353,7 @@ static void handle_set_ble_device_alias(const char *call_id, const char *args_js
     ESP_LOGI(TAG, "🏷️ Llamada a set_ble_device_alias: Dispositivo='%s', Alias nuevo='%s'", dev_str, alias_str);
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Alias -> %s", alias_str);
+    snprintf(ui_sub, sizeof(ui_sub), "Alias: %s", alias_str);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     /* 1. Asignar alias en la lista BLE en memoria y encolar NVS.
@@ -478,7 +505,7 @@ static void handle_set_device_endpoint(const char *call_id, const char *args_jso
              alias, ip, port, proto);
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Endpoint %s", alias);
+    snprintf(ui_sub, sizeof(ui_sub), "Endpoint: %s", alias);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     if (alias[0] == '\0' || !adapter_parse_ipv4(ip))
@@ -567,7 +594,7 @@ static void handle_set_ir_device(const char *call_id, const char *args_json)
     ESP_LOGI(TAG, "📡 Llamada a set_ir_device: Alias='%s', Protocolo='%s'", alias, proto);
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: IR %s", alias);
+    snprintf(ui_sub, sizeof(ui_sub), "IR: %s", alias);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     if (alias[0] == '\0')
@@ -647,7 +674,7 @@ static void handle_remove_device(const char *call_id, const char *args_json)
     ESP_LOGI(TAG, "🗑️ Llamada a remove_device: Dispositivo='%s'", alias);
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Remove %s", alias);
+    snprintf(ui_sub, sizeof(ui_sub), "Remove: %s", alias);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     if (alias[0] == '\0')
@@ -742,7 +769,7 @@ static void handle_forget_wifi_network(const char *call_id, const char *args_jso
     ESP_LOGI(TAG, "📡 Llamada a forget_wifi_network: SSID='%s'", ssid);
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Forget %s", ssid);
+    snprintf(ui_sub, sizeof(ui_sub), "Forget: %s", ssid);
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     if (ssid[0] == '\0')
@@ -794,7 +821,7 @@ static void handle_erase_all_data(const char *call_id, const char *args_json)
     ESP_LOGI(TAG, "🧹 Llamada a erase_all_data: borrando registry, IR, WiFi y BLE");
 
     char ui_sub[64];
-    snprintf(ui_sub, sizeof(ui_sub), "EXECUTING: Erase all data");
+    snprintf(ui_sub, sizeof(ui_sub), "Erase all data");
     ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
 
     /* 1. Registry NVS (trabajador core 0, asincrono) */
@@ -842,7 +869,39 @@ static void handle_erase_all_data(const char *call_id, const char *args_json)
     webrtc_request_response_create();
 }
 
+static void handle_run_skill(const char *call_id, const char *args_json)
+{
+    cJSON *args_root = args_json ? cJSON_Parse(args_json) : NULL;
+    cJSON *skill_item = args_root ? cJSON_GetObjectItemCaseSensitive(args_root, "skill_name") : NULL;
+    if (!skill_item) skill_item = cJSON_GetObjectItemCaseSensitive(args_root, "skill");
+    if (!skill_item) skill_item = cJSON_GetObjectItemCaseSensitive(args_root, "name");
+
+    const char *skill_str = (cJSON_IsString(skill_item) && skill_item->valuestring) ? skill_item->valuestring : "dance.lua";
+
+    ESP_LOGI(TAG, "🎭 Llamada a run_skill: Skill='%s'", skill_str);
+
+    char ui_sub[64];
+    snprintf(ui_sub, sizeof(ui_sub), "SKILL: %s", skill_str);
+    ui_show_status_message(ui_sub, COLOR_GREEN_BGR565);
+
+    esp_err_t err = esp_claw_run_skill(skill_str);
+    ui_clear_status_message();
+
+    if (err == ESP_OK)
+    {
+        send_function_output(call_id, "{\"status\": \"ok\", \"message\": \"Skill started autonomously\"}");
+    }
+    else
+    {
+        send_function_output(call_id, "{\"status\": \"error\", \"message\": \"Failed to dispatch skill\"}");
+    }
+    webrtc_request_response_create();
+
+    if (args_root) cJSON_Delete(args_root);
+}
+
 static const robot_tool_handler_t s_robot_tools[] = {
+    {"run_skill",                  handle_run_skill},
     {"get_discovered_ble_devices", handle_get_discovered_ble_devices},
     {"control_robot",              handle_control_ble_device}, /* Phase 6: catalog name */
     {"control_ble_device",         handle_control_ble_device}, /* legacy alias (una release) */
